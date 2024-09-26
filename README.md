@@ -1,2 +1,2 @@
-# shaggy
-"It wasn't me!" Discreetly connect to networks
+# DisCo
+ Discreetly Connect to networks
