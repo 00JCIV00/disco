@@ -14,8 +14,8 @@ const SOCK = posix.SOCK;
 const IFNAMESIZE = posix.IFNAMESIZE;
 
 const timeout = mem.toBytes(posix.timeval{ .tv_sec = 3, .tv_usec = 0 });
-const nl_req_len = mem.alignForward(u32, @sizeOf(NetlinkRequest), 4);
-const rtattr_len = mem.alignForward(usize, @sizeOf(os.linux.rtattr), 4);
+pub const nl_req_len = mem.alignForward(u32, @sizeOf(NetlinkRequest), 4);
+pub const rtattr_len = mem.alignForward(usize, @sizeOf(os.linux.rtattr), 4);
 
 
 /// Netlink Request
@@ -176,9 +176,13 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
                 start = end;
                 end += @sizeOf(NetlinkError);
                 const nl_err: *NetlinkError = @alignCast(@ptrCast(resp_buf[start..end]));
-                if (nl_err.err != 0) {
-                    log.debug("Netlink Error Status: {d}", .{ nl_err.err });
-                    return error.NetlinkMessageError;
+                switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+                    .SUCCESS => {},
+                    .BUSY => return error.BUSY,
+                    else => |err| {
+                        log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                        return error.OSError;
+                    },
                 }
             }
             if (nl_resp_hdr.type == .RTM_NEWLINK) ifi: {
@@ -224,13 +228,14 @@ pub fn setState(if_index: i32, state: IFF) !void {
         null,
         0,
     );
+    defer posix.close(nl_sock);
     try handleNetlinkAck(nl_sock);
 }
 
 /// Change the MAC (`mac`) of the provided Interface (`if_index`).
 pub fn changeMAC(if_index: i32, mac: [6]u8) !void {
     try setState(if_index, .DOWN);
-    const nl_mac_sock = try netlinkRequest(
+    const nl_sock = try netlinkRequest(
         .{
             .nlh = .{
                 .len = 0,
@@ -254,7 +259,8 @@ pub fn changeMAC(if_index: i32, mac: [6]u8) !void {
         mac[0..],
         6,
     );
-    try handleNetlinkAck(nl_mac_sock);
+    defer posix.close(nl_sock);
+    try handleNetlinkAck(nl_sock);
     try setState(if_index, .UP);
 }
 

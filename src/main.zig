@@ -2,6 +2,7 @@ const std = @import("std");
 const fmt = std.fmt;
 const heap = std.heap;
 const io = std.io;
+const json = std.json;
 const log = std.log;
 const os = std.os;
 const posix = std.posix;
@@ -12,6 +13,7 @@ const cli = @import("cli.zig");
 
 const art = @import("art.zig");
 const nl = @import("nl.zig");
+const NetworkInterface = @import("NetworkInterface.zig");
 
 pub fn main() !void {
     const stdout_file = io.getStdOut().writer();
@@ -22,7 +24,6 @@ pub fn main() !void {
     var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer if (gpa.detectLeaks()) log.err("Memory leak detected!", .{});
     const alloc = gpa.allocator();
-
 
     // Parse Args
     var main_cmd = try cli.setup_cmd.init(alloc, .{});
@@ -55,15 +56,22 @@ pub fn main() !void {
     //const main_opts = try main_cmd.getOpts(.{});
     const main_vals = try main_cmd.getVals(.{});
 
-    // Interface Name
+    // Interface
     const if_name = try (main_vals.get("interface").?).getAs([]const u8);
-    const if_idx = nl.getIfIdx(if_name) catch |err| switch (err) {
+    var net_if = NetworkInterface.get(if_name) catch |err| switch (err) {
         error.NoInterfaceFound => {
             log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
             return;
         },
         else => return err,
     };
+    //const if_idx = nl.getIfIdx(if_name) catch |err| switch (err) {
+    //    error.NoInterfaceFound => {
+    //        log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
+    //        return;
+    //    },
+    //    else => return err,
+    //};
 
     // Single Use
     if (main_cmd.matchSubCmd("change")) |change_cmd| {
@@ -72,7 +80,7 @@ pub fn main() !void {
         if (change_opts.get("mac")) |mac_opt| changeMAC: {
             try stdout_file.print("Changing the MAC for {s}...\n", .{ if_name });
             const new_mac = mac_opt.val.getAs([6]u8) catch break :changeMAC;
-            nl.changeMAC(if_idx, new_mac) catch |err| switch (err) {
+            nl.changeMAC(net_if.idx, new_mac) catch |err| switch (err) {
                 error.BUSY => {
                     log.err("The interface '{s}' is busy so the MAC could not be changed.", .{ if_name });
                     return;
@@ -93,7 +101,7 @@ pub fn main() !void {
         if (change_opts.get("state")) |state_opt| changeState: {
             try stdout_file.print("Changing the State for {s}...\n", .{ if_name });
             const new_state = state_opt.val.getAs(nl.IFF) catch break :changeState;
-            nl.setState(if_idx, new_state) catch |err| switch (err) {
+            nl.setState(net_if.idx, new_state) catch |err| switch (err) {
                 error.BUSY => {
                     log.err("The interface '{s}' is busy so the State could not be changed.", .{ if_name });
                     return;
@@ -105,7 +113,16 @@ pub fn main() !void {
             };
             try stdout_file.print("Changed the State for {s} to {s}.\n", .{ if_name, @tagName(new_state) });
         }
+        net_if = try NetworkInterface.get(if_name);
     }
+
+    // Interface Details
+    try stdout.print("{s} Interface Details:\n", .{ if_name });
+    try json.stringify(net_if, .{ .whitespace = .indent_4, .emit_null_optional_fields = false }, stdout);
+    //try stdout.print("{}", .{ net_if });
+    try stdout.print("\n", .{});
+    try stdout_bw.flush();
+
 }
 
 /// Root Check
