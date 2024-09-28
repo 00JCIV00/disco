@@ -13,6 +13,8 @@ const cli = @import("cli.zig");
 
 const art = @import("art.zig");
 const nl = @import("nl.zig");
+const wpa = @import("wpa.zig");
+
 const NetworkInterface = @import("NetworkInterface.zig");
 
 pub fn main() !void {
@@ -65,15 +67,9 @@ pub fn main() !void {
         },
         else => return err,
     };
-    //const if_idx = nl.getIfIdx(if_name) catch |err| switch (err) {
-    //    error.NoInterfaceFound => {
-    //        log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
-    //        return;
-    //    },
-    //    else => return err,
-    //};
 
     // Single Use
+    // - Change
     if (main_cmd.matchSubCmd("change")) |change_cmd| {
         rootCheck(stdout_file.any());
         const change_opts = try change_cmd.getOpts(.{});
@@ -114,6 +110,27 @@ pub fn main() !void {
             try stdout_file.print("Changed the State for {s} to {s}.\n", .{ if_name, @tagName(new_state) });
         }
         net_if = try NetworkInterface.get(if_name);
+    }
+    // - Generate Key
+    if (main_cmd.matchSubCmd("gen-key")) |gen_key_cmd| {
+        const gen_key_vals = try gen_key_cmd.getVals(.{});
+        const key = try gen_key_cmd.callAs(wpa.genKey, null, [32]u8);
+        try stdout.print(
+            \\Generated Key:
+            \\ - Protocol:   {s}
+            \\ - SSID:       {s}
+            \\ - Passphrase: {s}
+            \\
+            , .{
+                @tagName(try (gen_key_vals.get("val-02").?).getAs(wpa.Protocol)),
+                try (gen_key_vals.get("val-00").?).getAs([]const u8),
+                try (gen_key_vals.get("val-01").?).getAs([]const u8),
+            }
+        );
+        var key_buf: [64]u8 = undefined;
+        for (key[0..], 0..) |byte, idx| _ = try fmt.bufPrint(key_buf[(idx * 2)..(idx * 2 + 2)], "{X:0<2}", .{ byte });
+        try stdout.print(" - Key:        {s}\n\n", .{ key_buf[0..] });
+        try stdout_bw.flush();
     }
 
     // Interface Details

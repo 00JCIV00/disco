@@ -17,6 +17,7 @@ const time = std.time;
 
 const cova = @import("cova");
 const nl = @import("nl.zig");
+const wpa = @import("wpa.zig");
 
 /// The Cova Command Type for DisCo.
 pub const CommandT = cova.Command.Custom(.{
@@ -28,6 +29,7 @@ pub const CommandT = cova.Command.Custom(.{
             fs.File,
             [6]u8,
             nl.IFF,
+            wpa.Protocol,
         },
         .child_type_parse_fns = &.{
             .{
@@ -65,6 +67,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = []const u8, .alias = "text" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
             .{ .ChildT = nl.IFF, .alias = "interface_state" },
+            .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
         }
     }
 });
@@ -134,6 +137,26 @@ pub const setup_cmd = CommandT{
                 },
             },
         },
+        .{
+            .name = "connect",
+            .description = "Connect to a WiFi Network.",
+            .opts = &.{
+                .{
+                    .name = "security",
+                    .description = "Set the WiFi Secruity Protocol.",
+                    .val = ValueT.ofType(wpa.Protocol, .{}),
+                }
+            },
+        },
+        CommandT.from(@TypeOf(wpa.genKey), .{
+            .cmd_name = "gen-key",
+            .cmd_description = "Generate a WPA Key.",
+            .sub_descriptions = &.{
+                .{ "ssid", "WiFi Network SSID." },
+                .{ "passphrase", "WiFi Network Passphrase." },
+                .{ "protocol", "WiFi Network Security Protocol." },
+            },
+        }),
     },
     .opts = &.{
         .{
