@@ -1,0 +1,7 @@
+**.sw?
+*zig-cache/**
+zig-out/**
+bin/**
+commit_msg
+Session*.*vim
+docs/**

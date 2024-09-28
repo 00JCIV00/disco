@@ -1,0 +1,21 @@
+.{
+    .name = "shaggy",
+    .version = "0.1.0",
+
+    .dependencies = .{
+        .cova = .{
+            .url = "https://github.com/00JCIV00/cova/archive/refs/tags/v0.10.1-beta.tar.gz",
+            .hash = "12202782cc66e88f0c15b9acea9d6d1d50dbe941d68b5297927243f6d0377dbb1123",
+        },
+        .vaxis = .{
+            .url = "https://github.com/00JCIV00/libvaxis/archive/main.tar.gz",
+            .hash = "1220bc795f976171f73c8b04e1531bc1dec036adaf0fba192523ecc5484052e29fbb",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
