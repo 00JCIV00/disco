@@ -16,15 +16,18 @@ const testing = std.testing;
 const time = std.time;
 
 const cova = @import("cova");
+const nl = @import("nl.zig");
 
 /// The Cova Command Type for DisCo.
 pub const CommandT = cova.Command.Custom(.{
     .global_help_prefix = "DisCo",
+    .help_category_order = &.{ .Prefix, .Usage, .Header, .Aliases, .Examples, .Values, .Options, .Commands },
     .val_config = .{
         .custom_types = &.{
             net.Address,
             fs.File,
             [6]u8,
+            nl.IFF,
         },
         .child_type_parse_fns = &.{
             .{
@@ -60,6 +63,8 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = net.Address, .alias = "ip_address:port" },
             .{ .ChildT = bool, .alias = "toggle" },
             .{ .ChildT = []const u8, .alias = "text" },
+            .{ .ChildT = [6]u8, .alias = "mac_address" },
+            .{ .ChildT = nl.IFF, .alias = "interface_state" },
         }
     }
 });
@@ -68,10 +73,10 @@ const ValueT = CommandT.ValueT;
 /// The Root Setup Command for Coordz
 pub const setup_cmd = CommandT{
     .name = "disco",
-    .description = "\"It wasn't me!\" Discreetly connect to networks.",
+    .description = "Discreetly Connect to networks.",
     .examples = &.{
         "disco wlan0",
-        "disco wlan0 change mac 00:11:22:aa:bb:cc",
+        "disco wlan0 change --mac 00:11:22:aa:bb:cc",
     },
     .sub_cmds_mandatory = false,
     .sub_cmds = &.{
@@ -86,7 +91,6 @@ pub const setup_cmd = CommandT{
                     .short_name = 'm',
                     .val = ValueT.ofType([6]u8, .{
                         .name = "address",
-                        .alias_child_type = "address",
                         .parse_fn = struct{
                             pub fn macParseFn(arg: []const u8, _: mem.Allocator) ![6]u8 {
                                 if (arg.len < 12 or arg.len > 17)
@@ -111,7 +115,23 @@ pub const setup_cmd = CommandT{
                             }
                         }.macParseFn,
                     })
-                }
+                },
+                .{
+                    .name = "state",
+                    .description = "Change the State of the given Interface. (UP or DOWN)",
+                    .long_name = "state",
+                    .short_name = 's',
+                    .val = ValueT.ofType(nl.IFF, .{
+                        .parse_fn = struct {
+                            pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.IFF {
+                                var state_buf: [12]u8 = undefined;
+                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.IFF, arg) orelse error.InvalidState;
+                                const state = ascii.upperString(state_buf[0..], arg[0..@min(arg.len, 12)]);
+                                return meta.stringToEnum(nl.IFF, state) orelse error.InvalidState;
+                            }
+                        }.parseIFF,
+                    }),
+                },
             },
         },
     },

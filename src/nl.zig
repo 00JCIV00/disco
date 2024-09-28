@@ -33,6 +33,21 @@ pub const NetlinkError = extern struct {
     nlh: os.linux.nlmsghdr,
 };
 
+/// Interface Flags (IFF)
+pub const IFF = enum(u32) {
+    DOWN = 0,
+    UP = 1,
+    BROADCAST = 1 << 1,
+    DEBUG = 1 << 2,
+    LOOPBACK = 1 << 3,
+    POINTOPOINT = 1 << 4,
+    RUNNING = 1 << 6,
+    NOARP = 1 << 7,
+    PROMISC = 1 << 8,
+    ALLMULTI = 1 << 9,
+    MULTICAST = 1 << 12,
+};
+
 /// Send a Netlink Request
 pub fn netlinkRequest(
     /// Raw Netlink Request (Before Length Calculation)
@@ -130,7 +145,7 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
             },
         },
         .{
-            .len = 0,//mem.alignForward(u16, rtattr_len + IFNAMESIZE, 4),
+            .len = 0,
             .type = .IFNAME,
         },
         if_name,
@@ -187,7 +202,7 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
 }
 
 /// Set the provided Interface (`if_index`) to the Up or Down State (`state`).
-pub fn setState(if_index: i32, state: enum{ down, up }) !void {
+pub fn setState(if_index: i32, state: IFF) !void {
     const nl_sock = try netlinkRequest(
         .{
             .nlh = .{
@@ -200,7 +215,7 @@ pub fn setState(if_index: i32, state: enum{ down, up }) !void {
             .ifi = .{
                 .family = AF.UNSPEC,
                 .index = if_index,
-                .change = 1, // IFF UP
+                .change = @intFromEnum(IFF.UP), 
                 .flags = @intFromEnum(state),
                 .type = 0,
             },
@@ -214,7 +229,7 @@ pub fn setState(if_index: i32, state: enum{ down, up }) !void {
 
 /// Change the MAC (`mac`) of the provided Interface (`if_index`).
 pub fn changeMAC(if_index: i32, mac: [6]u8) !void {
-    try setState(if_index, .down);
+    try setState(if_index, .DOWN);
     const nl_mac_sock = try netlinkRequest(
         .{
             .nlh = .{
@@ -240,7 +255,7 @@ pub fn changeMAC(if_index: i32, mac: [6]u8) !void {
         6,
     );
     try handleNetlinkAck(nl_mac_sock);
-    try setState(if_index, .up);
+    try setState(if_index, .UP);
 }
 
 /// Get All Interface Details (WIP)
