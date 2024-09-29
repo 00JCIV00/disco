@@ -82,14 +82,15 @@ pub const setup_cmd = CommandT{
         "disco wlan0 change --mac 00:11:22:aa:bb:cc",
     },
     .sub_cmds_mandatory = false,
+    .vals_mandatory = false,
     .sub_cmds = &.{
         .{
-            .name = "change",
-            .description = "Change a Connection attribute.",
+            .name = "set",
+            .description = "Set a Connection attribute.",
             .opts = &.{
                 .{
                     .name = "mac",
-                    .description = "Change the MAC Address of the given Interface.",
+                    .description = "Set the MAC Address of the given Interface.",
                     .long_name = "mac",
                     .short_name = 'm',
                     .val = ValueT.ofType([6]u8, .{
@@ -121,7 +122,7 @@ pub const setup_cmd = CommandT{
                 },
                 .{
                     .name = "state",
-                    .description = "Change the State of the given Interface. (UP or DOWN)",
+                    .description = "Set the State of the given Interface. (UP or DOWN)",
                     .long_name = "state",
                     .short_name = 's',
                     .val = ValueT.ofType(nl.IFF, .{
@@ -152,9 +153,9 @@ pub const setup_cmd = CommandT{
             .cmd_name = "gen-key",
             .cmd_description = "Generate a WPA Key.",
             .sub_descriptions = &.{
+                .{ "protocol", "WiFi Network Security Protocol." },
                 .{ "ssid", "WiFi Network SSID." },
                 .{ "passphrase", "WiFi Network Passphrase." },
-                .{ "protocol", "WiFi Network Security Protocol." },
             },
         }),
     },

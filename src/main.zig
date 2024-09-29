@@ -46,10 +46,6 @@ pub fn main() !void {
             error.UnrecognizedArgument,
             error.UnexpectedArgument,
             error.CouldNotParseOption => {},
-            error.ExpectedMoreValues => {
-                try stdout_file.print("DisCo needs to know which interface to use. (Ex: disco wlan0)\n", .{});
-                return;
-            },
             else => |parse_err| return parse_err,
         }
     };
@@ -58,8 +54,42 @@ pub fn main() !void {
     //const main_opts = try main_cmd.getOpts(.{});
     const main_vals = try main_cmd.getVals(.{});
 
+    // No Interface
+    // - Generate Key
+    if (main_cmd.matchSubCmd("gen-key")) |gen_key_cmd| {
+        const gen_key_vals = try gen_key_cmd.getVals(.{});
+        const key = try gen_key_cmd.callAs(wpa.genKey, null, [32]u8);
+        var key_buf: [64]u8 = undefined;
+        const end: usize = switch (try (gen_key_vals.get("protocol").?).getAs(wpa.Protocol)) {
+            .wpa2 => 32,
+            .wep => 13,
+            else => 0,
+        };
+        for (key[0..end], 0..) |byte, idx| _ = try fmt.bufPrint(key_buf[(idx * 2)..(idx * 2 + 2)], "{X:0<2}", .{ byte });
+        try stdout.print(
+            \\Generated Key:
+            \\ - Protocol:   {s}
+            \\ - SSID:       {s}
+            \\ - Passphrase: {s}
+            \\ - Key:        {s}
+            \\
+            \\
+            , .{
+                @tagName(try (gen_key_vals.get("protocol").?).getAs(wpa.Protocol)),
+                try (gen_key_vals.get("ssid").?).getAs([]const u8),
+                try (gen_key_vals.get("passphrase").?).getAs([]const u8),
+                key_buf[0..],
+            }
+        );
+        try stdout_bw.flush();
+        return;
+    }
+
     // Interface
-    const if_name = try (main_vals.get("interface").?).getAs([]const u8);
+    const if_name = (main_vals.get("interface").?).getAs([]const u8) catch {
+        try stdout_file.print("DisCo needs to know which interface to use. (Ex: disco wlan0)\n", .{});
+        return;
+    };
     var net_if = NetworkInterface.get(if_name) catch |err| switch (err) {
         error.NoInterfaceFound => {
             log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
@@ -69,20 +99,20 @@ pub fn main() !void {
     };
 
     // Single Use
-    // - Change
-    if (main_cmd.matchSubCmd("change")) |change_cmd| {
+    // - Set
+    if (main_cmd.matchSubCmd("set")) |change_cmd| {
         rootCheck(stdout_file.any());
         const change_opts = try change_cmd.getOpts(.{});
         if (change_opts.get("mac")) |mac_opt| changeMAC: {
-            try stdout_file.print("Changing the MAC for {s}...\n", .{ if_name });
+            try stdout_file.print("Setting the MAC for {s}...\n", .{ if_name });
             const new_mac = mac_opt.val.getAs([6]u8) catch break :changeMAC;
             nl.changeMAC(net_if.idx, new_mac) catch |err| switch (err) {
                 error.BUSY => {
-                    log.err("The interface '{s}' is busy so the MAC could not be changed.", .{ if_name });
+                    log.err("The interface '{s}' is busy so the MAC could not be set.", .{ if_name });
                     return;
                 },
                 else => {
-                    log.err("Netlink request error. The MAC for interface '{s}' could not be changed.", .{ if_name });
+                    log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ if_name });
                     return;
                 },
             };
@@ -92,50 +122,36 @@ pub fn main() !void {
                 const end = start + 2;
                 _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
             }
-            try stdout_file.print("Changed the MAC for {s} to {s}.\n", .{ if_name, mac_buf });
+            try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ if_name, mac_buf });
         }
         if (change_opts.get("state")) |state_opt| changeState: {
-            try stdout_file.print("Changing the State for {s}...\n", .{ if_name });
+            try stdout_file.print("Setting the State for {s}...\n", .{ if_name });
             const new_state = state_opt.val.getAs(nl.IFF) catch break :changeState;
             nl.setState(net_if.idx, new_state) catch |err| switch (err) {
                 error.BUSY => {
-                    log.err("The interface '{s}' is busy so the State could not be changed.", .{ if_name });
+                    log.err("The interface '{s}' is busy so the State could not be set.", .{ if_name });
                     return;
                 },
                 else => {
-                    log.err("Netlink request error. The State for interface '{s}' could not be changed.", .{ if_name });
+                    log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ if_name });
                     return;
                 },
             };
-            try stdout_file.print("Changed the State for {s} to {s}.\n", .{ if_name, @tagName(new_state) });
+            try stdout_file.print("Set the State for {s} to {s}.\n", .{ if_name, @tagName(new_state) });
         }
         net_if = try NetworkInterface.get(if_name);
-    }
-    // - Generate Key
-    if (main_cmd.matchSubCmd("gen-key")) |gen_key_cmd| {
-        const gen_key_vals = try gen_key_cmd.getVals(.{});
-        const key = try gen_key_cmd.callAs(wpa.genKey, null, [32]u8);
-        try stdout.print(
-            \\Generated Key:
-            \\ - Protocol:   {s}
-            \\ - SSID:       {s}
-            \\ - Passphrase: {s}
-            \\
-            , .{
-                @tagName(try (gen_key_vals.get("val-02").?).getAs(wpa.Protocol)),
-                try (gen_key_vals.get("val-00").?).getAs([]const u8),
-                try (gen_key_vals.get("val-01").?).getAs([]const u8),
-            }
-        );
-        var key_buf: [64]u8 = undefined;
-        for (key[0..], 0..) |byte, idx| _ = try fmt.bufPrint(key_buf[(idx * 2)..(idx * 2 + 2)], "{X:0<2}", .{ byte });
-        try stdout.print(" - Key:        {s}\n\n", .{ key_buf[0..] });
-        try stdout_bw.flush();
     }
 
     // Interface Details
     try stdout.print("{s} Interface Details:\n", .{ if_name });
-    try json.stringify(net_if, .{ .whitespace = .indent_4, .emit_null_optional_fields = false }, stdout);
+    try json.stringify(
+        net_if, 
+        .{ 
+            .whitespace = .indent_4, 
+            .emit_null_optional_fields = false,
+        },
+        stdout,
+    );
     //try stdout.print("{}", .{ net_if });
     try stdout.print("\n", .{});
     try stdout_bw.flush();
