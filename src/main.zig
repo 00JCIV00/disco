@@ -13,6 +13,7 @@ const cli = @import("cli.zig");
 
 const art = @import("art.zig");
 const nl = @import("nl.zig");
+const sys = @import("sys.zig");
 const wpa = @import("wpa.zig");
 
 const NetworkInterface = @import("NetworkInterface.zig");
@@ -54,7 +55,7 @@ pub fn main() !void {
     //const main_opts = try main_cmd.getOpts(.{});
     const main_vals = try main_cmd.getVals(.{});
 
-    // No Interface
+    // No Interface Needed
     // - Generate Key
     if (main_cmd.matchSubCmd("gen-key")) |gen_key_cmd| {
         const gen_key_vals = try gen_key_cmd.getVals(.{});
@@ -86,84 +87,116 @@ pub fn main() !void {
     }
 
     // Interface
-    const if_name = (main_vals.get("interface").?).getAs([]const u8) catch {
-        try stdout_file.print("DisCo needs to know which interface to use. (Ex: disco wlan0)\n", .{});
-        return;
-    };
-    var net_if = NetworkInterface.get(if_name) catch |err| switch (err) {
-        error.NoInterfaceFound => {
-            log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
-            return;
-        },
-        else => return err,
+    var raw_net_if = netIF: {
+        const if_name = (main_vals.get("interface").?).getAs([]const u8) catch break :netIF null;
+        break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
+            error.NoInterfaceFound => {
+                log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
+                return;
+            },
+            else => return err,
+        };
     };
 
     // Single Use
     // - Set
-    if (main_cmd.matchSubCmd("set")) |change_cmd| {
-        rootCheck(stdout_file.any());
-        const change_opts = try change_cmd.getOpts(.{});
-        if (change_opts.get("mac")) |mac_opt| changeMAC: {
-            try stdout_file.print("Setting the MAC for {s}...\n", .{ if_name });
-            const new_mac = mac_opt.val.getAs([6]u8) catch break :changeMAC;
-            nl.changeMAC(net_if.idx, new_mac) catch |err| switch (err) {
-                error.BUSY => {
-                    log.err("The interface '{s}' is busy so the MAC could not be set.", .{ if_name });
-                    return;
-                },
-                else => {
-                    log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ if_name });
-                    return;
-                },
-            };
-            var mac_buf: [17]u8 = .{ ':' } ** 17;
-            for (new_mac, 0..6) |byte, idx| {
-                const start = if (idx == 0) 0 else idx * 3;
-                const end = start + 2;
-                _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
+    if (main_cmd.matchSubCmd("set")) |set_cmd| {
+        checkRoot(stdout_file.any());
+        const set_opts = try set_cmd.getOpts(.{});
+        if (set_opts.get("hostname")) |hn_opt| newHN: {
+            const new_hn = hn_opt.val.getAs([]const u8) catch break :newHN;
+            try stdout_file.print("Setting the hostname to {s}...\n", .{ new_hn });
+            try sys.setHostName(new_hn);
+        }
+        // Set Interface
+        if (set_cmd.matchSubCmd("if")) |set_if_cmd| {
+            checkIF(raw_net_if, stdout_file.any());
+            const net_if: NetworkInterface = raw_net_if.?;
+            const set_if_opts = try set_if_cmd.getOpts(.{});
+            if (set_if_opts.get("mac")) |mac_opt| changeMAC: {
+                try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
+                const new_mac = mac_opt.val.getAs([6]u8) catch break :changeMAC;
+                nl.setMAC(net_if.idx, new_mac) catch |err| switch (err) {
+                    error.BUSY => {
+                        log.err("The interface '{s}' is busy so the MAC could not be set.", .{ net_if.name });
+                        return;
+                    },
+                    else => {
+                        log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ net_if.name });
+                        return;
+                    },
+                };
+                var mac_buf: [17]u8 = .{ ':' } ** 17;
+                for (new_mac, 0..6) |byte, idx| {
+                    const start = if (idx == 0) 0 else idx * 3;
+                    const end = start + 2;
+                    _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
+                }
+                try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, mac_buf });
             }
-            try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ if_name, mac_buf });
+            if (set_if_opts.get("state")) |state_opt| changeState: {
+                try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
+                const new_state = state_opt.val.getAs(nl.IFF) catch break :changeState;
+                nl.setState(net_if.idx, new_state) catch |err| switch (err) {
+                    error.BUSY => {
+                        log.err("The interface '{s}' is busy so the State could not be set.", .{ net_if.name });
+                        return;
+                    },
+                    else => {
+                        log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ net_if.name });
+                        return;
+                    },
+                };
+                try stdout_file.print("Set the State for {s} to {s}.\n", .{ net_if.name, @tagName(new_state) });
+            }
+            raw_net_if = try NetworkInterface.get(net_if.name);
         }
-        if (change_opts.get("state")) |state_opt| changeState: {
-            try stdout_file.print("Setting the State for {s}...\n", .{ if_name });
-            const new_state = state_opt.val.getAs(nl.IFF) catch break :changeState;
-            nl.setState(net_if.idx, new_state) catch |err| switch (err) {
-                error.BUSY => {
-                    log.err("The interface '{s}' is busy so the State could not be set.", .{ if_name });
-                    return;
-                },
-                else => {
-                    log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ if_name });
-                    return;
-                },
-            };
-            try stdout_file.print("Set the State for {s} to {s}.\n", .{ if_name, @tagName(new_state) });
-        }
-        net_if = try NetworkInterface.get(if_name);
     }
 
-    // Interface Details
-    try stdout.print("{s} Interface Details:\n", .{ if_name });
-    try json.stringify(
-        net_if, 
-        .{ 
-            .whitespace = .indent_4, 
-            .emit_null_optional_fields = false,
+    // System Details
+    var hn_buf: [64]u8 = .{ 0 } ** 64;
+    const hostname = try posix.gethostname(hn_buf[0..]);
+    try stdout.print(
+        \\System Details:
+        \\ - Hostname: {s}
+        \\
+        \\
+        , .{
+            hostname,
         },
-        stdout,
     );
-    //try stdout.print("{}", .{ net_if });
+    // Interface Details
+    if (raw_net_if) |net_if| {
+        try stdout.print("Interface Details:\n", .{});
+        try json.stringify(
+            net_if, 
+            .{ 
+                .whitespace = .indent_4, 
+                .emit_null_optional_fields = false,
+            },
+            stdout,
+        );
+    }
     try stdout.print("\n", .{});
     try stdout_bw.flush();
 
 }
 
-/// Root Check
-fn rootCheck(stdout: io.AnyWriter) void {
+/// Chec for Root 
+fn checkRoot(stdout: io.AnyWriter) void {
     if (os.linux.getuid() != 0) {
         stdout.print("{s}\n\n                          DisCo must be run as sudo!\n", .{ art.sudo }) catch { 
             log.err("DisCo must be run as sudo! (There was also an issue writing to stdout.)", .{});
         };
         process.exit(1);
     }
+}
+
+/// Check that there's an Interface
+fn checkIF(net_if: ?NetworkInterface, stdout: io.AnyWriter) void {
+    if (net_if) |_| return;
+    stdout.print("{s}\n\n   DisCo needs to know which interface to use. (Ex: disco wlan0)\n", .{ art.wifi_card }) catch {
+        log.err("DisCo needs to know which interface to use. (Ex: disco wlan0)", .{});
+    };
+    process.exit(0);
 }

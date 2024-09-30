@@ -79,7 +79,7 @@ pub const setup_cmd = CommandT{
     .description = "Discreetly Connect to networks.",
     .examples = &.{
         "disco wlan0",
-        "disco wlan0 change --mac 00:11:22:aa:bb:cc",
+        "disco wlan0 set if --mac 00:11:22:aa:bb:cc",
     },
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
@@ -87,56 +87,72 @@ pub const setup_cmd = CommandT{
         .{
             .name = "set",
             .description = "Set a Connection attribute.",
-            .opts = &.{
+            .sub_cmds_mandatory = false,
+            .sub_cmds = &.{
                 .{
-                    .name = "mac",
-                    .description = "Set the MAC Address of the given Interface.",
-                    .long_name = "mac",
-                    .short_name = 'm',
-                    .val = ValueT.ofType([6]u8, .{
-                        .name = "address",
-                        .parse_fn = struct{
-                            pub fn macParseFn(arg: []const u8, _: mem.Allocator) ![6]u8 {
-                                if (arg.len < 12 or arg.len > 17)
-                                    return error.AddressNotValid;
-                                var text_buf: [12]u8 = undefined;
-                                var idx: usize = 0;
-                                for (arg) |c| {
-                                    if (mem.indexOfScalar(u8, "-_: ", c) != null) 
-                                        continue;
-                                    if (mem.indexOfScalar(u8, "0123456789abcdefABCDEF", c) == null) 
-                                        return error.InvalidMAC;
-                                    text_buf[idx] = if (c >= 'A' or c < 'a') c else c + 32;
-                                    idx += 1;
-                                }
-                                var addr_buf: [6]u8 = undefined;
-                                for (addr_buf[0..], 0..) |*byte, addr_idx| {
-                                    const start = addr_idx * 2;
-                                    const end = start + 2;
-                                    byte.* = try fmt.parseInt(u8, text_buf[start..end], 16);
-                                }
-                                return addr_buf;
-                            }
-                        }.macParseFn,
-                    })
-                },
-                .{
-                    .name = "state",
-                    .description = "Set the State of the given Interface. (UP or DOWN)",
-                    .long_name = "state",
-                    .short_name = 's',
-                    .val = ValueT.ofType(nl.IFF, .{
-                        .parse_fn = struct {
-                            pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.IFF {
-                                var state_buf: [12]u8 = undefined;
-                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.IFF, arg) orelse error.InvalidState;
-                                const state = ascii.upperString(state_buf[0..], arg[0..@min(arg.len, 12)]);
-                                return meta.stringToEnum(nl.IFF, state) orelse error.InvalidState;
-                            }
-                        }.parseIFF,
-                    }),
+                    .name = "if",
+                    .description = "Set a Connection attribute for the specified Interface.",
+                    .opts = &.{
+                        .{
+                            .name = "mac",
+                            .description = "Set the MAC Address of the given Interface.",
+                            .long_name = "mac",
+                            .short_name = 'm',
+                            .val = ValueT.ofType([6]u8, .{
+                                .name = "address",
+                                .parse_fn = struct{
+                                    pub fn macParseFn(arg: []const u8, _: mem.Allocator) ![6]u8 {
+                                        if (arg.len < 12 or arg.len > 17)
+                                            return error.AddressNotValid;
+                                        var text_buf: [12]u8 = undefined;
+                                        var idx: usize = 0;
+                                        for (arg) |c| {
+                                            if (mem.indexOfScalar(u8, "-_: ", c) != null) 
+                                                continue;
+                                            if (mem.indexOfScalar(u8, "0123456789abcdefABCDEF", c) == null) 
+                                                return error.InvalidMAC;
+                                            text_buf[idx] = if (c >= 'A' or c < 'a') c else c + 32;
+                                            idx += 1;
+                                        }
+                                        var addr_buf: [6]u8 = undefined;
+                                        for (addr_buf[0..], 0..) |*byte, addr_idx| {
+                                            const start = addr_idx * 2;
+                                            const end = start + 2;
+                                            byte.* = try fmt.parseInt(u8, text_buf[start..end], 16);
+                                        }
+                                        return addr_buf;
+                                    }
+                                }.macParseFn,
+                            })
+                        },
+                        .{
+                            .name = "state",
+                            .description = "Set the State of the given Interface. (UP or DOWN)",
+                            .long_name = "state",
+                            .short_name = 's',
+                            .val = ValueT.ofType(nl.IFF, .{
+                                .parse_fn = struct {
+                                    pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.IFF {
+                                        var state_buf: [12]u8 = undefined;
+                                        if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.IFF, arg) orelse error.InvalidState;
+                                        const state = ascii.upperString(state_buf[0..], arg[0..@min(arg.len, 12)]);
+                                        return meta.stringToEnum(nl.IFF, state) orelse error.InvalidState;
+                                    }
+                                }.parseIFF,
+                            }),
+                        },
+                    },
                 },
             },
+            .opts = &.{
+                .{
+                    .name = "hostname",
+                    .description = "Set a new Hostname.",
+                    .long_name = "hostname",
+                    .short_name = 'H',
+                    .val = ValueT.ofType([]const u8, .{}),
+                }
+            }
         },
         .{
             .name = "connect",
@@ -145,7 +161,9 @@ pub const setup_cmd = CommandT{
                 .{
                     .name = "security",
                     .description = "Set the WiFi Secruity Protocol.",
-                    .val = ValueT.ofType(wpa.Protocol, .{}),
+                    .long_name = "security",
+                    .short_name = 's',
+                    .val = ValueT.ofType(wpa.Protocol, .{ .default_val = .wpa2 }),
                 }
             },
         },
