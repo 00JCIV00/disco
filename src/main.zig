@@ -109,14 +109,14 @@ pub fn main() !void {
             try sys.setHostName(new_hn);
         }
         // Set Interface
-        if (set_cmd.matchSubCmd("if")) |set_if_cmd| {
+        if (set_cmd.matchSubCmd("interface")) |set_if_cmd| {
             checkIF(raw_net_if, stdout_file.any());
             const net_if: NetworkInterface = raw_net_if.?;
             const set_if_opts = try set_if_cmd.getOpts(.{});
             if (set_if_opts.get("mac")) |mac_opt| changeMAC: {
                 try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
                 const new_mac = mac_opt.val.getAs([6]u8) catch break :changeMAC;
-                nl.setMAC(net_if.idx, new_mac) catch |err| switch (err) {
+                nl.route.setMAC(net_if.idx, new_mac) catch |err| switch (err) {
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the MAC could not be set.", .{ net_if.name });
                         return;
@@ -136,8 +136,8 @@ pub fn main() !void {
             }
             if (set_if_opts.get("state")) |state_opt| changeState: {
                 try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
-                const new_state = state_opt.val.getAs(nl.IFF) catch break :changeState;
-                nl.setState(net_if.idx, new_state) catch |err| switch (err) {
+                const new_state = state_opt.val.getAs(nl.route.IFF) catch break :changeState;
+                nl.route.setState(net_if.idx, new_state) catch |err| switch (err) {
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the State could not be set.", .{ net_if.name });
                         return;
@@ -149,7 +149,58 @@ pub fn main() !void {
                 };
                 try stdout_file.print("Set the State for {s} to {s}.\n", .{ net_if.name, @tagName(new_state) });
             }
+            if (set_if_opts.get("mode")) |mode_opt| changeMode: {
+                try stdout_file.print("Setting the Mode for {s}...\n", .{ net_if.name });
+                const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :changeMode;
+                nl._80211.setMode(net_if.idx, new_mode) catch |err| switch (err) {
+                    error.BUSY => {
+                        log.err("The interface '{s}' is busy so the Mode could not be set.", .{ net_if.name });
+                        return;
+                    },
+                    else => {
+                        log.err("Netlink request error. The Mode for interface '{s}' could not be set.", .{ net_if.name });
+                        return;
+                    },
+                };
+                try stdout_file.print("Set the Mode for {s} to {s}.\n", .{ net_if.name, @tagName(new_mode) });
+            }
             raw_net_if = try NetworkInterface.get(net_if.name);
+        }
+    }
+    if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
+        checkRoot(stdout_file.any());
+        checkIF(raw_net_if, stdout_file.any());
+        const net_if: NetworkInterface = raw_net_if.?;
+        const connect_vals = try connect_cmd.getVals(.{});
+        const connect_opts = try connect_cmd.getOpts(.{});
+        const ssid = (connect_vals.get("ssid").?).getAs([]const u8) catch {
+            log.err("DisCo needs to know the SSID of the network to connect.", .{});
+            return;
+        };
+        const security,
+        const pass = security: {
+            const security = try (connect_opts.get("security").?).val.getAs(wpa.Protocol);
+            break :security switch (security) {
+                .open => .{ security, "" },
+                .wep, .wpa2 => .{
+                    security,
+                    (connect_opts.get("passphrase").?).val.getAs([]const u8) catch {
+                        log.err("The {s} protocol requires a passhprase.", .{ @tagName(security) });
+                        return;
+                    }
+                },
+            };
+        };
+        try stdout_file.print("Connecting to {s}...\n", .{ ssid });
+        switch (security) {
+            .open, .wep => {
+                log.info("WIP!", .{});
+                return;
+            },
+            .wpa2 => {
+                const pmk = try wpa.genKey(.wpa2, ssid, pass);
+                try nl._80211.connectWPA2(net_if.idx, ssid, pmk[0..]);
+            }, 
         }
     }
 
@@ -182,7 +233,7 @@ pub fn main() !void {
 
 }
 
-/// Chec for Root 
+/// Check for Root 
 fn checkRoot(stdout: io.AnyWriter) void {
     if (os.linux.getuid() != 0) {
         stdout.print("{s}\n\n                          DisCo must be run as sudo!\n", .{ art.sudo }) catch { 

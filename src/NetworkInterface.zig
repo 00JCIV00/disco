@@ -24,7 +24,7 @@ rxq: ?u16 = null,
 pub fn get(name: []const u8) !@This() {
     var net_if: @This() = undefined;
     net_if.name = name;
-    net_if.idx = try nl.getIfIdx(name);
+    net_if.idx = try nl.route.getIfIdx(name);
     net_if.phy = null;
     net_if.ips = null;
     net_if.ch = null;
@@ -32,6 +32,8 @@ pub fn get(name: []const u8) !@This() {
     net_if.rxq = null;
 
     const nl_sock = try nl.netlinkRequest(
+        os.linux.NETLINK.ROUTE,
+        nl.route.Request,
         .{
             .nlh = .{
                 .len = 0,
@@ -48,9 +50,11 @@ pub fn get(name: []const u8) !@This() {
                 .flags = 0,
             },
         },
-        null,
-        null,
+        os.linux.rtattr,
         0,
+        .{},
+        .{},
+        .{},
     );
     defer posix.close(nl_sock);
 
@@ -87,11 +91,11 @@ pub fn get(name: []const u8) !@This() {
         }
         if (nl_resp_hdr.type == .RTM_NEWLINK) {
             start = end + @sizeOf(os.linux.ifinfomsg);
-            end += @sizeOf(os.linux.ifinfomsg) + nl.rtattr_len;
+            end += @sizeOf(os.linux.ifinfomsg) + nl.route.attr_len;
             while (end < offset + nl_resp_hdr.len) {
                 const attr: *const os.linux.rtattr = @alignCast(@ptrCast(resp_buf[start..end]));
                 start = end;
-                end += (attr.len -| nl.rtattr_len);
+                end += (attr.len -| nl.route.attr_len);
                 switch (attr.type) {
                     .ADDRESS => {
                         @memcpy(net_if.mac[0..], resp_buf[start..start + 6]);
@@ -105,7 +109,7 @@ pub fn get(name: []const u8) !@This() {
                 }
                 end = mem.alignForward(usize, end, 4);
                 start = end;
-                end += nl.rtattr_len;
+                end += nl.route.attr_len;
             }
         }
         offset += mem.alignForward(usize, nl_resp_hdr.len, 4);

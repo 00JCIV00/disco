@@ -28,7 +28,8 @@ pub const CommandT = cova.Command.Custom(.{
             net.Address,
             fs.File,
             [6]u8,
-            nl.IFF,
+            nl.route.IFF,
+            nl._80211.IFTYPE,
             wpa.Protocol,
         },
         .child_type_parse_fns = &.{
@@ -66,7 +67,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = bool, .alias = "toggle" },
             .{ .ChildT = []const u8, .alias = "text" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
-            .{ .ChildT = nl.IFF, .alias = "interface_state" },
+            .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
         }
     }
@@ -90,7 +91,8 @@ pub const setup_cmd = CommandT{
             .sub_cmds_mandatory = false,
             .sub_cmds = &.{
                 .{
-                    .name = "if",
+                    .name = "interface",
+                    .alias_names = &.{ "if" },
                     .description = "Set a Connection attribute for the specified Interface.",
                     .opts = &.{
                         .{
@@ -130,17 +132,33 @@ pub const setup_cmd = CommandT{
                             .description = "Set the State of the given Interface. (UP or DOWN)",
                             .long_name = "state",
                             .short_name = 's',
-                            .val = ValueT.ofType(nl.IFF, .{
+                            .val = ValueT.ofType(nl.route.IFF, .{
                                 .parse_fn = struct {
-                                    pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.IFF {
+                                    pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.route.IFF {
                                         var state_buf: [12]u8 = undefined;
-                                        if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.IFF, arg) orelse error.InvalidState;
+                                        if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.route.IFF, arg) orelse error.InvalidState;
                                         const state = ascii.upperString(state_buf[0..], arg[0..@min(arg.len, 12)]);
-                                        return meta.stringToEnum(nl.IFF, state) orelse error.InvalidState;
+                                        return meta.stringToEnum(nl.route.IFF, state) orelse error.InvalidState;
                                     }
                                 }.parseIFF,
                             }),
                         },
+                        .{
+                            .name = "mode",
+                            .description = "Set the Mode of the given Interface. (MONITOR, STATION, AP, etc)",
+                            .long_name = "mode",
+                            .short_name = 'M',
+                            .val = ValueT.ofType(nl._80211.IFTYPE, .{
+                                .parse_fn = struct {
+                                    pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl._80211.IFTYPE {
+                                        var mode_buf: [12]u8 = undefined;
+                                        if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl._80211.IFTYPE, arg) orelse error.Invalidmode;
+                                        const mode = ascii.upperString(mode_buf[0..], arg[0..@min(arg.len, 12)]);
+                                        return meta.stringToEnum(nl._80211.IFTYPE, mode) orelse error.InvalidMode;
+                                    }
+                                }.parseIFF,
+                            }),
+                        }
                     },
                 },
             },
@@ -159,12 +177,36 @@ pub const setup_cmd = CommandT{
             .description = "Connect to a WiFi Network.",
             .opts = &.{
                 .{
+                    .name = "passphrase",
+                    .description = "Set the Passhprase for the Network. (Between 8-63 characters)",
+                    .long_name = "passphrase",
+                    .short_name = 'p',
+                    .val = ValueT.ofType([]const u8, .{
+                        .valid_fn = struct {
+                            pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
+                                return arg.len >= 8 and arg.len <= 63;
+                            }
+                        }.validPass,
+                    }),
+                },
+                .{
                     .name = "security",
-                    .description = "Set the WiFi Secruity Protocol.",
+                    .description = "Set the WiFi Secruity Protocol. (open, wep, or wpa2 | Default = wpa2)",
                     .long_name = "security",
                     .short_name = 's',
                     .val = ValueT.ofType(wpa.Protocol, .{ .default_val = .wpa2 }),
                 }
+            },
+            .vals = &.{
+                ValueT.ofType([]const u8, .{
+                    .name = "ssid",
+                    .description = "Set the SSID of the Network. (Up to 32 characters)",
+                    .valid_fn = struct {
+                        pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
+                            return arg.len <= 32;
+                        }
+                    }.validPass,
+                }),
             },
         },
         CommandT.from(@TypeOf(wpa.genKey), .{
