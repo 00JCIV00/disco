@@ -5,3 +5,4 @@ bin/**
 commit_msg
 Session*.*vim
 docs/**
+aux/**
