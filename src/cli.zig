@@ -180,6 +180,7 @@ pub const setup_cmd = CommandT{
                     .name = "passphrase",
                     .description = "Set the Passhprase for the Network. (Between 8-63 characters)",
                     .long_name = "passphrase",
+                    .alias_long_names = &.{ "password", "pwd" },
                     .short_name = 'p',
                     .val = ValueT.ofType([]const u8, .{
                         .valid_fn = struct {
