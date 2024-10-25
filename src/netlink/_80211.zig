@@ -954,7 +954,7 @@ pub const InformationElements = struct {
                 GCMP_256 = 0x09,
             };
             /// Authentication Key Management (AKM) Suite Selectors
-            pub const AKMSuiteSelectors = enum(u8) {
+            pub const AKM = enum(u8) {
                 /// WPA2 PSK (Pre-Shared Key)
                 PSK = 0x02,
                 /// 802.1X (Enterprise) authentication (used with EAP)
@@ -1084,6 +1084,52 @@ pub const InformationElements = struct {
     VHT_OPERATION: ?[]const u8 = null,
     /// Vendor Specific
     VENDOR_SPECIFIC: ?[]const []const u8 = null,
+};
+
+pub const AKM_SUITES = enum(u32) {
+    /// WPA2-PSK (Pre-Shared Key)
+    PSK = 0x000FAC02,
+    /// 802.1X (used in WPA2/WPA3 Enterprise)
+    EAP = 0x000FAC01,
+    /// Fast BSS Transition (802.11r) with PSK
+    FT_PSK = 0x000FAC03,
+    /// Fast BSS Transition (802.11r) with EAP
+    FT_EAP = 0x000FAC04,
+    /// Simultaneous Authentication of Equals (SAE), used in WPA3-Personal
+    SAE = 0x000FAC08,
+    /// Suite B-192, used in WPA3-Enterprise for high-security environments
+    SUITE_B_192 = 0x000FAC0C,
+    /// Opportunistic Wireless Encryption (OWE), used for open networks with encryption
+    OWE = 0x000FAC12,
+    /// DPP (Device Provisioning Protocol), used in WPA3 for easy device onboarding
+    DPP = 0x000FAC14,
+};
+
+pub const CIPHER_SUITES = enum(u32) {
+    /// No encryption (open network)
+    NONE = 0x00000000,
+    /// WEP-40 encryption (insecure, deprecated)
+    WEP40 = 0x000FAC01,
+    /// TKIP (Temporal Key Integrity Protocol), used in WPA (insecure)
+    TKIP = 0x000FAC02,
+    /// AES-CCMP (Counter Mode with Cipher Block Chaining Message Authentication Code Protocol), used in WPA2/WPA3
+    CCMP = 0x000FAC04,
+    /// WEP-104 encryption (insecure, deprecated)
+    WEP104 = 0x000FAC05,
+    /// AES-GCMP (Galois/Counter Mode Protocol) encryption, used in WPA3
+    GCMP_128 = 0x000FAC08,
+    /// AES-GCMP-256 encryption, used in WPA3 for enhanced security
+    GCMP_256 = 0x000FAC09,
+    ///// Group addressed traffic using AES-CCMP (Group Cipher Suite)
+    //GROUP_CCMP = 0x000FAC04,
+    ///// Group addressed traffic using TKIP (Group Cipher Suite)
+    //GROUP_TKIP = 0x000FAC02,
+    /// BIP-GMAC-128, used for Management Frame Protection (MFP) in WPA3
+    BIP_GMAC_128 = 0x000FAC0B,
+    /// BIP-GMAC-256, used for Management Frame Protection (MFP) in WPA3
+    BIP_GMAC_256 = 0x000FAC0C,
+    /// BIP-CMAC-256, another option for Management Frame Protection (MFP)
+    BIP_CMAC_256 = 0x000FAC0D,
 };
 
 
@@ -1346,12 +1392,155 @@ pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
     // TODO: Check for WEP (somehow) and WPA1 in VENDOR_SPECIFIC
     const rsn = ies.RSN orelse return .OPEN;
     const akms = rsn.AKM_SUITES orelse return .OPEN;
-    return switch (@as(InformationElements.RobustSecurityNetwork.RSN.AKMSuiteSelectors, @enumFromInt(akms[0].TYPE))) {
+    return switch (@as(InformationElements.RobustSecurityNetwork.RSN.AKM, @enumFromInt(akms[0].TYPE))) {
         .PSK => .OPEN,
         .EAP, .SUITE_B_192 => .NETWORK_EAP,
         .SAE => .SAE,
         .FT_EAP, .FT_PSK => .FT,
     };
+}
+
+/// Authenticate to the provided WPA2 Network `ssid`.
+pub fn authWPA2(
+    alloc: mem.Allocator,
+    if_index: i32,
+    ssid: []const u8,
+    scan_results: ScanResults,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const auth_type = determineAuthAlg(scan_results);
+    const bss = scan_results.BSS orelse return error.MissingBSS;
+    const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
+    const bssid = bss.BSSID orelse return error.MissingBSSID;
+
+    const nl_sock = try nl.request(
+        alloc, 
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .genh = .{
+                .cmd = c(CMD).AUTHENTICATE,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).SSID },
+                .data = ssid,
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).AUTH_TYPE },
+                .data = mem.toBytes(@intFromEnum(auth_type))[0..],
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
+                .data = mem.toBytes(WPA.VERSION_2)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
+                .data = mem.toBytes(AKM_SUITES.PSK)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
+                .data = mem.toBytes(wiphy_freq)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = bssid[0..],
+            },
+        },
+    );
+    try nl.handleAck(nl_sock);
+}
+
+/// Associate to the provided WPA2 Network `ssid`.
+pub fn assocWPA2(
+    alloc: mem.Allocator,
+    if_index: i32,
+    ssid: []const u8,
+    scan_results: ScanResults,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const auth_type = determineAuthAlg(scan_results);
+    const bss = scan_results.BSS orelse return error.MissingBSS;
+    const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
+    const bssid = bss.BSSID orelse return error.MissingBSSID;
+    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
+    defer alloc.free(ie_bytes);
+
+    const nl_sock = try nl.request(
+        alloc, 
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .genh = .{
+                .cmd = c(CMD).ASSOCIATE,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).SSID },
+                .data = ssid,
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).AUTH_TYPE },
+                .data = mem.toBytes(@intFromEnum(auth_type))[0..],
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
+                .data = mem.toBytes(WPA.VERSION_2)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
+                .data = mem.toBytes(AKM_SUITES.PSK)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
+                .data = mem.toBytes(wiphy_freq)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = bssid[0..],
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).CIPHER_SUITE_GROUP },
+                .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).CIPHER_SUITES_PAIRWISE },
+                .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).IE, .len = @intCast(ie_bytes.len + nl.attr_hdr_len) },
+                .data = ie_bytes,
+            },
+        },
+    );
+    try nl.handleAck(nl_sock);
 }
 
 /// Connect to a WPA2 Network
@@ -1374,7 +1563,10 @@ pub fn connectWPA2(
     defer nl.parse.freeBytes(alloc, ScanResults, scan_results);
     const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, scan_results.BSS.?.INFORMATION_ELEMENTS.?);
     defer alloc.free(ie_bytes);
-    const auth_type: u32 = @intFromEnum(determineAuthAlg(scan_results));
+    const auth_type = determineAuthAlg(scan_results);
+    try authWPA2(alloc, if_index, ssid, scan_results);
+    time.sleep(100 * time.ns_per_ms);
+    try assocWPA2(alloc, if_index, ssid, scan_results);
     log.debug("IE Bytes Len: {d}B", .{ ie_bytes.len });
     const nl_sock = try nl.request(
         alloc, 
@@ -1404,7 +1596,7 @@ pub fn connectWPA2(
             },
             .{ 
                 .hdr = .{ .type = c(ATTR).AUTH_TYPE },
-                .data = mem.toBytes(auth_type)[0..],
+                .data = mem.toBytes(@intFromEnum(auth_type))[0..],
             },
             .{ 
                 .hdr = .{ .type = c(ATTR).CIPHER_SUITE_GROUP },
