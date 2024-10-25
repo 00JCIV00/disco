@@ -28,6 +28,10 @@ pub fn main() !void {
     defer if (gpa.detectLeaks()) log.err("Memory leak detected!", .{});
     const alloc = gpa.allocator();
 
+    // Get NL80211 Control Info
+    try nl._80211.initCtrlInfo(alloc);
+    defer nl._80211.deinitCtrlInfo(alloc);
+
     // Parse Args
     var main_cmd = try cli.setup_cmd.init(alloc, .{});
     defer main_cmd.deinit();
@@ -116,7 +120,7 @@ pub fn main() !void {
             if (set_if_opts.get("mac")) |mac_opt| changeMAC: {
                 try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
                 const new_mac = mac_opt.val.getAs([6]u8) catch break :changeMAC;
-                nl.route.setMAC(net_if.idx, new_mac) catch |err| switch (err) {
+                nl.route.setMAC(net_if.route_info.index, new_mac) catch |err| switch (err) {
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the MAC could not be set.", .{ net_if.name });
                         return;
@@ -137,7 +141,7 @@ pub fn main() !void {
             if (set_if_opts.get("state")) |state_opt| changeState: {
                 try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
                 const new_state = state_opt.val.getAs(nl.route.IFF) catch break :changeState;
-                nl.route.setState(net_if.idx, new_state) catch |err| switch (err) {
+                nl.route.setState(net_if.route_info.index, @intFromEnum(new_state)) catch |err| switch (err) {
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the State could not be set.", .{ net_if.name });
                         return;
@@ -152,7 +156,7 @@ pub fn main() !void {
             if (set_if_opts.get("mode")) |mode_opt| changeMode: {
                 try stdout_file.print("Setting the Mode for {s}...\n", .{ net_if.name });
                 const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :changeMode;
-                nl._80211.setMode(net_if.idx, new_mode) catch |err| switch (err) {
+                nl._80211.setMode(net_if.route_info.index, @intFromEnum(new_mode)) catch |err| switch (err) {
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the Mode could not be set.", .{ net_if.name });
                         return;
@@ -199,7 +203,7 @@ pub fn main() !void {
             },
             .wpa2 => {
                 const pmk = try wpa.genKey(.wpa2, ssid, pass);
-                try nl._80211.connectWPA2(net_if.idx, ssid, pmk[0..]);
+                try nl._80211.connectWPA2(alloc, net_if.route_info.index, ssid, pmk[0..]);
             }, 
         }
     }
@@ -218,15 +222,13 @@ pub fn main() !void {
     );
     // Interface Details
     if (raw_net_if) |net_if| {
-        try stdout.print("Interface Details:\n", .{});
-        try json.stringify(
-            net_if, 
-            .{ 
-                .whitespace = .indent_4, 
-                .emit_null_optional_fields = false,
-            },
-            stdout,
+        try stdout.print(
+            \\Interface Details:
+            \\{s}
+            \\
+            , .{ net_if }
         );
+
     }
     try stdout.print("\n", .{});
     try stdout_bw.flush();

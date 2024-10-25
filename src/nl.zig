@@ -6,111 +6,193 @@ const json = std.json;
 const log = std.log;
 const math = std.math;
 const mem = std.mem;
+const meta = std.meta;
 const os = std.os;
 const posix = std.posix;
 
 pub const AF = os.linux.AF;
-const NETLINK = os.linux.NETLINK;
+pub const IFLA = os.linux.IFLA;
+pub const NETLINK = os.linux.NETLINK;
 const SOCK = posix.SOCK;
 
 const timeout = mem.toBytes(posix.timeval{ .tv_sec = 3, .tv_usec = 0 });
 
+pub const parse = @import("netlink/parse.zig");
 pub const _80211 = @import("netlink/_80211.zig");
+pub const generic = @import("netlink/generic.zig");
 pub const route = @import("netlink/route.zig");
 
+/// Netlink Socket Options
+pub const NETLINK_OPT = struct {
+    pub const ADD_MEMBERSHIP: u32 = 1;
+    pub const DROP_MEMBERSHIP: u32 = 2;
+    pub const PKTINFO: u32 = 3;
+    pub const BROADCAST_ERROR: u32 = 4;
+    pub const NO_ENOBUFS: u32 = 5;
+    pub const RX_RING: u32 = 6;
+    pub const TX_RING: u32 = 7;
+    pub const LISTEN_ALL_NSID: u32 = 8;
+    pub const LIST_MEMBERSHIPS: u32 = 9;
+    pub const CAP_ACK: u32 = 10;
+    pub const EXT_ACK: u32 = 11;
+    pub const GET_STRICT_CHK: u32 = 12;
+};
 
-/// Netlink Error
-pub const NetlinkError = extern struct {
-    /// Error
+/// Netlink Message Header
+pub const MessageHeader = extern struct {
+    /// Length of the entire Request or Response.
+    len: u32 = 0,
+    /// Request or Response "Type." This will vary in meaning depending on the Netlink Family.
+    type: u16,
+    /// Request/Response Flags
+    flags: u16,
+    /// Sequence ID. This is useful for tracking this Request/Response and others related to it.
+    seq: u32,
+    /// Process ID. This is useful for tracking this specific Request/Response.
+    pid: u32,
+};
+
+/// Netlink Attribute Header
+pub const AttributeHeader = extern struct {
+    pub const nl_align: bool = true;
+    pub const full_len: bool = true;
+
+    len: u16 = 0,
+    type: u16,
+};
+/// Netlink Attribute Header Length (Aligned to 4 Bytes for Netlink messaging.)
+pub const attr_hdr_len: usize = mem.alignForward(usize, @sizeOf(AttributeHeader), 4);
+
+/// Netlink Attribute w/ Data
+pub const Attribute = struct {
+    hdr: AttributeHeader,
+    data: []const u8,
+};
+
+/// Netlink Error Header
+pub const ErrorHeader = extern struct {
+    /// Error ID
     err: i32,
-    /// Netlink Header
-    nlh: os.linux.nlmsghdr,
+    /// Netlink Message Header
+    nlh: MessageHeader,
+};
+
+/// Netlink Message Flags (NLM_F)
+pub const NLM_F = enum(u16) {
+    /// Request a response from the kernel
+    REQUEST = 1,
+    /// Multi-part message (additional messages follow)
+    MULTI = 2,
+    /// End of a multi-part message
+    ACK = 4,
+    /// Request acknowledgement of a successful operation
+    ECHO = 8,
+    /// Dump was interrupted (message will follow)
+    DUMP_INTR = 16,
+    /// Replace existing matching object
+    REPLACE = 256,
+    /// Start operation from the root (for dump operations)
+    /// Shares the same value as REPLACE, but used differently
+    /// ROOT = 256, 
+    /// Create a new object if it doesn't exist
+    EXCL = 512,
+    /// Don't replace if the object exists
+    CREATE = 1024,
+    /// Add to an existing object
+    APPEND = 2048,
+    /// Dump filtered (data returned is influenced by input)
+    DUMP_FILTERED = 8192,
+
+    // Combined Flags
+    /// Dump large amounts of data (combination of REQUEST and ROOT)
+    /// DUMP = REQUEST | ROOT,
+    DUMP = 1 | 256,
+    /// Combine REQUEST and CREATE for creating new objects
+    /// REQUEST_CREATE = REQUEST | CREATE,
+    REQUEST_CREATE = 1 | 1024,
+    /// Combine REQUEST, EXCL, and CREATE for exclusive creation of new objects
+    /// REQUEST_EXCL_CREATE = REQUEST | EXCL | CREATE,
+    REQUEST_EXCL_CREATE = 1 | 512 | 1024,
+    /// Combine REQUEST and REPLACE for replacing existing objects
+    /// REQUEST_REPLACE = REQUEST | REPLACE,
+    //REQUEST_REPLACE = 1 | 256,
+    /// Combine REQUEST and APPEND for appending to existing objects
+    /// REQUEST_APPEND = REQUEST | APPEND,
+    REQUEST_APPEND = 1 | 2048,
+};
+
+/// Common-to-All Netlink Message Header Types
+pub const NLMSG = enum(u32) {
+    /// No operation
+    NOOP = 1,
+    /// Error message
+    ERROR = 2,
+    /// End of a multi-part message
+    DONE = 3,
+    /// Message indicating an overrun (data was lost due to buffer overflow)
+    OVERRUN = 4,
 };
 
 /// Send a Netlink Request
-pub fn netlinkRequest(
+pub fn request(
+    alloc: mem.Allocator,
+    /// Netlink Socket Kind
     nl_sock_kind: comptime_int,
+    /// Netlink Request Type
     RequestT: type,
     /// Raw Netlink Request (Before Length Calculation)
     nl_req_raw: RequestT,
-    /// Attribute Type
-    AttrT: type,
-    /// Number of Attributes
-    comptime num_attrs: usize,
     /// Attributes (Before Length Calculation) Array
-    comptime attrs_raw: [num_attrs]AttrT,
-    /// Data Bytes
-    data: [num_attrs][]const u8,
-    /// Data Lengths (Used for padding)
-    comptime data_lens: [num_attrs]usize,
+    attrs_raw: []const Attribute,
 ) !posix.socket_t {
-    const req_len = comptime switch (RequestT) {
-        route.Request => route.req_len,
-        _80211.Request => _80211.req_len,
-        else => @compileError("Unsupported Netlink Request Type."),
-    };
-    const attr_len = comptime switch (AttrT) {
-        route.Attribute => route.attr_len,
-        _80211.Attribute => _80211.attr_len,
-        void => 0,
-        else => @compileError("Unsupported Netlink Attribute Type."),
-    };
+    const req_len = mem.alignForward(u32, @sizeOf(RequestT), 4);
     const attrs,
-    const attrs_len: usize = comptime attrsLen: {
-        if (num_attrs == 0) break :attrsLen .{ .{}, 0 };
-        var attrs = attrs_raw;
+    const attrs_len: usize = attrsLen: {
+        if (attrs_raw.len == 0) break :attrsLen .{ &.{}, 0 };
+        var attrs_buf = try std.ArrayListUnmanaged(Attribute).initCapacity(alloc, attrs_raw.len);
         var len: usize = 0;
-        for (data_lens[0..], attrs[0..]) |data_len, *attr| {
-            attr.len = mem.alignForward(u16, attr_len + data_len, 4);
-            len += attr.len;
+        for (attrs_raw[0..], 0..) |raw_attr, idx| {
+            attrs_buf.appendAssumeCapacity(raw_attr);
+            var attr = &attrs_buf.items[idx];
+            if (attr.hdr.len == 0) attr.hdr.len = mem.alignForward(u16, @intCast(attr_hdr_len + attr.data.len), 4);
+            len += mem.alignForward(u16, attr.hdr.len, 4);
         }
-        break :attrsLen .{ attrs, len };
+        break :attrsLen .{ 
+            try attrs_buf.toOwnedSlice(alloc), 
+            mem.alignForward(usize, len, 4) 
+        };
     };
+    defer if (attrs.len > 0) alloc.free(@as([]align(8)const Attribute, @alignCast(attrs)));
     var nl_req = nl_req_raw;
-    const msg_len = comptime mem.alignForward(u32, req_len + attrs_len, 4);
+    const msg_len = mem.alignForward(u32, @intCast(req_len + attrs_len), 4);
     nl_req.nlh.len = msg_len;
-    var req_buf: [msg_len]u8 = undefined;
-    @memset(req_buf[0..], 0);
-    var start: usize = 0;
-    var end: usize = req_len;
-    @memcpy(req_buf[start..end], mem.toBytes(nl_req)[0..]);
-    if (num_attrs > 0) {
-        const _attrs = attrs;
-        for (_attrs[0..], data[0..], data_lens[0..]) |attr, item, len| {
-            start = end;
-            end += attr_len;
-            // Kinda iffy way to hanlde Variable Length SSIDs
-            if (AttrT == _80211.Attribute and attr.type == _80211.ATTR_SSID) {
-                nl_req.nlh.len = @intCast(msg_len - (32 - item.len));
-                @memcpy(req_buf[0..req_len], mem.toBytes(nl_req)[0..]);
-                var ssid_attr = attr;
-                ssid_attr.len = @truncate(attr_len + item.len);
-                @memcpy(req_buf[start..end], mem.toBytes(ssid_attr)[0..]);
-                start = end;
-                end += item.len;
-                @memcpy(req_buf[start..end], item);
-                continue;
-            }
-            @memcpy(req_buf[start..end], mem.toBytes(attr)[0..]);
-            start = end;
-            end += len;
-            @memcpy(req_buf[start..@min(end, start + item.len)], item);
+    var req_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, msg_len);
+    defer req_buf.deinit(alloc);
+    try req_buf.appendSlice(alloc, mem.toBytes(nl_req)[0..]);
+    if (attrs.len > 0) {
+        for (attrs[0..]) |attr| {
+            try req_buf.appendSlice(alloc, mem.toBytes(attr.hdr)[0..]);
+            try req_buf.appendSlice(alloc, attr.data[0..]);
+            const len = req_buf.items.len;
+            try req_buf.appendNTimes(alloc, 0, mem.alignForward(usize, len, 4) - len);
         }
+    }
+    if (req_buf.items.len < msg_len) {
+        for (req_buf.items.len..msg_len) |_| req_buf.appendAssumeCapacity(0);
     }
     const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_kind);
     errdefer posix.close(nl_sock);
     try posix.setsockopt(nl_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout[0..]);
-    end = mem.alignForward(usize, end, 4);
     _ = try posix.send(
         nl_sock,
-        req_buf[0..end],
+        req_buf.items[0..],
         0,
     );
     return nl_sock;
 }
 
 /// Handle a Netlink ACK Response.
-pub fn handleNetlinkAck(nl_sock: posix.socket_t) !void {
+pub fn handleAck(nl_sock: posix.socket_t) !void {
     var resp_idx: usize = 0;
     while (resp_idx <= 15) : (resp_idx += 1) {
         var resp_buf: [4096]u8 = .{ 0 } ** 4096;
@@ -123,13 +205,13 @@ pub fn handleNetlinkAck(nl_sock: posix.socket_t) !void {
         while (offset < resp_len) {
             var start: usize = offset;
             var end: usize = (offset + @sizeOf(os.linux.nlmsghdr));
-            const nl_resp_hdr: *os.linux.nlmsghdr = @alignCast(@ptrCast(resp_buf[start..end]));
-            if (nl_resp_hdr.len < @sizeOf(os.linux.nlmsghdr))
+            const nl_resp_hdr: *const MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+            if (nl_resp_hdr.len < @sizeOf(MessageHeader))
                 return error.InvalidMessage;
-            if (nl_resp_hdr.type == .ERROR) {
+            if (@as(NLMSG, @enumFromInt(nl_resp_hdr.type)) == .ERROR) {
                 start = end;
-                end += @sizeOf(NetlinkError);
-                const nl_err: *const NetlinkError = @alignCast(@ptrCast(resp_buf[start..end]));
+                end += @sizeOf(ErrorHeader);
+                const nl_err: *const ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
                 switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
                     .SUCCESS => return,
                     .BUSY => return error.BUSY,
