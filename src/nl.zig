@@ -15,7 +15,6 @@ pub const IFLA = os.linux.IFLA;
 pub const NETLINK = os.linux.NETLINK;
 const SOCK = posix.SOCK;
 
-const timeout = mem.toBytes(posix.timeval{ .tv_sec = 3, .tv_usec = 0 });
 
 pub const parse = @import("netlink/parse.zig");
 pub const _80211 = @import("netlink/_80211.zig");
@@ -133,6 +132,14 @@ pub const NLMSG = enum(u32) {
     OVERRUN = 4,
 };
 
+/// Initialize a Netlink Socket
+pub fn initSock(nl_sock_kind: comptime_int, timeout: posix.timeval) !posix.socket_t {
+    const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_kind);
+    errdefer posix.close(nl_sock);
+    try posix.setsockopt(nl_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, mem.toBytes(timeout)[0..]);
+    return nl_sock;
+}
+
 /// Send a Netlink Request
 pub fn request(
     alloc: mem.Allocator,
@@ -145,6 +152,25 @@ pub fn request(
     /// Attributes (Before Length Calculation) Array
     attrs_raw: []const Attribute,
 ) !posix.socket_t {
+    const timeout = posix.timeval{ .tv_sec = 3, .tv_usec = 0 };
+    const nl_sock = try initSock(nl_sock_kind, timeout);
+    errdefer posix.close(nl_sock);
+    try reqOnSock(alloc, nl_sock, RequestT, nl_req_raw, attrs_raw);
+    return nl_sock;
+}
+
+/// Send a Netlink Request on the provided Socket `nl_sock`.
+pub fn reqOnSock(
+    alloc: mem.Allocator,
+    /// Netlink Socket,
+    nl_sock: posix.socket_t,
+    /// Netlink Request Type
+    RequestT: type,
+    /// Raw Netlink Request (Before Length Calculation)
+    nl_req_raw: RequestT,
+    /// Attributes (Before Length Calculation) Array
+    attrs_raw: []const Attribute,
+) !void {
     const req_len = mem.alignForward(u32, @sizeOf(RequestT), 4);
     const attrs,
     const attrs_len: usize = attrsLen: {
@@ -180,16 +206,13 @@ pub fn request(
     if (req_buf.items.len < msg_len) {
         for (req_buf.items.len..msg_len) |_| req_buf.appendAssumeCapacity(0);
     }
-    const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_kind);
-    errdefer posix.close(nl_sock);
-    try posix.setsockopt(nl_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout[0..]);
     _ = try posix.send(
         nl_sock,
         req_buf.items[0..],
         0,
     );
-    return nl_sock;
 }
+
 
 /// Handle a Netlink ACK Response.
 pub fn handleAck(nl_sock: posix.socket_t) !void {
@@ -208,6 +231,7 @@ pub fn handleAck(nl_sock: posix.socket_t) !void {
             const nl_resp_hdr: *const MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
             if (nl_resp_hdr.len < @sizeOf(MessageHeader))
                 return error.InvalidMessage;
+            if (nl_resp_hdr.type > 4) return;
             if (@as(NLMSG, @enumFromInt(nl_resp_hdr.type)) == .ERROR) {
                 start = end;
                 end += @sizeOf(ErrorHeader);
@@ -215,6 +239,8 @@ pub fn handleAck(nl_sock: posix.socket_t) !void {
                 switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
                     .SUCCESS => return,
                     .BUSY => return error.BUSY,
+                    .NOLINK => return error.NOLINK,
+                    .ALREADY => return error.ALREADY,
                     else => |err| {
                         log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
                         return error.OSError;

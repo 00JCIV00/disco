@@ -203,7 +203,13 @@ pub fn main() !void {
             },
             .wpa2 => {
                 const pmk = try wpa.genKey(.wpa2, ssid, pass);
-                try nl._80211.connectWPA2(alloc, net_if.route_info.index, ssid, pmk[0..]);
+                try nl._80211.connectWPA2(
+                    alloc, 
+                    net_if.route_info.index, 
+                    ssid, 
+                    pmk,
+                    wpa.handle4WHS,
+                );
             }, 
         }
     }

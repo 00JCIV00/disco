@@ -553,6 +553,307 @@ pub const IFTYPE = enum(u32) {
     OCB2,
     NAN3,
 };
+/// Key Attributes
+pub const KEY = enum(u16) {
+    __INVALID,
+    DATA,
+    IDX,
+    CIPHER,
+    SEQ,
+    DEFAULT,
+    DEFAULT_MGMT,
+    TYPE,
+    DEFAULT_TYPES,
+    MODE,
+    DEFAULT_BEACON,
+    __AFTER_LAST,
+};
+
+/// Result of `CMD_NEW_INTERFACE` which can be called w/ `getInterface()`.
+const NetworkInterface = struct {
+    pub const AttrE = ATTR;
+
+    /// Interface index (IFINDEX) if modifying an existing interface
+    IFINDEX: ?u32 = null,
+    /// Name of the interface (e.g., "wlan0")
+    IFNAME: ?[]const u8 = null,
+    /// Type of interface (e.g., station, AP, monitor)
+    IFTYPE: ?u32 = null,
+    /// WIPHY index to associate the interface with a physical wireless device
+    WIPHY: ?u32 = null,
+    /// MAC address for the interface
+    MAC: ?[]const u8 = null,
+    /// Interface flags (up, down, etc.)
+    FLAGS: ?u32 = null,
+    /// MAC address mask, used in virtual MAC configurations
+    MAC_MASK: ?[]const u8 = null,
+    /// 4-address frame format setting (used for WDS or 4-address mode)
+    FOUR_ADDR: ?bool = null,
+    /// SSID to be broadcasted in case of AP mode
+    SSID: ?[]const u8 = null,
+    /// WPA versions supported by the interface
+    WPA_VERSIONS: ?u32 = null,
+    /// Cipher suites supported by the interface
+    CIPHER_SUITES: ?[]const u32 = null,
+    /// Authentication Key Management suites supported
+    AKM_SUITES: ?[]const u32 = null,
+    /// TX Power setting (in dBm) if specified
+    TX_POWER: ?u32 = null,
+};
+
+/// Result of `CMD_NEW_WIPHY` which can be called w/ `getWIPHY()`.
+pub const WIPHY = struct {
+    pub const AttrE = ATTR;
+
+    pub const BAND_ATTR = enum(u32) {
+        __INVALID,
+        FREQS,
+        RATES,
+        HT_MCS_SET,
+        HT_CAPA,
+        HT_AMPDU_FACTOR,
+        HT_AMPDU_DENSITY,
+        HT_EXT_CAPA,
+        HT_TX_BF_CAPA,
+        HT_ASEL_CAPA,
+        VHT_MCS_SET,
+        VHT_CAPA,
+        IFTYPE_DATA,
+        EDMG_CHANNELS,
+        EDMG_BW_CONFIG,
+        S1G_MCS_NSS_SET,
+        S1G_CAPA,
+        __AFTER_LAST,
+        //MAX = @intCast(u32, @intFromEnum(__AFTER_LAST) - 1),
+    };
+
+    const BAND = struct {
+        pub const AttrE = BAND_ATTR;
+        pub const _grouped_attr = {};
+
+        pub const FREQUENCY_ATTR = enum(u32) {
+            __INVALID,
+            FREQ,
+            DISABLED,
+            NO_IR,
+            __NO_IBSS,
+            RADAR,
+            MAX_TX_POWER,
+            DFS_STATE,
+            DFS_TIME,
+            NO_HT40_MINUS,
+            NO_HT40_PLUS,
+            NO_80MHZ,
+            NO_160MHZ,
+            DFS_CAC_TIME,
+            INDOOR_ONLY,
+            IR_CONCURRENT,
+            NO_20MHZ,
+            NO_10MHZ,
+            WMM,
+            NO_HE,
+            OFFSET,
+            _1MHZ,
+            _2MHZ,
+            _4MHZ,
+            _8MHZ,
+            _16MHZ,
+            NO_320MHZ,
+            NO_EHT,
+            PSD,
+            DFS_CONCURRENT,
+            NO_6GHZ_VLP_CLIENT,
+            NO_6GHZ_AFC_CLIENT,
+            CAN_MONITOR,
+            ALLOW_6GHZ_VLP_AP,
+            __AFTER_LAST,
+            //MAX = @intCast(u32, @intFromEnum(__AFTER_LAST) - 1),
+        };
+
+        pub const FREQUENCY = struct {
+            pub const AttrE = FREQUENCY_ATTR;
+            pub const _grouped_attr = {};
+
+            /// The frequency in MHz
+            FREQ: u32,
+            /// Indicates if the frequency is disabled
+            DISABLED: bool = false,
+            /// No Initiating Radiation (IR); prevents starting transmissions
+            NO_IR: ?bool = null,
+            /// Radar detection requirement for this frequency
+            RADAR: ?bool = null,
+            /// Maximum transmission power in mBm
+            MAX_TX_POWER: ?u32 = null,
+            /// DFS state for radar detection compliance
+            DFS_STATE: ?u32 = null,
+            /// DFS time, typically in milliseconds
+            DFS_TIME: ?u32 = null,
+            /// Restriction on HT40- channel width
+            NO_HT40_MINUS: ?bool = null,
+            /// Restriction on HT40+ channel width
+            NO_HT40_PLUS: ?bool = null,
+            /// Restriction on 80MHz channel width
+            NO_80MHZ: ?bool = null,
+            /// Restriction on 160MHz channel width
+            NO_160MHZ: ?bool = null,
+            /// DFS Channel Availability Check (CAC) time
+            DFS_CAC_TIME: ?u32 = null,
+            /// Indicates indoor-only frequency use
+            INDOOR_ONLY: ?bool = null,
+            /// Allows IR concurrent with another frequency
+            IR_CONCURRENT: ?bool = null,
+            /// Restriction on 20MHz channel width
+            NO_20MHZ: ?bool = null,
+            /// Restriction on 10MHz channel width
+            NO_10MHZ: ?bool = null,
+            /// Indicates WMM (Wi-Fi Multimedia) support
+            WMM: ?bool = null,
+            /// Restriction against using HE (High Efficiency)
+            NO_HE: ?bool = null,
+            /// Center frequency offset for specific adjustments
+            OFFSET: ?u32 = null,
+            /// Restriction on Extremely High Throughput (EHT)
+            NO_EHT: ?bool = null,
+            /// Indicates support for DFS concurrent modeeapol
+            DFS_CONCURRENT: ?bool = null,
+            /// Restriction for Very Low Power (VLP) clients on 6 GHz
+            NO_6GHZ_VLP_CLIENT: ?bool = null,
+            /// Restriction for AFC clients on 6 GHz
+            NO_6GHZ_AFC_CLIENT: ?bool = null,
+            /// Indicates monitoring capability on this frequency
+            CAN_MONITOR: ?bool = null,
+            /// Allows Very Low Power (VLP) AP on 6 GHz
+            ALLOW_6GHZ_VLP_AP: ?bool = null,
+        };
+
+        pub const HT_CAPA = extern struct {
+            /// HT Capabilities Info field (bitfield with HT capabilities like 40 MHz support, SGI, MIMO, etc.)
+            ht_cap_info: u16 = 0,
+            /// A-MPDU Parameters field (defines max A-MPDU length and minimum MPDU spacing)
+            ampdu_params: u8 = 0,
+            /// Supported MCS Set (defines MIMO spatial streams and supported MCS rates)
+            supported_mcs_set: [16]u8 = .{ 0 } ** 16,
+            /// HT Extended Capabilities (contains additional HT features such as SM Power Save)
+            ht_extended_capabilities: u16 = 0,
+            /// Transmit Beamforming Capabilities (optional support for TX beamforming features)
+            txbf_capabilities: u32 = 0,
+            /// Antenna Selection Capabilities (optional features for antenna selection)
+            asel_capabilities: u8 = 0,
+        };
+
+
+        /// List of frequencies for the band
+        FREQS: ?[]const FREQUENCY = null,
+        /// Supported data rates in the band
+        RATES: ?[]const u32 = null,
+        /// Modulation and Coding Scheme (MCS) settings for HT
+        HT_MCS_SET: ?[16]u8 = null,
+        /// High Throughput (HT) capabilities
+        HT_CAPA: u16 = 0, //HT_CAPA = .{},
+        /// High Throughput AMPDU (Aggregated MAC Protocol Data Unit) factor
+        HT_AMPDU_FACTOR: ?u8 = null,
+        /// High Throughput AMPDU density setting
+        HT_AMPDU_DENSITY: ?u8 = null,
+        /// High Throughput Extended Capabilities
+        HT_EXT_CAPA: ?u16 = null,
+        /// High Throughput Transmit Beamformer Capabilities
+        HT_TX_BF_CAPA: ?u32 = null,
+        /// High Throughput Antenna Selection Capbilities
+        HT_ASEL_CAPA: ?u8 = null,
+        /// Very High Throughput (Very High Throughput) MCS settings
+        VHT_MCS_SET: ?[8]u8 = null,
+        /// Very High Throughput capabilities
+        VHT_CAPA: u32 = 0,
+        /// Interface type-specific data for this band
+        IFTYPE_DATA: ?[]const u8 = null,
+        /// Enhanced Directional Multi-Gigabit (EDMG) channels
+        EDMG_CHANNELS: ?u8 = null,
+        /// EDMG bandwidth configuration
+        EDMG_BW_CONFIG: ?u8 = null,
+        /// S1G MCS and NSS settings for sub-1GHz operation
+        S1G_MCS_NSS_SET: ?[]const u8 = null,
+        /// Single-user (S1G) capability for low-bandwidth applications
+        S1G_CAPA: ?u32 = null,
+    };
+
+    /// WIPHY Index of the device
+    WIPHY: u32,
+    /// WIPHY Name, typically a device identifier
+    WIPHY_NAME: []const u8,
+    /// Generation of the WIPHY, often incremented on each update
+    GENERATION: ?u32 = null,
+    /// Retry limit for short frames
+    WIPHY_RETRY_SHORT: ?u32 = null,
+    /// Retry limit for long frames
+    WIPHY_RETRY_LONG: ?u32 = null,
+    /// Fragmentation threshold for frames
+    WIPHY_FRAG_THRESHOLD: ?u32 = null,
+    /// Request to Send (RTS) threshold
+    WIPHY_RTS_THRESHOLD: ?u32 = null,
+    /// Coverage class for extended range support
+    WIPHY_COVERAGE_CLASS: ?u8 = null,
+    /// Maximum number of SSIDs supported in scan requests
+    MAX_NUM_SCAN_SSIDS: ?u32 = null,
+    /// Maximum number of SSIDs for scheduled scans
+    MAX_NUM_SCHED_SCAN_SSIDS: ?u32 = null,
+    /// Maximum size of Information Elements (IEs) in scan requests
+    MAX_SCAN_IE_LEN: ?u16 = null,
+    /// Maximum size of IEs in scheduled scans
+    MAX_SCHED_SCAN_IE_LEN: ?u16 = null,
+    /// Maximum number of match sets for scans
+    MAX_MATCH_SETS: ?u32 = null,
+    /// Indicates support for RSN (Robust Security Network) in IBSS mode
+    SUPPORT_IBSS_RSN: ?bool = null,
+    /// Indicates support for mesh authentication
+    SUPPORT_MESH_AUTH: ?bool = null,
+    /// Indicates support for U-APSD (Unscheduled Automatic Power Save Delivery) in AP mode
+    SUPPORT_AP_UAPSD: ?bool = null,
+    /// Indicates TDLS (Tunneled Direct Link Setup) support
+    TDLS_SUPPORT: ?bool = null,
+    /// Indicates support for external TDLS setup
+    TDLS_EXTERNAL_SETUP: ?bool = null,
+    /// Supported cipher suites for the WIPHY
+    CIPHER_SUITES: ?[]const u32 = null,
+    /// Maximum number of PMKIDs supported for fast BSS transitions
+    MAX_NUM_PMKIDS: ?u32 = null,
+    /// Ethertype for control port protocol
+    CONTROL_PORT_ETHERTYPE: ?u16 = null,
+    /// Available TX antennas for the WIPHY
+    WIPHY_ANTENNA_AVAIL_TX: ?u32 = null,
+    /// Available RX antennas for the WIPHY
+    WIPHY_ANTENNA_AVAIL_RX: ?u32 = null,
+    /// Configured TX antennas for the WIPHY
+    WIPHY_ANTENNA_TX: ?u32 = null,
+    /// Configured RX antennas for the WIPHY
+    WIPHY_ANTENNA_RX: ?u32 = null,
+    /// Supported interface types, such as station, AP, monitor, etc.
+    SUPPORTED_IFTYPES: ?[]const u32 = null,
+    /// Supported frequency bands for the WIPHY
+    WIPHY_BANDS: ?[]const BAND= null,
+    /// Supported commands for the WIPHY
+    SUPPORTED_COMMANDS: ?[]const u32 = null,
+    /// Maximum duration for remain-on-channel operations
+    MAX_REMAIN_ON_CHANNEL_DURATION: ?u32 = null,
+    /// Indicates support for off-channel transmissions
+    OFFCHANNEL_TX_OK: ?bool = null,
+    /// Supported software interface types
+    SOFTWARE_IFTYPES: ?[]const u32 = null,
+    /// Supported interface combinations for the WIPHY
+    INTERFACE_COMBINATIONS: ?[]const u8 = null,
+    /// Feature flags supported by the WIPHY
+    FEATURE_FLAGS: ?u32 = null,
+    /// High Throughput (HT) capability mask
+    HT_CAPABILITY_MASK: [26]u8 = .{ 0 } ** 26,
+    /// High Throughput (HT) capability
+    HT_CAPABILITY: u32 = 0,
+    /// Very High Throughput (HT) capability mask
+    VHT_CAPABILITY_MASK: [12]u8 = .{ 0 } ** 12,
+    /// Very High Throughput (VHT) capability
+    VHT_CAPABILITY: u32 = 0,
+    /// Use RRM
+    USE_RRM: ?[]const u8 = null,
+};
+
 /// Scan Flags
 pub const SCAN_FLAG = enum(u32) {
     /// Scan with low priority to minimize interference with other traffic
@@ -795,6 +1096,8 @@ pub const IE = enum(u8) {
     RSN = 48,
     /// Extended Supported Rates
     EXTENDED_SUPPORTED_RATES = 50,
+    /// Supported Operating Classes
+    SUPPORTED_OPER_CLASSES = 59,
     /// Mesh Configuration
     MESH_CONFIGURATION = 60,
     /// Mesh ID
@@ -900,11 +1203,11 @@ pub const InformationElements = struct {
                 end += @sizeOf(Suite);
                 rsn.GROUP_MANAGEMENT_CIPHER_SUITE = @bitCast(bytes[start..end][0..4].*);
             }
-            {
-                const rsn_str = try json.stringifyAlloc(alloc, rsn, .{ .whitespace = .indent_4, .emit_null_optional_fields = false });
-                defer alloc.free(rsn_str);
-                log.debug("RSN:\n{s}", .{ rsn_str });
-            }
+            //{
+            //    const rsn_str = try json.stringifyAlloc(alloc, rsn, .{ .whitespace = .indent_4, .emit_null_optional_fields = false });
+            //    defer alloc.free(rsn_str);
+            //    log.debug("RSN:\n{s}", .{ rsn_str });
+            //}
             return rsn;
         }
 
@@ -1004,6 +1307,154 @@ pub const InformationElements = struct {
         GROUP_MANAGEMENT_CIPHER_SUITE: ?Suite = null,
     };
 
+    const OperatingClass = enum(u8) {
+        // 2.4 GHz band
+        /// Channels 1–13 (20 MHz, 2.4 GHz)
+        Class81 = 81,
+        /// Channel 14 (20 MHz, Japan)
+        Class82 = 82,
+        /// Channels 3-11 (40 MHz, 2.4 GHz)
+        Class83 = 83,
+        // 5 GHz band (20 MHz channels)
+        /// Channels 36, 40, 44, 48 (20 MHz, 5 GHz)
+        Class115 = 115,
+        /// Channels 52, 56, 60, 64 (DFS required, 20 MHz, 5 GHz)
+        Class116 = 116,
+        /// Channels 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140 (DFS required, 20 MHz, 5 GHz)
+        Class117 = 117,
+        // 5 GHz band (40 MHz channels)
+        /// Channels 38, 46 (40 MHz, 5 GHz)
+        Class118 = 118,
+        /// Channels 54, 62 (DFS required, 40 MHz, 5 GHz)
+        Class119 = 119,
+        /// Channels 102, 110, 118, 126, 134 (DFS required, 40 MHz, 5 GHz)
+        Class120 = 120,
+        // 5 GHz band (80 MHz channels)
+        /// Channel 42 (80 MHz, 5 GHz)
+        Class121 = 121,
+        /// Channel 58 (DFS required, 80 MHz, 5 GHz)
+        Class122 = 122,
+        /// Channels 106, 122 (DFS required, 80 MHz, 5 GHz)
+        Class123 = 123,
+        /// Channels 138, 122 (DFS required, 80 MHz, 5 GHz)
+        Class124 = 124,
+        // 5 GHz band (160 MHz channels)
+        /// Channel 50 (160 MHz, 5 GHz)
+        Class125 = 125,
+        /// Channel 114 (DFS required, 160 MHz, 5 GHz)
+        Class126 = 126,
+        // 6 GHz band (20, 40, 80, and 160 MHz channels)
+        /// 20 MHz channels, 6 GHz band
+        Class131 = 131,
+        /// 40 MHz channels, 6 GHz band
+        Class132 = 132,
+        /// 80 MHz channels, 6 GHz band
+        Class133 = 133,
+        /// 160 MHz channels, 6 GHz band
+        Class134 = 134,
+
+        pub fn getClass(freq_mhz: u32, channel_width_mhz: u32) ?@This() {
+            const channel = getChannel(freq_mhz) catch return null;
+            //log.debug("Ch: {d}", .{ channel });
+
+            // 2.4 GHz Band
+            if (freq_mhz >= 2400 and freq_mhz < 2500) {
+                switch (channel_width_mhz) {
+                    20 => {
+                        if (channel >= 1 and channel <= 13) return .Class81;
+                        if (channel == 14) return .Class82;
+                    },
+                    40 => {
+                        return switch (channel) {
+                            3...11 => .Class83,
+                            else => null,
+                        };
+                    },
+                    else => return null,
+                }
+            }
+            // 5 GHz Band
+            else if (freq_mhz >= 5000 and freq_mhz < 5925) {
+                switch (channel_width_mhz) {
+                    20 => {
+                        if (channel >= 36 and channel <= 48) return .Class115;
+                        if (channel >= 52 and channel <= 64) return .Class116;
+                        if (channel >= 100 and channel <= 140) return .Class117;
+                    },
+                    40 => {
+                        if (channel == 38 or channel == 46) return .Class118;
+                        if (channel == 54 or channel == 62) return .Class119;
+                        if (channel >= 102 and channel <= 134) return .Class120;
+                    },
+                    80 => {
+                        if (channel == 42) return .Class121;
+                        if (channel == 58) return .Class122;
+                        if (channel == 106 or channel == 122) return .Class123;
+                        if (channel == 138) return .Class124;
+                    },
+                    160 => {
+                        if (channel == 50) return .Class125;
+                        if (channel == 114 or channel == 142) return .Class126;
+                    },
+                    else => return null,
+                }
+            }
+            // 6 GHz Band
+            else if (freq_mhz >= 5925 and freq_mhz <= 7125) {
+                switch (channel_width_mhz) {
+                    20 => return .Class131,
+                    40 => return .Class132,
+                    80 => return .Class133,
+                    160 => return .Class134,
+                    else => return null,
+                }
+            }
+            return null;
+        }
+
+        /// Get a slice of Operating Classes as allocated bytes from the provided `wiphy`.
+        pub fn bytesFromWIPHY(alloc: mem.Allocator, wiphy: WIPHY) !?[]u8 {
+            const bands = wiphy.WIPHY_BANDS orelse return null;
+            //const ht_40: u32 = 0b0001;
+            //const vht_160: u32 = 0b0010;
+            var class_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
+            errdefer class_buf.deinit(alloc);
+            for (bands) |band| {
+                const freqs = band.FREQS orelse continue;
+                for (freqs) |freq| {
+                    const mhz = freq.FREQ;// orelse continue;
+                    var class: u8 = 0;
+                    _20: {
+                        //log.debug("Width: 20MHz", .{});
+                        class = @intFromEnum(getClass(mhz, 20) orelse continue);
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :_20;
+                        try class_buf.append(alloc, class);
+                    }
+                    HT: {
+                        //if (ht & ht_40 != ht_40) break :HT;
+                        //if (band.HT_CAPA & ht_40 != ht_40) break :HT;
+                        class = @intFromEnum(getClass(mhz, 40) orelse break :HT);
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :HT;
+                        try class_buf.append(alloc, class);
+                    }
+                    //if (band.VHT_CAPA) |vht| VHT: {
+                    VHT: {
+                        class = @intFromEnum(getClass(mhz, 80) orelse break :VHT);
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :VHT;
+                        try class_buf.append(alloc, class);
+                        //if (vht & vht_160 != vht_160) break :VHT;
+                        class = @intFromEnum(getClass(mhz, 160) orelse break :VHT);
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :VHT;
+                        try class_buf.append(alloc, class);
+                    }
+                }
+            }
+            if (class_buf.items.len == 0) return null;
+            log.debug("Op Classes: {d}", .{ class_buf.items });
+            return try class_buf.toOwnedSlice(alloc);
+        }
+    };
+
     /// SSID
     SSID: ?[]const u8 = null,
     /// Supported Rates
@@ -1070,6 +1521,8 @@ pub const InformationElements = struct {
     RSN: ?RobustSecurityNetwork = null,
     /// Extended Supported Rates
     EXTENDED_SUPPORTED_RATES: ?[]const u8 = null,
+    /// Supported Operating Classes
+    SUPPORTED_OPER_CLASSES: ?[]const u8 = null,
     /// Mesh Configuration
     MESH_CONFIGURATION: ?[]const u8 = null,
     /// Mesh ID
@@ -1147,6 +1600,15 @@ pub fn deinitCtrlInfo(alloc: mem.Allocator) void {
     info.deinit(alloc);
 }
 
+/// Get the corresponding Channel of the provided Frequency (`freq_mhz`).
+pub fn getChannel(freq_mhz: usize) !usize {
+    return switch (freq_mhz) {
+        0...2500 => (freq_mhz -| 2407) / 5,
+        5000...6000 => (freq_mhz -| 5000) / 5,
+        else => error.UnknownChannel,
+    };
+}
+
 /// Take Ownership of a Wireless Interface.
 /// This ensures that only the current process can manipulate the give interface.
 pub fn takeOwnership(if_index: i32) !void {
@@ -1214,20 +1676,9 @@ pub fn setMode(if_index: i32, mode: u32) !void {
     try nl.handleAck(nl_sock);
 }
 
-/// Scan for the Information Element of a specific SSID.
-pub fn scanSSID(alloc: mem.Allocator, if_index: i32, ssid: []const u8) !ScanResults {
+/// Get the details for a Wireless Interface.
+pub fn getInterface(alloc: mem.Allocator, if_index: i32) !NetworkInterface {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var ssid_data = try alloc.alloc(u8, switch (ssid.len) {
-        0...8 => 8,
-        9...16 => 16,
-        17...32 => 32,
-        else => return error.SSIDTooLong,
-    });
-    defer alloc.free(ssid_data);
-    @memset(ssid_data[0..], 0);
-    ssid_data[0] = @intCast(ssid.len + 4);
-    ssid_data[2] = 1;
-    @memcpy(ssid_data[(ssid_data.len - ssid.len)..], ssid);
     const nl_sock = try nl.request(
         alloc,
         nl.NETLINK.GENERIC,
@@ -1241,145 +1692,332 @@ pub fn scanSSID(alloc: mem.Allocator, if_index: i32, ssid: []const u8) !ScanResu
                 .pid = 12321,
             },
             .genh = .{
-                .cmd = c(CMD).TRIGGER_SCAN,
+                .cmd = c(CMD).GET_INTERFACE,
                 .version = 0,
             },
-        },
+            },
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-            .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
-            .{ .hdr = .{ .type = c(ATTR).SCAN_FLAGS }, .data = mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ)[0..] },
         },
     );
     defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+    //try nl.handleAck(nl_sock);
 
-    const buf_size: u32 = 64_000;
-    var timeout: usize = 3;
-    var res_sock = try posix.socket(nl.AF.NETLINK, posix.SOCK.RAW, nl.NETLINK.GENERIC);
-    defer posix.close(res_sock);
-    const sa_nl = posix.sockaddr.nl{
-        .pid = 0,
-        .groups = c(nl.route.RTMGRP).LINK | c(nl.route.RTMGRP).IPV4_IFADDR,
-    };
-    try posix.bind(
-        res_sock,
-        @ptrCast(&sa_nl),
-        16,
-    );
-    var timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
-    try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
-    try posix.setsockopt(res_sock, posix.SOL.SOCKET, nl.NETLINK_OPT.RX_RING, mem.toBytes(buf_size)[0..]);
-    try posix.setsockopt(
-        res_sock,
-        posix.SOL.NETLINK,
-        nl.NETLINK_OPT.ADD_MEMBERSHIP,
-        mem.toBytes(info.MCAST_GROUPS.get("scan").?)[0..],
-    );
-    var resp_timer = try time.Timer.start();
-    var tried_get = false;
-    var resp_count: usize = 1;
-    var resp_multi = false;
-    respLoop: while (resp_timer.read() / time.ns_per_s < timeout * 2 or resp_multi) : (resp_count += 1) {
-        log.debug("Listening for response #{d}...", .{ resp_count });
-        var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
-        const resp_len = posix.recv(
-            res_sock,
+    var resp_count: usize = 0;
+    while (resp_count < 5) : (resp_count += 1) {
+        var resp_buf: [64_000]u8 = .{ 0 } ** 64_000;
+        _ = try posix.recv(
+            nl_sock,
             resp_buf[0..],
             0,
-        ) catch |err| switch (err) {
-            error.WouldBlock => {
-                //return error.NoScanResults;
-                if (tried_get) return error.NoScanResults;
-                tried_get = true;
-                log.debug("Attempting to Get Scan.", .{});
-                posix.close(res_sock);
-                res_sock = try nl.request(
-                    alloc,
-                    nl.NETLINK.GENERIC,
-                    nl.generic.Request,
-                    .{
-                        .nlh = .{
-                            .len = 0,
-                            .type = info.FAMILY_ID,
-                            .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
-                            .seq = 12321,
-                            .pid = 0,
-                        },
-                        .genh = .{
-                            .cmd = c(CMD).GET_SCAN,
-                            .version = 0,
-                        },
-                    },
-                    &.{
-                        .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-                    },
-                );
-                timeout *= 3;
-                timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
-                try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
-                //try nl.handleAck(get_sock);
-                resp_timer.reset();
-                continue :respLoop;
-            },
-            else => return err,
-        };
-        log.debug("\n==================\nRESPONSE LEN: {d}B\n==================", .{ resp_len });
-        var offset: usize = 0;
-        var inner_count: usize = 1;
-        while (offset < resp_len) : (inner_count += 1) {
-            log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
-            // Netlink Header
-            var start: usize = offset;
-            var end: usize = offset + @sizeOf(nl.MessageHeader);
-            const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-            log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
-            if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-                return error.InvalidMessage;
-            if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-                start = end;
-                end += @sizeOf(nl.ErrorHeader);
-                const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                    .SUCCESS => {},
-                    .BUSY => return error.BUSY,
-                    else => |err| {
-                        log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                        return error.OSError;
-                    },
-                }
-            }
-            resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
-            if (resp_multi) log.debug("Multi Part Message", .{});
-            if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
-                log.debug("Done w/ Multi Part Message.", .{});
-                resp_multi = false;
-            }
-            // General Header
+        );
+        // Netlink Header
+        var start: usize = 0;
+        var end: usize = @sizeOf(nl.MessageHeader);
+        const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+        log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+        if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+            return error.InvalidMessage;
+        if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
             start = end;
-            end += @sizeOf(nl.generic.Header);
-            const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
-            if (gen_hdr.cmd != c(CMD).NEW_SCAN_RESULTS and gen_hdr.cmd != c(CMD).SCAN_ABORTED) {
-                log.debug("Not a Scan Result. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-                continue :respLoop;
+            end += @sizeOf(nl.ErrorHeader);
+            const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+            switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+                .SUCCESS => {},
+                .BUSY => return error.BUSY,
+                else => |err| {
+                    log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                    return error.OSError;
+                },
             }
-            log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+        }
+        // General Header
+        start = end;
+        end += @sizeOf(nl.generic.Header);
+        const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
+        if (gen_hdr.cmd != c(CMD).NEW_INTERFACE) {
+            log.debug("Not an Interface. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+            //return error.NonInterfacResponse;
+            continue;
+        }
+        log.debug("Received New Interface. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+        // WIPHY 
+        start = end;
+        end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
+        const net_if = try nl.parse.fromBytes(alloc, NetworkInterface, resp_buf[start..end]);
+        errdefer nl.parse.freeBytes(alloc, NetworkInterface, net_if);
+        if (net_if.IFINDEX) |idx| {
+            if (idx == if_index) return net_if;
+        }
+    }
+    return error.NoResultForInterface;
+}
 
-            start = end;
-            end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
-            const results = try nl.parse.fromBytes(alloc, ScanResults, resp_buf[start..end]);
-            errdefer nl.parse.freeBytes(alloc, ScanResults, results);
-            if (results.BSS) |bss| {
-                if (bss.INFORMATION_ELEMENTS) |ies| {
-                    if (ies.SSID) |scan_ssid| {
-                        log.debug("Scan Result SSID: {s}", .{ scan_ssid });
-                        if (mem.eql(u8, scan_ssid, ssid)) return results;
+/// Get details for a Wireless Physical Device (WIPHY).
+pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !WIPHY {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    for (0..3) |_| {
+        const nl_sock = try nl.request(
+            alloc,
+            nl.NETLINK.GENERIC,
+            nl.generic.Request,
+            .{
+                .nlh = .{
+                    .len = 0,
+                    .type = info.FAMILY_ID,
+                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                    .seq = 12321,
+                    .pid = 12321,
+                },
+                .genh = .{
+                    .cmd = c(CMD).GET_WIPHY,
+                    .version = 0,
+                },
+            },
+            &.{
+                .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+                //.{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = &.{} },
+            },
+        );
+        defer posix.close(nl_sock);
+        //try nl.handleAck(nl_sock);
+
+        var first_msg = true;
+        var resp_multi = false;
+        respLoop: while (first_msg or resp_multi) {
+            first_msg = false;
+            var resp_buf: [64_000]u8 = .{ 0 } ** 64_000;
+            const resp_len = try posix.recv(
+                nl_sock,
+                resp_buf[0..],
+                0,
+            );
+            var offset: usize = 0;
+            var inner_count: usize = 1;
+            while (offset < resp_len) : (inner_count += 1) {
+                log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
+                // Netlink Header
+                var start: usize = offset;
+                var end: usize = offset + @sizeOf(nl.MessageHeader);
+                const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+                if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+                    return error.InvalidMessage;
+                if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
+                    start = end;
+                    end += @sizeOf(nl.ErrorHeader);
+                    const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                    switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+                        .SUCCESS => {},
+                        .BUSY => return error.BUSY,
+                        else => |err| {
+                            log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                            return error.OSError;
+                        },
                     }
                 }
+                resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
+                if (resp_multi) log.debug("Multi Part Message", .{});
+                if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
+                    log.debug("Done w/ Multi Part Message.", .{});
+                    resp_multi = false;
+                }
+                // General Header
+                start = end;
+                end += @sizeOf(nl.generic.Header);
+                const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
+                if (gen_hdr.cmd != c(CMD).NEW_WIPHY) {
+                    log.debug("Not a WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+                    continue :respLoop;
+                }
+                log.debug("Received New WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+                // WIPHY 
+                start = end;
+                end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
+                const wiphy = try nl.parse.fromBytes(alloc, WIPHY, resp_buf[start..end]);
+                errdefer nl.parse.freeBytes(alloc, WIPHY, wiphy);
+                //{
+                //    const wiphy_str = try json.stringifyAlloc(alloc, wiphy, .{ .whitespace = .indent_4 });
+                //    defer alloc.free(wiphy_str);
+                //    log.debug("NEW WIPHY:\n{s}", .{ wiphy_str });
+                //}
+                if (wiphy.WIPHY == phy_index) return wiphy;
+                nl.parse.freeBytes(alloc, WIPHY, wiphy);
+                offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
             }
-            nl.parse.freeBytes(alloc, ScanResults, results);
-            offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-            //return error.Testing;
+        }
+    }
+    return error.NoResultForWIPHY;
+}
+
+/// Scan for the Information Element of a specific SSID.
+pub fn scanSSID(alloc: mem.Allocator, if_index: i32, ssid: []const u8) !ScanResults {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    var ssid_data = try alloc.alloc(u8, switch (ssid.len) {
+        0...8 => 8,
+        9...16 => 16,
+        17...32 => 32,
+        else => return error.SSIDTooLong,
+    });
+    defer alloc.free(ssid_data);
+    @memset(ssid_data[0..], 0);
+    ssid_data[0] = @intCast(ssid.len + 4);
+    ssid_data[2] = @intCast(ssid_data.len / 8 -| 1);
+    @memcpy(ssid_data[(ssid_data.len - ssid.len)..], ssid);
+    for (0..3) |_| {
+        const nl_sock = try nl.request(
+            alloc,
+            nl.NETLINK.GENERIC,
+            nl.generic.Request,
+            .{
+                .nlh = .{
+                    .len = 0,
+                    .type = info.FAMILY_ID,
+                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                    .seq = 12321,
+                    .pid = 12321,
+                },
+                .genh = .{
+                    .cmd = c(CMD).TRIGGER_SCAN,
+                    .version = 0,
+                },
+            },
+            &.{
+                .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+                .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
+                .{ .hdr = .{ .type = c(ATTR).SCAN_FLAGS }, .data = mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ)[0..] },
+            },
+        );
+        defer posix.close(nl_sock);
+        try nl.handleAck(nl_sock);
+
+        const buf_size: u32 = 64_000;
+        var timeout: usize = 3;
+        var res_sock = try posix.socket(nl.AF.NETLINK, posix.SOCK.RAW, nl.NETLINK.GENERIC);
+        defer posix.close(res_sock);
+        const sa_nl = posix.sockaddr.nl{
+            .pid = 0,
+            .groups = c(nl.route.RTMGRP).LINK | c(nl.route.RTMGRP).IPV4_IFADDR,
+        };
+        try posix.bind(
+            res_sock,
+            @ptrCast(&sa_nl),
+            16,
+        );
+        var timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
+        try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
+        try posix.setsockopt(res_sock, posix.SOL.SOCKET, nl.NETLINK_OPT.RX_RING, mem.toBytes(buf_size)[0..]);
+        try posix.setsockopt(
+            res_sock,
+            posix.SOL.NETLINK,
+            nl.NETLINK_OPT.ADD_MEMBERSHIP,
+            mem.toBytes(info.MCAST_GROUPS.get("scan").?)[0..],
+        );
+        var resp_timer = try time.Timer.start();
+        var tried_get = false;
+        var resp_count: usize = 1;
+        var resp_multi = false;
+        respLoop: while (resp_timer.read() / time.ns_per_s < timeout * 2 or resp_multi) : (resp_count += 1) {
+            log.debug("Listening for response #{d}...", .{ resp_count });
+            var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
+            const resp_len = posix.recv(
+                res_sock,
+                resp_buf[0..],
+                0,
+            ) catch |err| switch (err) {
+                error.WouldBlock => {
+                    //return error.NoScanResults;
+                    if (tried_get) return error.NoScanResults;
+                    tried_get = true;
+                    log.debug("Attempting to Get Scan.", .{});
+                    posix.close(res_sock);
+                    res_sock = try nl.request(
+                        alloc,
+                        nl.NETLINK.GENERIC,
+                        nl.generic.Request,
+                        .{
+                            .nlh = .{
+                                .len = 0,
+                                .type = info.FAMILY_ID,
+                                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
+                                .seq = 12321,
+                                .pid = 0,
+                            },
+                            .genh = .{
+                                .cmd = c(CMD).GET_SCAN,
+                                .version = 0,
+                            },
+                        },
+                        &.{
+                            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+                        },
+                    );
+                    timeout *= 3;
+                    timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
+                    try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
+                    //try nl.handleAck(get_sock);
+                    resp_timer.reset();
+                    continue :respLoop;
+                },
+                else => return err,
+            };
+            log.debug("\n==================\nRESPONSE LEN: {d}B\n==================", .{ resp_len });
+            var offset: usize = 0;
+            var inner_count: usize = 1;
+            while (offset < resp_len) : (inner_count += 1) {
+                log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
+                // Netlink Header
+                var start: usize = offset;
+                var end: usize = offset + @sizeOf(nl.MessageHeader);
+                const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+                if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+                    return error.InvalidMessage;
+                if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
+                    start = end;
+                    end += @sizeOf(nl.ErrorHeader);
+                    const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                    switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+                        .SUCCESS => {},
+                        .BUSY => return error.BUSY,
+                        else => |err| {
+                            log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                            return error.OSError;
+                        },
+                    }
+                }
+                resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
+                if (resp_multi) log.debug("Multi Part Message", .{});
+                if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
+                    log.debug("Done w/ Multi Part Message.", .{});
+                    resp_multi = false;
+                }
+                // General Header
+                start = end;
+                end += @sizeOf(nl.generic.Header);
+                const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
+                if (gen_hdr.cmd != c(CMD).NEW_SCAN_RESULTS and gen_hdr.cmd != c(CMD).SCAN_ABORTED) {
+                    log.debug("Not a Scan Result. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+                    continue :respLoop;
+                }
+                log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+
+                start = end;
+                end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
+                const results = try nl.parse.fromBytes(alloc, ScanResults, resp_buf[start..end]);
+                errdefer nl.parse.freeBytes(alloc, ScanResults, results);
+                if (results.BSS) |bss| {
+                    if (bss.INFORMATION_ELEMENTS) |ies| {
+                        if (ies.SSID) |scan_ssid| {
+                            log.debug("Scan Result SSID: {s}", .{ scan_ssid });
+                            if (mem.eql(u8, scan_ssid, ssid)) return results;
+                        }
+                    }
+                }
+                nl.parse.freeBytes(alloc, ScanResults, results);
+                offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
+                //return error.Testing;
+            }
         }
     }
     return error.NoScanResults;
@@ -1400,21 +2038,113 @@ pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
     };
 }
 
-/// Authenticate to the provided WPA2 Network `ssid`.
-pub fn authWPA2(
+/// Register (or Unregister) Frame(s) on the provided Netlink Socket (`nl_sock`).
+pub fn registerFrames(
     alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
     if_index: i32,
-    ssid: []const u8,
-    scan_results: ScanResults,
+    types: []const ?u16,
+    matches: []const u16,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const auth_type = determineAuthAlg(scan_results);
-    const bss = scan_results.BSS orelse return error.MissingBSS;
-    const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
-    const bssid = bss.BSSID orelse return error.MissingBSSID;
+    if (types.len == 0) return error.NoFramesForRegistrationProvided;
+    if (matches.len != types.len) return error.FramesAndMatchesLengthMismatch;
+    for (types, matches) |f_type, match| {
+        try nl.reqOnSock(
+            alloc,
+            nl_sock,
+            nl.generic.Request,
+            .{
+                .nlh = .{
+                    .len = 0,
+                    .type = info.FAMILY_ID,
+                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                    .seq = 12321,
+                    .pid = 0,
+                },
+                .genh = .{
+                    .cmd = c(CMD).REGISTER_FRAME,
+                    .version = 1,
+                },
+            },
+            if (f_type) |_type| &.{
+                .{
+                    .hdr = .{ .type = c(ATTR).IFINDEX },
+                    .data = mem.toBytes(if_index)[0..],
+                },
+                .{
+                    .hdr = .{ .type = c(ATTR).FRAME_TYPE, .len = 6 },
+                    .data = mem.toBytes(_type)[0..],
+                },
+                .{
+                    .hdr = .{ .type = c(ATTR).FRAME_MATCH, .len = 6 },
+                    .data = mem.toBytes(match)[0..],
+                },
+            }
+            else &.{
+                .{
+                    .hdr = .{ .type = c(ATTR).IFINDEX },
+                    .data = mem.toBytes(if_index)[0..],
+                },
+                .{
+                    .hdr = .{ .type = c(ATTR).FRAME_MATCH, .len = 6 },
+                    .data = mem.toBytes(match)[0..],
+                },
+            }
+        );
+        nl.handleAck(nl_sock) catch |err| switch (err) {
+            error.ALREADY => log.warn("Frame Match {d} w/ Type {?d} is already registered.", .{ match, f_type }),
+            else => return err,
+        };
+        time.sleep(100 * time.ns_per_ms);
+    }
+}
 
+/// Reset the Key State for the provided Interface (`if_index`) by flushing the PMKSA and deleting keys.
+pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    // Delete Keys
+    inline for (0..5) |idx| {
+        const key_idx_hdr: nl.AttributeHeader = .{ .type = c(KEY).IDX, .len = 5 };
+        const key_idx = (mem.toBytes(key_idx_hdr) ++ mem.toBytes(@as(u8, @intCast(idx))))[0..];
+        const nl_sock = try nl.request(
+            alloc,
+            nl.NETLINK.GENERIC,
+            nl.generic.Request,
+            .{
+                .nlh = .{
+                    .len = 0,
+                    .type = info.FAMILY_ID,
+                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                    .seq = 12321,
+                    .pid = 0,
+                },
+                .genh = .{
+                    .cmd = c(CMD).DEL_KEY,
+                    .version = 1,
+                },
+            },
+            &.{
+                .{
+                    .hdr = .{ .type = c(ATTR).IFINDEX },
+                    .data = mem.toBytes(if_index)[0..],
+                },
+                .{
+                    .hdr = .{ .type = c(ATTR).KEY, .len = 12 },
+                    .data = key_idx,
+                }
+            },
+        );
+        nl.handleAck(nl_sock) catch |err| switch (err) {
+            error.NOLINK => {},
+            else => return err,
+        };
+        time.sleep(100 * time.ns_per_ms);
+    }
+    time.sleep(100 * time.ns_per_ms);
+    // Flush PMKSA
     const nl_sock = try nl.request(
-        alloc, 
+        alloc,
         nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
@@ -1426,8 +2156,87 @@ pub fn authWPA2(
                 .pid = 0,
             },
             .genh = .{
+                .cmd = c(CMD).FLUSH_PMKSA,
+                .version = 0,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+        },
+    );
+    defer posix.close(nl_sock);
+    // TODO Handle faulty flushes
+    nl.handleAck(nl_sock) catch {};
+}
+
+/// Derive HT and VHT Capability Info from the provided `bss` and `wiphy`
+pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: WIPHY) !struct{ ?[26]u8, ?[12]u8 } {
+    const ie_freq = bss.FREQUENCY orelse return error.MissingFreq;
+    const bands = wiphy.WIPHY_BANDS orelse return error.MissingBands;
+    //const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+    for (bands) |band| {
+        for (band.FREQS orelse return error.MissingFreqs) |freq| {
+            if (freq.FREQ != ie_freq) continue;
+            if (freq.DISABLED) return .{ null, null };
+            const ht = ht: {
+                var buf: [26]u8 = .{ 0 } ** 26;
+                @memcpy(buf[0..2], mem.toBytes(band.HT_CAPA)[0..]);
+                const ampdu = ampdu: {
+                    const factor = band.HT_AMPDU_FACTOR orelse break :ht null;
+                    const density = band.HT_AMPDU_DENSITY orelse break :ht null;
+                    break :ampdu (density << 4) | (factor & 0x0F);
+                };
+                @memset(buf[2..3], ampdu);
+                @memcpy(buf[3..19], (band.HT_MCS_SET orelse break :ht null)[0..]);
+                @memcpy(buf[19..21], mem.toBytes(band.HT_EXT_CAPA orelse 0)[0..]);
+                @memcpy(buf[21..25], mem.toBytes(band.HT_TX_BF_CAPA orelse 0)[0..]);
+                @memset(buf[25..], band.HT_ASEL_CAPA orelse 0);
+                break :ht buf;
+            };
+            const vht = vht: {
+                var buf: [12]u8 = .{ 0 } ** 12;
+                @memcpy(buf[0..4], mem.toBytes(band.VHT_CAPA)[0..]);
+                @memcpy(buf[4..], (band.VHT_MCS_SET orelse break :vht null)[0..]);
+                break :vht buf;
+            };
+            return .{ ht, vht };
+        }
+    }
+    return .{ null, null };
+}
+
+/// Authenticate to the provided WPA2 Network `ssid`.
+pub fn authWPA2(
+    alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
+    if_index: i32,
+    ssid: []const u8,
+    scan_results: ScanResults,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const auth_type = determineAuthAlg(scan_results);
+    const bss = scan_results.BSS orelse return error.MissingBSS;
+    const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
+    const bssid = bss.BSSID orelse return error.MissingBSSID;
+
+    try nl.reqOnSock(
+        alloc, 
+        nl_sock,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .genh = .{
                 .cmd = c(CMD).AUTHENTICATE,
-                .version = 1,
+                .version = 0,
             },
         },
         &.{
@@ -1436,20 +2245,12 @@ pub fn authWPA2(
                 .data = mem.toBytes(if_index)[0..],
             },
             .{ 
-                .hdr = .{ .type = c(ATTR).SSID },
+                .hdr = .{ .type = c(ATTR).SSID, .len = @intCast(ssid.len + 4) },
                 .data = ssid,
             },
             .{ 
                 .hdr = .{ .type = c(ATTR).AUTH_TYPE },
                 .data = mem.toBytes(@intFromEnum(auth_type))[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
-                .data = mem.toBytes(WPA.VERSION_2)[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
-                .data = mem.toBytes(AKM_SUITES.PSK)[0..],
             },
             .{
                 .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
@@ -1461,28 +2262,45 @@ pub fn authWPA2(
             },
         },
     );
+    errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
 }
 
 /// Associate to the provided WPA2 Network `ssid`.
 pub fn assocWPA2(
     alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
     if_index: i32,
     ssid: []const u8,
     scan_results: ScanResults,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const auth_type = determineAuthAlg(scan_results);
+    const net_if = try getInterface(alloc, if_index);
+    defer nl.parse.freeBytes(alloc, NetworkInterface, net_if);
+    const phy_index = net_if.WIPHY orelse return error.MissingWIPHYIndex;
+    const wiphy = try getWIPHY(alloc, if_index, phy_index);
+    defer nl.parse.freeBytes(alloc, WIPHY, wiphy);
+    const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy) orelse return error.MissingOperatingClasses;
+    defer alloc.free(op_classes);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
+    log.debug("Ch: {d}, Freq: {d}MHz", .{ try getChannel(wiphy_freq), wiphy_freq });
     const bssid = bss.BSSID orelse return error.MissingBSSID;
     const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
-    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
+    const rsn = ies.RSN orelse return error.MissingRSN;
+    const ext_capa = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10);
+    const new_ies: InformationElements = .{
+        .RSN = rsn,
+        .SUPPORTED_OPER_CLASSES = op_classes,
+        .EXTENDED_CAPABILITIES = ext_capa,
+    };
+    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, new_ies);
     defer alloc.free(ie_bytes);
+    const ht_attr, const vht_attr = try deriveAssocHTCapes(bss, wiphy);
 
-    const nl_sock = try nl.request(
+    try nl.reqOnSock(
         alloc, 
-        nl.NETLINK.GENERIC,
+        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -1502,44 +2320,87 @@ pub fn assocWPA2(
                 .hdr = .{ .type = c(ATTR).IFINDEX },
                 .data = mem.toBytes(if_index)[0..],
             },
-            .{ 
-                .hdr = .{ .type = c(ATTR).SSID },
-                .data = ssid,
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).AUTH_TYPE },
-                .data = mem.toBytes(@intFromEnum(auth_type))[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
-                .data = mem.toBytes(WPA.VERSION_2)[0..],
-            },
             .{
-                .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
-                .data = mem.toBytes(AKM_SUITES.PSK)[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
-                .data = mem.toBytes(wiphy_freq)[0..],
+                .hdr = .{ .type = c(ATTR).SOCKET_OWNER },
+                .data = &.{},
             },
             .{
                 .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
                 .data = bssid[0..],
             },
+            .{
+                .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
+                .data = mem.toBytes(wiphy_freq)[0..],
+            },
             .{ 
-                .hdr = .{ .type = c(ATTR).CIPHER_SUITE_GROUP },
-                .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
+                .hdr = .{ .type = c(ATTR).SSID, .len = @intCast(ssid.len + 4) },
+                .data = ssid,
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).IE, .len = @intCast(ie_bytes.len + nl.attr_hdr_len) },
+                .data = ie_bytes,
+            },
+            .{ 
+                .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
+                .data = mem.toBytes(WPA.VERSION_2)[0..],
             },
             .{ 
                 .hdr = .{ .type = c(ATTR).CIPHER_SUITES_PAIRWISE },
                 .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
             },
             .{ 
-                .hdr = .{ .type = c(ATTR).IE, .len = @intCast(ie_bytes.len + nl.attr_hdr_len) },
-                .data = ie_bytes,
+                .hdr = .{ .type = c(ATTR).CIPHER_SUITE_GROUP },
+                .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
+                .data = mem.toBytes(AKM_SUITES.PSK)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).CONTROL_PORT },
+                .data = &.{},
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).USE_RRM },
+                .data = &.{},
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).HT_CAPABILITY, .len = 30 },
+                //.data = ht_attr[0..],
+                .data = (ht_attr orelse @as([26]u8, .{ 0 } ** 26))[0..],
+                //.data = @as([26]u8, .{ 63 } ++ (.{ 0 } ** 25))[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).HT_CAPABILITY_MASK, .len = 30 },
+                //.data = ht_attr[0..],
+                .data = (wiphy.HT_CAPABILITY_MASK)[0..] //orelse @as([26]u8, .{ 0 } ** 26))[0..],
+                //.data = @as([26]u8, .{ 63 } ++ (.{ 0 } ** 25))[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).VHT_CAPABILITY },
+                //.data = vht_attr[0..],
+                .data = (vht_attr orelse @as([12]u8, .{ 0 } ** 12))[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).VHT_CAPABILITY_MASK },
+                //.data = vht_attr[0..],
+                .data = (wiphy.VHT_CAPABILITY_MASK)[0..], //orelse @as([12]u8, .{ 0 } ** 12))[0..],
+            },
+            //.{
+            //    .hdr = .{ .type = c(ATTR).CONTROL_PORT_OVER_NL80211 },
+            //    .data = &.{},
+            //},
+            .{
+                .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE, .len = 6 },
+                .data = mem.toBytes(@as(u16, @intCast(0x888E)))[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).CONTROL_PORT_NO_PREAUTH },
+                .data = &.{},
             },
         },
     );
+    errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
 }
 
@@ -1548,91 +2409,53 @@ pub fn connectWPA2(
     alloc: mem.Allocator, 
     if_index: i32, 
     ssid: []const u8, 
-    pmk: []const u8
+    pmk: [32]u8,
+    handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!struct{ [48]u8, [16]u8 },
 ) !void {
-    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const delay: usize = 30;
+    //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     try takeOwnership(if_index);
-    time.sleep(10 * time.ns_per_ms);
+    time.sleep(delay * 10 * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).DOWN);
-    time.sleep(10 * time.ns_per_ms);
+    time.sleep(delay * 10 * time.ns_per_ms);
     try setMode(if_index, c(IFTYPE).STATION);
-    time.sleep(10 * time.ns_per_ms);
+    time.sleep(delay * 10 * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).UP);
-    time.sleep(10 * time.ns_per_ms);
+    time.sleep(delay * 10 * time.ns_per_ms);
+    const nl_sock = try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 10, .tv_usec = 0 });
+    try registerFrames(
+        alloc,
+        nl_sock,
+        if_index,
+        &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
+        &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
+    );
+    time.sleep(delay * 10 * time.ns_per_ms);
     const scan_results = try scanSSID(alloc, if_index, ssid);
     defer nl.parse.freeBytes(alloc, ScanResults, scan_results);
-    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, scan_results.BSS.?.INFORMATION_ELEMENTS.?);
+    const ies = scan_results.BSS.?.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
     defer alloc.free(ie_bytes);
-    const auth_type = determineAuthAlg(scan_results);
-    try authWPA2(alloc, if_index, ssid, scan_results);
-    time.sleep(100 * time.ns_per_ms);
-    try assocWPA2(alloc, if_index, ssid, scan_results);
-    log.debug("IE Bytes Len: {d}B", .{ ie_bytes.len });
-    const nl_sock = try nl.request(
-        alloc, 
-        nl.NETLINK.GENERIC,
-        nl.generic.Request,
-        .{
-            .nlh = .{
-                .len = 0,
-                .type = info.FAMILY_ID,
-                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
-                .pid = 0,
-            },
-            .genh = .{
-                .cmd = c(CMD).CONNECT,
-                .version = 1,
-            },
-        },
-        &.{
-            .{ 
-                .hdr = .{ .type = c(ATTR).IFINDEX },
-                .data = mem.toBytes(if_index)[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
-                .data = mem.toBytes(@as(u32, 2))[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).AUTH_TYPE },
-                .data = mem.toBytes(@intFromEnum(auth_type))[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).CIPHER_SUITE_GROUP },
-                .data = mem.toBytes(@as(u32, 0x000fac04))[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).CIPHER_SUITES_PAIRWISE },
-                .data = mem.toBytes(@as(u32, 0x000fac04))[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).AKM_SUITES },
-                .data = mem.toBytes(@as(u32, 1027074))[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).SSID },
-                .data = ssid,
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).PMK },
-                .data = pmk,
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).IE, .len = @intCast(ie_bytes.len + nl.attr_hdr_len) },
-                .data = ie_bytes,
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
-                .data = mem.toBytes(scan_results.BSS.?.FREQUENCY.?)[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
-                .data = scan_results.BSS.?.BSSID.?[0..],
-            },
-        },
-    );
-    defer posix.close(nl_sock);
-
-    try nl.handleAck(nl_sock);
+    time.sleep(delay * 10 * time.ns_per_ms);
+    try resetKeyState(alloc, if_index, scan_results.BSS.?.BSSID.?);
+    time.sleep(delay * 20 * time.ns_per_ms);
+    //const auth_type = determineAuthAlg(scan_results);
+    try authWPA2(alloc, nl_sock, if_index, ssid, scan_results);
+    time.sleep(delay * time.ns_per_ms);
+    try assocWPA2(alloc, nl_sock, if_index, ssid, scan_results);
+    errdefer posix.close(nl_sock);
+    //time.sleep(delay * time.ns_per_ms);
+    const rsn = ies.RSN orelse return error.MissingRSN;
+    const rsn_bytes = rsnBytes: {
+        const bytes = try nl.parse.toBytes(alloc, InformationElements.RobustSecurityNetwork, rsn);
+        errdefer alloc.free(bytes);
+        var buf = std.ArrayListUnmanaged(u8).fromOwnedSlice(bytes);
+        errdefer buf.deinit(alloc);
+        try buf.insert(alloc, 0, @intCast(bytes.len));
+        try buf.insert(alloc, 0, c(IE).RSN);
+        break :rsnBytes try buf.toOwnedSlice(alloc);
+    };
+    defer alloc.free(rsn_bytes);
+    _ = try handle4WHS(if_index, pmk, rsn_bytes);
+    time.sleep(delay * time.ns_per_ms);
 }
