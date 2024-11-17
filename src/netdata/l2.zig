@@ -1,4 +1,4 @@
-//! Frame Types & Functions for DisCo.
+//! Layer 2 Types & Functions for DisCo.
 
 const std = @import("std");
 const mem = std.mem;

@@ -2,4 +2,4 @@
 
 const std = @import("std");
 
-pub const frames = @import("netdata/frames.zig");
+pub const l2 = @import("netdata/l2.zig");
