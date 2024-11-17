@@ -553,21 +553,6 @@ pub const IFTYPE = enum(u32) {
     OCB2,
     NAN3,
 };
-/// Key Attributes
-pub const KEY = enum(u16) {
-    __INVALID,
-    DATA,
-    IDX,
-    CIPHER,
-    SEQ,
-    DEFAULT,
-    DEFAULT_MGMT,
-    TYPE,
-    DEFAULT_TYPES,
-    MODE,
-    DEFAULT_BEACON,
-    __AFTER_LAST,
-};
 
 /// Result of `CMD_NEW_INTERFACE` which can be called w/ `getInterface()`.
 const NetworkInterface = struct {
@@ -1585,6 +1570,202 @@ pub const CIPHER_SUITES = enum(u32) {
     BIP_CMAC_256 = 0x000FAC0D,
 };
 
+/// Key Attributes
+pub const KEY = enum(u16) {
+    __INVALID,
+    DATA,
+    IDX,
+    CIPHER,
+    SEQ,
+    DEFAULT,
+    DEFAULT_MGMT,
+    TYPE,
+    DEFAULT_TYPES,
+    MODE,
+    DEFAULT_BEACON,
+    __AFTER_LAST,
+};
+pub const KEY_ATTR = struct {
+    pub const AttrE = KEY;
+
+    DATA: [16]u8,
+    CIPHER: u32,
+    SEQ: ?[6]u8 = null,
+    IDX: u8,
+    TYPE: ?u8 = null,
+};
+
+/// Station Flags
+pub const STA_FLAG = enum(u32) {
+    /// Invalid STA flag
+    __INVALID,
+    /// STA is authorized to send/receive traffic
+    AUTHORIZED,
+    /// STA is capable of short preamble
+    SHORT_PREAMBLE,
+    /// STA supports WME (QoS)
+    WME,
+    /// STA uses management frame protection
+    MFP,
+    /// STA is authenticated
+    AUTHENTICATED,
+    /// STA is a TDLS peer
+    TDLS_PEER,
+    /// STA is associated
+    ASSOCIATED,
+    /// STA supports SPP A-MSDU aggregation
+    SPP_AMSDU,
+    /// Keep last
+    __AFTER_LAST,
+    ///// Maximum STA flag
+    //MAX = @intCast(u32, __AFTER_LAST) - 1,
+};
+
+pub const STA_INFO = enum(u16) {
+    INVALID = 0,
+    INACTIVE_TIME = 1,
+    RX_BYTES = 2,
+    TX_BYTES = 3,
+    LLID = 4,
+    PLID = 5,
+    PLINK_STATE = 6,
+    SIGNAL = 7,
+    TX_BITRATE = 8,
+    RX_PACKETS = 9,
+    TX_PACKETS = 10,
+    TX_RETRIES = 11,
+    TX_FAILED = 12,
+    SIGNAL_AVG = 13,
+    RX_BITRATE = 14,
+    BSS_PARAM = 15,
+    CONNECTED_TIME = 16,
+    STA_FLAGS = 17,
+    BEACON_LOSS = 18,
+    T_OFFSET = 19,
+    LOCAL_PM = 20,
+    PEER_PM = 21,
+    NONPEER_PM = 22,
+    RX_BYTES64 = 23,
+    TX_BYTES64 = 24,
+    CHAIN_SIGNAL = 25,
+    CHAIN_SIGNAL_AVG = 26,
+    EXPECTED_THROUGHPUT = 27,
+    RX_DROP_MISC = 28,
+    BEACON_RX = 29,
+    BEACON_SIGNAL_AVG = 30,
+    TID_STATS = 31,
+    RX_DURATION = 32,
+    PAD = 33,
+    ACK_SIGNAL = 34,
+    ACK_SIGNAL_AVG = 35,
+    RX_MPDUS = 36,
+    FCS_ERROR_COUNT = 37,
+    CONNECTED_TO_GATE = 38,
+    TX_DURATION = 39,
+    AIRTIME_WEIGHT = 40,
+    AIRTIME_LINK_METRIC = 41,
+    ASSOC_AT_BOOTTIME = 42,
+    CONNECTED_TO_AS = 43,
+};
+
+pub const StationInfo = struct {
+    pub const AttrE = STA_INFO;
+    const StationFlag = packed struct {
+        /// Flags to be changed
+        mask: u32,
+        /// Flag values to set
+        set: u32,
+    };
+
+    /// Time in milliseconds the station has been inactive
+    INACTIVE_TIME: ?u32 = null,
+    /// Bytes received from the station
+    RX_BYTES: ?u32 = null,
+    /// Bytes transmitted to the station
+    TX_BYTES: ?u32 = null,
+    /// Link Layer ID for mesh peer
+    LLID: ?u16 = null,
+    /// Peer Link ID for mesh peer
+    PLID: ?u16 = null,
+    /// Mesh peer link state
+    PLINK_STATE: ?u8 = null,
+    /// Signal strength (dBm)
+    SIGNAL: ?i8 = null,
+    /// Transmit bitrate information
+    TX_BITRATE: ?[]const u8 = null,
+    /// Packets received from the station
+    RX_PACKETS: ?u32 = null,
+    /// Packets transmitted to the station
+    TX_PACKETS: ?u32 = null,
+    /// Retransmitted packets
+    TX_RETRIES: ?u32 = null,
+    /// Failed transmissions
+    TX_FAILED: ?u32 = null,
+    /// Average signal strength (dBm)
+    SIGNAL_AVG: ?i8 = null,
+    /// Receive bitrate information
+    RX_BITRATE: ?[]const u8 = null,
+    /// BSS-specific information
+    BSS_PARAM: ?[]const u8 = null,
+    /// Time in seconds since association
+    CONNECTED_TIME: ?u32 = null,
+    /// Station flags
+    STA_FLAGS: ?StationFlag = null,
+    /// Number of beacons lost
+    BEACON_LOSS: ?u32 = null,
+    /// Timing offset with the station
+    T_OFFSET: ?u64 = null,
+    /// Local power management state
+    LOCAL_PM: ?u8 = null,
+    /// Peer power management state
+    PEER_PM: ?u8 = null,
+    /// Non-peer power management state
+    NONPEER_PM: ?u8 = null,
+    /// 64-bit RX byte count
+    RX_BYTES64: ?u64 = null,
+    /// 64-bit TX byte count
+    TX_BYTES64: ?u64 = null,
+    /// Signal strength per chain
+    CHAIN_SIGNAL: ?[]const u8 = null,
+    /// Average signal strength per chain
+    CHAIN_SIGNAL_AVG: ?[]const u8 = null,
+    /// Expected throughput
+    EXPECTED_THROUGHPUT: ?u32 = null,
+    /// Received packets dropped due to misc errors
+    RX_DROP_MISC: ?u64 = null,
+    /// Beacon frames received
+    BEACON_RX: ?u64 = null,
+    /// Average beacon signal strength
+    BEACON_SIGNAL_AVG: ?i8 = null,
+    /// Traffic Identifier (TID) statistics
+    TID_STATS: ?[]const u8 = null,
+    /// Total RX duration
+    RX_DURATION: ?u64 = null,
+    /// Padding for alignment
+    PAD: ?u8 = null,
+    /// Acknowledgment signal strength
+    ACK_SIGNAL: ?i8 = null,
+    /// Average acknowledgment signal strength
+    ACK_SIGNAL_AVG: ?i8 = null,
+    /// RX MPDUs count
+    RX_MPDUS: ?u64 = null,
+    /// Frame Check Sequence error count
+    FCS_ERROR_COUNT: ?u64 = null,
+    /// Connection to the gate status
+    CONNECTED_TO_GATE: ?bool = null,
+    /// Total TX duration
+    TX_DURATION: ?u64 = null,
+    /// Airtime weight for station
+    AIRTIME_WEIGHT: ?u16 = null,
+    /// Airtime link metric for station
+    AIRTIME_LINK_METRIC: ?u32 = null,
+    /// Association time at boot
+    ASSOC_AT_BOOTTIME: ?u64 = null,
+    /// Connection to AS status
+    CONNECTED_TO_AS: ?bool = null,
+};
+
+
 
 /// Get Netlink 80211 Control Info
 /// This will be stored in a Global Variable that should be deinialized with `deinitCtrlInfo()`.
@@ -1674,6 +1855,96 @@ pub fn setMode(if_index: i32, mode: u32) !void {
     );
     defer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
+}
+
+/// Get the details for a Station.
+pub fn getStation(alloc: mem.Allocator, if_index: i32, bssid: [6]u8) !StationInfo {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .genh = .{
+                .cmd = c(CMD).GET_STATION,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = bssid[0..],
+            },
+        },
+    );
+    const buf_size = 5_000;
+    var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
+    const resp_len = try posix.recv(
+        nl_sock,
+        resp_buf[0..],
+        0,
+    );
+    var offset: usize = 0;
+    var inner_count: usize = 1;
+    while (offset < resp_len) : (inner_count += 1) {
+        // Netlink Header
+        var start: usize = offset;
+        var end: usize = offset + @sizeOf(nl.MessageHeader);
+        const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+        log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+        if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+            return error.InvalidMessage;
+        if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
+            start = end;
+            end += @sizeOf(nl.ErrorHeader);
+            const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+            switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+                .SUCCESS => {},
+                .BUSY => return error.BUSY,
+                else => |err| {
+                    log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                    return error.OSError;
+                },
+            }
+        }
+        // General Header
+        start = end;
+        end += @sizeOf(nl.generic.Header);
+        const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
+        if (gen_hdr.cmd != c(CMD).NEW_STATION) return error.NonStationResponse;
+        log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+        // Data
+        while (end < nl_resp_hdr.len - @sizeOf(nl.MessageHeader)) {
+            defer end = mem.alignForward(usize, end, 4);
+            start = end;
+            end += nl.attr_hdr_len;
+            const attr_hdr: *const nl.AttributeHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+            start = end;
+            end += attr_hdr.len - nl.attr_hdr_len;
+            switch (attr_hdr.type) {
+                c(ATTR).STA_INFO => {
+                    return nl.parse.fromBytes(alloc, StationInfo, resp_buf[start..end]) catch {
+                        offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
+                        continue;
+                    };
+                },
+                //c(ATTR).GENERATION => attr_gen = @alignCast(@ptrCast(resp_buf[start..end])),
+                else => continue,
+            }
+        }
+    }
+    return error.NoStationFound;
 }
 
 /// Get the details for a Wireless Interface.
@@ -2356,10 +2627,10 @@ pub fn assocWPA2(
                 .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
                 .data = mem.toBytes(AKM_SUITES.PSK)[0..],
             },
-            .{
-                .hdr = .{ .type = c(ATTR).CONTROL_PORT },
-                .data = &.{},
-            },
+            //.{
+            //    .hdr = .{ .type = c(ATTR).CONTROL_PORT },
+            //    .data = &.{},
+            //},
             .{
                 .hdr = .{ .type = c(ATTR).USE_RRM },
                 .data = &.{},
@@ -2404,6 +2675,162 @@ pub fn assocWPA2(
     try nl.handleAck(nl_sock);
 }
 
+/// Send Control Frame
+pub fn sendControlFrame(
+    alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
+    if_index: i32,
+    bssid: [6]u8,
+    frame_data: []const u8,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.reqOnSock(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,  // Could make this a parameter if needed
+                .pid = 0,
+            },
+            .genh = .{
+                .cmd = c(CMD).CONTROL_PORT_FRAME,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = bssid[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE },
+                .data = mem.toBytes(@as(u16, 0x888E))[0..],  // EAPOL
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).CONTROL_PORT_NO_ENCRYPT },
+                .data = &.{},
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).FRAME },
+                .data = frame_data,
+            },
+        },
+    );
+}
+
+/// Authorize Port via Station Flags after the 4 Way Handshake
+/// Note, this may not work as expected.
+pub fn authPort(
+    alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
+    if_index: i32,
+    mac: [6]u8,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const sta_flags: StationInfo.StationFlag = .{
+        .mask = c(STA_FLAG).AUTHORIZED,
+        .set = c(STA_FLAG).AUTHORIZED,
+    };
+    try nl.reqOnSock(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .genh = .{
+                .cmd = c(CMD).SET_STATION,
+                .version = 0,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = mac[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).STA_FLAGS2 },
+                .data = mem.toBytes(sta_flags)[0..],
+            },
+        },
+    );
+    try nl.handleAck(nl_sock);
+}
+
+/// Add a `key` to the given `key_index` for a specific connection.
+pub fn addKey(
+    alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
+    if_index: i32,
+    mac: ?[6]u8,
+    key: KEY_ATTR,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const key_bytes = try nl.parse.toBytes(alloc, KEY_ATTR, key);
+    defer alloc.free(key_bytes);
+    try nl.reqOnSock(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .genh = .{
+                .cmd = c(CMD).NEW_KEY,
+                .version = 0,
+            },
+        },
+        if (mac) |_mac| &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = _mac[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).KEY },
+                .data = key_bytes,
+            },
+        }
+        else &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).KEY },
+                .data = key_bytes,
+            },
+        },
+    );
+    errdefer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
 /// Connect to a WPA2 Network
 pub fn connectWPA2(
     alloc: mem.Allocator, 
@@ -2433,20 +2860,21 @@ pub fn connectWPA2(
     time.sleep(delay * 10 * time.ns_per_ms);
     const scan_results = try scanSSID(alloc, if_index, ssid);
     defer nl.parse.freeBytes(alloc, ScanResults, scan_results);
-    const ies = scan_results.BSS.?.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+    const bss = scan_results.BSS orelse return error.MissingBSS;
+    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
     const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
     defer alloc.free(ie_bytes);
     time.sleep(delay * 10 * time.ns_per_ms);
-    try resetKeyState(alloc, if_index, scan_results.BSS.?.BSSID.?);
+    const bssid = bss.BSSID orelse return error.MissingBSSID;
+    try resetKeyState(alloc, if_index, bssid);
     time.sleep(delay * 20 * time.ns_per_ms);
     //const auth_type = determineAuthAlg(scan_results);
     try authWPA2(alloc, nl_sock, if_index, ssid, scan_results);
     time.sleep(delay * time.ns_per_ms);
     try assocWPA2(alloc, nl_sock, if_index, ssid, scan_results);
-    errdefer posix.close(nl_sock);
-    //time.sleep(delay * time.ns_per_ms);
-    const rsn = ies.RSN orelse return error.MissingRSN;
     const rsn_bytes = rsnBytes: {
+        errdefer posix.close(nl_sock);
+        const rsn = ies.RSN orelse return error.MissingRSN;
         const bytes = try nl.parse.toBytes(alloc, InformationElements.RobustSecurityNetwork, rsn);
         errdefer alloc.free(bytes);
         var buf = std.ArrayListUnmanaged(u8).fromOwnedSlice(bytes);
@@ -2456,6 +2884,28 @@ pub fn connectWPA2(
         break :rsnBytes try buf.toOwnedSlice(alloc);
     };
     defer alloc.free(rsn_bytes);
-    _ = try handle4WHS(if_index, pmk, rsn_bytes);
-    time.sleep(delay * time.ns_per_ms);
+    const ptk, const gtk = try handle4WHS(if_index, pmk, rsn_bytes);
+    inline for (&.{ ptk[32..], gtk[0..] }, 0..) |key, idx| {
+        log.debug("Adding Key: {X:0>2}", .{ key });
+        try addKey(
+            alloc,
+            nl_sock,
+            if_index,
+            if (idx == 0) bssid else null,
+            .{
+                .DATA = key.*,
+                .CIPHER = c(CIPHER_SUITES).CCMP,
+                .SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
+                .IDX = idx,
+            },
+        );
+    }
+    try posix.setsockopt(
+        nl_sock,
+        posix.SOL.SOCKET,
+        posix.SO.RCVTIMEO,
+        mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
+    );
+    time.sleep(10 * time.ns_per_s);
+    posix.close(nl_sock);
 }

@@ -334,7 +334,7 @@ pub fn freeBytes(alloc: mem.Allocator, T: type, instance: T) void {
 
 /// Write an `instance` of the provided Raw (packed or union) Type (`T`) to Netlink Bytes using the provided Allocator `alloc`.
 pub fn rawToBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
-    return alloc.dupe(mem.toBytes(instance)[0..]);
+    return alloc.dupe(u8, mem.toBytes(instance)[0..(@bitSizeOf(T) / 8)]);
 }
 
 /// Write the provided `instance` to Netlink Bytes using the provided Allocator `alloc`.
@@ -354,7 +354,7 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
             if (mem.eql(u8, decl.name, "AttrHdrT")) HdrT = @field(T, "AttrHdrT");
         }
         break :consts .{
-            E orelse @compileError("Missing Attribute Enum Declaration (`AttrE`)"),
+            E orelse @compileError(fmt.comptimePrint("Type `{s}` is missing Attribute Enum Declaration (`AttrE`)", .{ @typeName(T) })),
             HdrT orelse nl.AttributeHeader,
         };
     };

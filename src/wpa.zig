@@ -3,6 +3,7 @@
 const std = @import("std");
 const bpf = std.os.linux.BPF;
 const crypto = std.crypto;
+const fmt = std.fmt;
 const json = std.json;
 const log = std.log;
 const mem = std.mem;
@@ -16,7 +17,7 @@ const netdata = @import("netdata.zig");
 const utils = @import("utils.zig");
 
 const c = utils.toStruct;
-const frames = netdata.frames;
+const l2 = netdata.l2;
 
 pub const Protocol = enum {
     open,
@@ -232,10 +233,10 @@ const GTK_KDE = packed struct {
 pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]u8, [16]u8 } {
     log.debug("Starting 4WHS...", .{});
     defer log.debug("Finished 4WHS!", .{});
-    const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(frames.Eth.ETH_P).PAE));
+    const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE));
     const sock_addr = posix.sockaddr.ll{
         .ifindex = if_index,
-        .protocol = mem.nativeToBig(u16, c(frames.Eth.ETH_P).PAE),
+        .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE),
         .hatype = 0,
         .pkttype = 0,
         .halen = 6,
@@ -255,11 +256,11 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
     );
     try posix.bind(hs_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
     // Process 4-Way Handshake
-    const eth_hdr_len = @sizeOf(frames.Eth.Header);
-    const eap_hdr_len = @sizeOf(frames.EAPOL.Header);
-    const kf_hdr_len = @bitSizeOf(frames.EAPOL.KeyFrame) / 8;
+    const eth_hdr_len = @sizeOf(l2.Eth.Header);
+    const eap_hdr_len = @sizeOf(l2.EAPOL.Header);
+    const kf_hdr_len = @bitSizeOf(l2.EAPOL.KeyFrame) / 8;
     const hdrs_len = eth_hdr_len + eap_hdr_len + kf_hdr_len;
-    const KeyInfo = frames.EAPOL.KeyFrame.KeyInfo;
+    const KeyInfo = l2.EAPOL.KeyFrame.KeyInfo;
     const ptk_flags = mem.nativeToBig(u16, c(KeyInfo).Version2 | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack);
     const mic_flags = mem.nativeToBig(u16, c(KeyInfo).Version2 | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC);
     const gtk_flags = mem.nativeToBig(u16, c(KeyInfo).Version2 | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure);
@@ -292,39 +293,26 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         var start: usize = 0;
         var end: usize = eth_hdr_len;
         log.debug("Start: {d}B, End: {d}B", .{ start, end });
-        const m1_eth_hdr: *const frames.Eth.Header = @alignCast(@ptrCast(m1_buf[start..end]));
-        {
-            log.debug(
-                \\ ETH Header:
-                \\ - Dst: {X:0>2}
-                \\ - Src: {X:0>2}
-                \\ - Type: 0x{x}
-                , .{ 
-                    m1_eth_hdr.dst_mac_addr,
-                    m1_eth_hdr.src_mac_addr,
-                    mem.bigToNative(u16, m1_eth_hdr.ether_type),
-                }
-            );
-        }
-        if (mem.bigToNative(u16, m1_eth_hdr.ether_type) != c(frames.Eth.ETH_P).PAE) {
-            log.debug("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m1_eth_hdr.ether_type) });
+        const m1_eth_hdr: *const l2.Eth.Header = @alignCast(@ptrCast(m1_buf[start..end]));
+        if (mem.bigToNative(u16, m1_eth_hdr.ether_type) != c(l2.Eth.ETH_P).PAE) {
+            log.warn("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m1_eth_hdr.ether_type) });
             continue;
         }
         start = end;
         end += eap_hdr_len;
         //log.debug("Start: {d}B, End: {d}B", .{ start, end });
         //const m1_eap_hdr: *const frames.EAPOL.Header = @alignCast(@ptrCast(m1_buf[start..end]));
-        const m1_eap_hdr = mem.bytesAsValue(frames.EAPOL.Header, m1_buf[start..end]);
+        const m1_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m1_buf[start..end]);
         const eap_packet_type = mem.bigToNative(u8, m1_eap_hdr.packet_type);
-        if (eap_packet_type != c(frames.EAPOL.EAP).KEY) {
-            log.debug("EAPOL Type: {s}", .{ @tagName(@as(frames.EAPOL.EAP, @enumFromInt(eap_packet_type))) });
+        if (eap_packet_type != c(l2.EAPOL.EAP).KEY) {
+            log.warn("EAPOL Type: {s}", .{ @tagName(@as(l2.EAPOL.EAP, @enumFromInt(eap_packet_type))) });
             continue;
         }
         start = end;
         end += kf_hdr_len;
         //log.debug("Start: {d}B, End: {d}B", .{ start, end });
         //log.debug("KeyFrame Header Len: {d}B", .{ kf_hdr_len });
-        const m1_kf_hdr = mem.bytesAsValue(frames.EAPOL.KeyFrame, m1_buf[start..end]);
+        const m1_kf_hdr = mem.bytesAsValue(l2.EAPOL.KeyFrame, m1_buf[start..end]);
         log.debug(
             \\
             \\-------------------------------------
@@ -356,12 +344,12 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         const kck = ptk[0..16];
         const kek = ptk[16..32];
         // Message 2
-        const m2_eth_hdr: frames.Eth.Header = .{
+        const m2_eth_hdr: l2.Eth.Header = .{
             .dst_mac_addr = ap_mac,
             .src_mac_addr = client_mac,
             .ether_type = m1_eth_hdr.ether_type,
         };
-        const m2_eap_hdr: frames.EAPOL.Header = .{
+        const m2_eap_hdr: l2.EAPOL.Header = .{
             .protocol_version = m1_eap_hdr.protocol_version,
             .packet_type = m1_eap_hdr.packet_type,
             .packet_length = mem.nativeToBig(u16, kf_hdr_len + @as(u16, @intCast(m2_data.len))),
@@ -412,7 +400,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
             \\- PTK: {X:0>2}
             \\  - KCK: {X:0>2}
             \\  - KEK: {X:0>2}
-            \\  - MIC: {X:0>2}
+            \\- MIC: {X:0>2}
             \\
             , .{
                 if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac else ap_mac,
@@ -432,32 +420,18 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         const m3_buf = recv_buf[0..m3_len];
         start = 0;
         end = eth_hdr_len;
-        const m3_eth_hdr: *const frames.Eth.Header = @alignCast(@ptrCast(m3_buf[start..end]));
-        if (mem.bigToNative(u16, m3_eth_hdr.ether_type) != c(frames.Eth.ETH_P).PAE) {
-            log.debug("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m3_eth_hdr.ether_type) });
+        const m3_eth_hdr: *const l2.Eth.Header = @alignCast(@ptrCast(m3_buf[start..end]));
+        if (mem.bigToNative(u16, m3_eth_hdr.ether_type) != c(l2.Eth.ETH_P).PAE) {
+            log.warn("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m3_eth_hdr.ether_type) });
             continue;
         }
         //log.debug("Start: {d}B, End: {d}B", .{ start, end });
         start = end;
         end += eap_hdr_len;
-        const m3_eap_hdr = mem.bytesAsValue(frames.EAPOL.Header, m3_buf[start..end]);
-        {
-            log.debug(
-                \\ EAP Header:
-                \\ - Src: 0x{X:0>2}
-                \\ - Type: 0x{X:0>2}
-                \\ - Len: {d}B
-                , .{ 
-                    m3_eap_hdr.protocol_version,
-                    m3_eap_hdr.packet_type,
-                    mem.bigToNative(u16, m3_eap_hdr.packet_length),
-                },
-            );
-        }
-        //const m3_eap_hdr: *const frames.EAPOL.Header = @ptrCast(m3_buf[start..end]);
+        const m3_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m3_buf[start..end]);
         start = end;
         end += kf_hdr_len;
-        const m3_kf_hdr = mem.bytesToValue(frames.EAPOL.KeyFrame, m3_buf[start..end]);
+        const m3_kf_hdr = mem.bytesToValue(l2.EAPOL.KeyFrame, m3_buf[start..end]);
         start = end;
         end += mem.bigToNative(u16, m3_kf_hdr.key_data_len);
         const m3_key_data = m3_buf[start..end];
@@ -465,12 +439,19 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
             \\
             \\-------------------------------------
             \\M3:
+            \\- EAP Header:
+            \\  - Src:  0x{X:0>2}
+            \\  - Type: 0x{X:0>2}
+            \\  - Len:  {d}B
             \\- Replay Counter: {d}
             \\- Key Info:  0x{X:0>4}
             \\- GTK Flags: 0x{X:0>4}
             \\- Key Len:   {d}B
-            \\- Key Data: {X:0>2}
+            \\- Key Data:  {X:0>2}
             , .{
+                m3_eap_hdr.protocol_version,
+                m3_eap_hdr.packet_type,
+                mem.bigToNative(u16, m3_eap_hdr.packet_length),
                 mem.bigToNative(u64, m3_kf_hdr.replay_counter),
                 mem.bigToNative(u16, m3_kf_hdr.key_info),
                 mem.bigToNative(u16, gtk_flags),
@@ -496,7 +477,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         }
         // -- Key Length Mismatch
         if (mem.bigToNative(u16, m3_kf_hdr.key_len) != 16) {
-            log.debug(
+            log.err(
                 \\Key Length Mismatch: 
                 \\- Received: {d}B
                 \\- Expected: 16B
@@ -540,35 +521,38 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         // - Handle Key Data
         var m3_uw_buf: [500]u8 = .{ 0 } ** 500;
         const m3_uw_data = uwKeyData: {
-            log.debug(
-                \\Encrypted M3 Data:
-                \\- Info: 0b{b:0>16}
-                \\- Bool: 0b{b:0>16}
-                \\- Flag: 0b{b:0>16}
-                , .{
-                    mem.bigToNative(u16, m3_info),
-                    mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData,
-                    c(KeyInfo).EncryptedData,
-                },
-            );
+            //log.debug(
+            //    \\Encrypted M3 Data:
+            //    \\- Info: 0b{b:0>16}
+            //    \\- Bool: 0b{b:0>16}
+            //    \\- Flag: 0b{b:0>16}
+            //    , .{
+            //        mem.bigToNative(u16, m3_info),
+            //        mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData,
+            //        c(KeyInfo).EncryptedData,
+            //    },
+            //);
             if (mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData == c(KeyInfo).EncryptedData) {
                 const uw_len = try aesKeyUnwrap(kek, m3_key_data, m3_uw_buf[0..]);
                 break :uwKeyData m3_uw_buf[0..uw_len];
             }
             else break :uwKeyData m3_key_data;
         };
-        log.debug("Decrypted Key Data:\n{X:0>2}", .{ m3_uw_data });
+        //log.debug("Decrypted Key Data:\n{X:0>2}", .{ m3_uw_data });
         start = m3_uw_data[1] + 2;
         end = start + (m3_uw_data[start + 1]) + 2;
         const m3_gtk_kde = mem.bytesAsValue(GTK_KDE, m3_uw_data[start..end]);
-        log.debug("GTK: {X:0>2}", .{ mem.toBytes(m3_gtk_kde.key)[0..] });
+        //log.debug("GTK: {X:0>2}", .{ mem.toBytes(m3_gtk_kde.key)[0..] });
         const gtk: [16]u8 = mem.toBytes(m3_gtk_kde.key);
         // Message 4
         const m4_eth_hdr = m2_eth_hdr;
-        const m4_eap_hdr = m2_eap_hdr;
+        var m4_eap_hdr = m2_eap_hdr;
         var m4_kf_hdr = m2_kf_hdr;
+        m4_eap_hdr.packet_length = mem.nativeToBig(u16, kf_hdr_len);
         m4_kf_hdr.replay_counter = m3_kf_hdr.replay_counter;
         m4_kf_hdr.key_info = fin_flags;
+        m4_kf_hdr.key_mic = 0;
+        m4_kf_hdr.key_nonce = 0;
         m4_kf_hdr.key_data_len = 0;
         var m4_mic_buf: [hdrs_len]u8 = .{ 0 } ** hdrs_len;
         start = 0;
@@ -578,7 +562,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         end += kf_hdr_len;
         @memcpy(m4_mic_buf[start..end], mem.toBytes(m4_kf_hdr)[0..kf_hdr_len]);
         const m4_mic = hmacSHA1(kck, m4_mic_buf[0..end])[0..16];
-        m4_kf_hdr.key_mic = mem.bytesToValue(u128, m4_mic[0..16]);
+        m4_kf_hdr.key_mic = mem.bytesToValue(u128, m4_mic);
         // - Send M4
         var m4_buf: [hdrs_len]u8 = .{ 0 } ** hdrs_len;
         start = 0;
@@ -591,7 +575,32 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         end += kf_hdr_len;
         @memcpy(m4_buf[start..end], mem.toBytes(m4_kf_hdr)[0..kf_hdr_len]);
         _ = try posix.send(hs_sock, m4_buf[0..], 0);
-        log.debug("- M4", .{});
+        log.debug(
+            \\
+            \\-------------------------------------
+            \\M2:
+            \\- A1: {X:0>2}
+            \\- A2: {X:0>2}
+            \\- PMK: {X:0>2}
+            \\- ANonce: {X:0>2}
+            \\- SNonce: {X:0>2}
+            \\- PTK: {X:0>2}
+            \\  - KCK: {X:0>2}
+            \\  - KEK: {X:0>2}
+            \\- MIC: {X:0>2}
+            \\
+            , .{
+                if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac else ap_mac,
+                if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac else ap_mac,
+                pmk,
+                anonce,
+                snonce,
+                ptk,
+                kck,
+                kek,
+                m4_mic,
+            },
+        );
 
         return .{ ptk, gtk };
     }
