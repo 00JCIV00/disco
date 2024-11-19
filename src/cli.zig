@@ -30,6 +30,7 @@ pub const CommandT = cova.Command.Custom(.{
             [6]u8,
             nl.route.IFF,
             nl._80211.IFTYPE,
+            nl._80211.CHANNEL_WIDTH,
             wpa.Protocol,
         },
         .child_type_parse_fns = &.{
@@ -68,6 +69,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = []const u8, .alias = "text" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
+            .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
             .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
         }
     }
@@ -87,6 +89,7 @@ pub const setup_cmd = CommandT{
     .sub_cmds = &.{
         .{
             .name = "set",
+            .alias_names = &.{ "change" },
             .description = "Set a Connection attribute.",
             .sub_cmds_mandatory = false,
             .sub_cmds = &.{
@@ -96,6 +99,42 @@ pub const setup_cmd = CommandT{
                     .description = "Set a Connection attribute for the specified Interface.",
                     .opts = &.{
                         .{
+                            .name = "channel",
+                            .description = "Set the Channel of the given Interface. (Note, this will set the card to Up in Monitor mode)",
+                            .long_name = "channel",
+                            .short_name = 'c',
+                            .val = ValueT.ofType(usize, .{
+                                .name = "chan",
+                                .valid_fn = struct{
+                                    pub fn valCh(ch: usize, _: mem.Allocator) bool {
+                                        return nl._80211.validateChannel(ch);
+                                    }
+                                }.valCh,
+                            }),
+                        },
+                        .{
+                            .name = "channel-width",
+                            .description = "Set the Channel/Frequency Width (in MHZ & Throughput) of the given Interface. (Note, this only works in conjunction with --channel or --freq)",
+                            .long_name = "channel-width",
+                            .alias_long_names = &.{ "ch-width" },
+                            .short_name = 'C',
+                            .val = ValueT.ofType(nl._80211.CHANNEL_WIDTH, .{}),
+                        },
+                        .{
+                            .name = "frequency",
+                            .description = "Set the frequency (in MHz) of the given Interface. (Note, this will set the card to Up in Monitor mode)",
+                            .long_name = "frequency",
+                            .short_name = 'f',
+                            .val = ValueT.ofType(usize, .{
+                                .name = "freq",
+                                .valid_fn = struct{
+                                    pub fn valFreq(freq: usize, _: mem.Allocator) bool {
+                                        return nl._80211.validateFreq(freq);
+                                    }
+                                }.valFreq,
+                            }),
+                        },
+                        .{
                             .name = "mac",
                             .description = "Set the MAC Address of the given Interface.",
                             .long_name = "mac",
@@ -104,6 +143,7 @@ pub const setup_cmd = CommandT{
                                 .name = "address",
                                 .parse_fn = struct{
                                     pub fn macParseFn(arg: []const u8, _: mem.Allocator) ![6]u8 {
+                                        // TODO Add random/vendor support
                                         if (arg.len < 12 or arg.len > 17)
                                             return error.AddressNotValid;
                                         var text_buf: [12]u8 = undefined;
@@ -204,7 +244,7 @@ pub const setup_cmd = CommandT{
                     .description = "Set the SSID of the Network. (Up to 32 characters)",
                     .valid_fn = struct {
                         pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
-                            return arg.len <= 32;
+                            return arg.len > 0 and arg.len <= 32;
                         }
                     }.validPass,
                 }),

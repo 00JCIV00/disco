@@ -18,7 +18,7 @@ const c = utils.toStruct;
 /// Interface Info Message (ifinfomsg)
 pub const InterfaceInfoMessage = extern struct {
     family: u8,
-    _padding: u8 =0,
+    _padding: u8 = 0,
     type: u16,
     index: i32,
     flags: u32,
@@ -337,8 +337,8 @@ pub const DeviceInfo = struct {
                     .len = 0,
                     .type = c(RTM).GETLINK,
                     .flags = c(nl.NLM_F).REQUEST,
-                    .pid = 10101,
                     .seq = 12321,
+                    .pid = 0,
                 },
                 .ifi = .{
                     .family = nl.AF.UNSPEC,

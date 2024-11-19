@@ -7,6 +7,7 @@ const log = std.log;
 const os = std.os;
 const posix = std.posix;
 const process = std.process;
+const time = std.time;
 
 const cova = @import("cova");
 const cli = @import("cli.zig");
@@ -14,8 +15,10 @@ const cli = @import("cli.zig");
 const art = @import("art.zig");
 const nl = @import("nl.zig");
 const sys = @import("sys.zig");
+const utils = @import("utils.zig");
 const wpa = @import("wpa.zig");
 
+const c = utils.toStruct;
 const NetworkInterface = @import("NetworkInterface.zig");
 
 pub fn main() !void {
@@ -117,13 +120,17 @@ pub fn main() !void {
             checkIF(raw_net_if, stdout_file.any());
             const net_if: NetworkInterface = raw_net_if.?;
             const set_if_opts = try set_if_cmd.getOpts(.{});
-            if (set_if_opts.get("mac")) |mac_opt| changeMAC: {
+            if (set_if_opts.get("mac")) |mac_opt| setMAC: {
+                const new_mac = mac_opt.val.getAs([6]u8) catch break :setMAC;
                 try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
-                const new_mac = mac_opt.val.getAs([6]u8) catch break :changeMAC;
                 nl.route.setMAC(net_if.route_info.index, new_mac) catch |err| switch (err) {
+                    error.OutOfMemory => {
+                        log.err("Out of Memory!", .{});
+                        return err;
+                    },
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the MAC could not be set.", .{ net_if.name });
-                        return;
+                        break :setMAC;
                     },
                     else => {
                         log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ net_if.name });
@@ -138,13 +145,17 @@ pub fn main() !void {
                 }
                 try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, mac_buf });
             }
-            if (set_if_opts.get("state")) |state_opt| changeState: {
+            if (set_if_opts.get("state")) |state_opt| setState: {
+                const new_state = state_opt.val.getAs(nl.route.IFF) catch break :setState;
                 try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
-                const new_state = state_opt.val.getAs(nl.route.IFF) catch break :changeState;
                 nl.route.setState(net_if.route_info.index, @intFromEnum(new_state)) catch |err| switch (err) {
+                    error.OutOfMemory => {
+                        log.err("Out of Memory!", .{});
+                        return err;
+                    },
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the State could not be set.", .{ net_if.name });
-                        return;
+                        break :setState;
                     },
                     else => {
                         log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ net_if.name });
@@ -153,13 +164,24 @@ pub fn main() !void {
                 };
                 try stdout_file.print("Set the State for {s} to {s}.\n", .{ net_if.name, @tagName(new_state) });
             }
-            if (set_if_opts.get("mode")) |mode_opt| changeMode: {
+            if (set_if_opts.get("mode")) |mode_opt| setMode: {
+                const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
                 try stdout_file.print("Setting the Mode for {s}...\n", .{ net_if.name });
-                const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :changeMode;
+                nl.route.setState(net_if.route_info.index, c(nl.route.IFF).DOWN) catch { 
+                    log.warn("Unable to set the interface down.", .{});
+                };
+                defer nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+                    log.warn("Unable to set the interface up.", .{});
+                };
+                time.sleep(100 * time.ns_per_ms);
                 nl._80211.setMode(net_if.route_info.index, @intFromEnum(new_mode)) catch |err| switch (err) {
+                    error.OutOfMemory => {
+                        log.err("Out of Memory!", .{});
+                        return err;
+                    },
                     error.BUSY => {
                         log.err("The interface '{s}' is busy so the Mode could not be set.", .{ net_if.name });
-                        return;
+                        break :setMode;
                     },
                     else => {
                         log.err("Netlink request error. The Mode for interface '{s}' could not be set.", .{ net_if.name });
@@ -167,6 +189,70 @@ pub fn main() !void {
                     },
                 };
                 try stdout_file.print("Set the Mode for {s} to {s}.\n", .{ net_if.name, @tagName(new_mode) });
+            }
+            if (set_if_opts.get("channel")) |chan_opt| setChannel: {
+                const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
+                const new_ch_width = newChMain: {
+                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20";
+                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20";
+                };
+                try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
+                try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
+                nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+                    log.warn("Unable to set the interface up.", .{});
+                };
+                time.sleep(100 * time.ns_per_ms);
+                nl._80211.setChannel(net_if.route_info.index, new_ch, new_ch_width) catch |err| switch (err) {
+                    error.OutOfMemory => {
+                        log.err("Out of Memory!", .{});
+                        return err;
+                    },
+                    error.BUSY => {
+                        log.err("The interface '{s}' is busy so the Channel could not be set.", .{ net_if.name });
+                        break :setChannel;
+                    },
+                    error.InvalidChannel, error.InvalidFrequency => {
+                        log.err("The channel '{d}' is invalid.", .{ new_ch });
+                        break :setChannel;
+                    },
+                    else => {
+                        log.err("Netlink request error. The Channel for interface '{s}' could not be set.", .{ net_if.name });
+                        return err;
+                    },
+                };
+                try stdout_file.print("Set the Channel for {s} to {d}.\n", .{ net_if.name, new_ch });
+            }
+            if (set_if_opts.get("frequency")) |freq_opt| setFreq: {
+                const new_freq = freq_opt.val.getAs(usize) catch break :setFreq;
+                const new_ch_width = newChMain: {
+                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+                };
+                try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
+                try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
+                nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+                    log.warn("Unable to set the interface up.", .{});
+                };
+                time.sleep(100 * time.ns_per_ms);
+                nl._80211.setFreq(net_if.route_info.index, new_freq, new_ch_width) catch |err| switch (err) {
+                    error.OutOfMemory => {
+                        log.err("Out of Memory!", .{});
+                        return err;
+                    },
+                    error.BUSY => {
+                        log.err("The interface '{s}' is busy so the Frequency could not be set.", .{ net_if.name });
+                        break :setFreq;
+                    },
+                    error.InvalidFrequency => {
+                        log.err("The Frequency '{d}'MHz is invalid.", .{ new_freq });
+                        break :setFreq;
+                    },
+                    else => {
+                        log.err("Netlink request error. The Frequency for interface '{s}' could not be set.", .{ net_if.name });
+                        return err;
+                    },
+                };
+                try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ net_if.name, new_freq });
             }
             raw_net_if = try NetworkInterface.get(net_if.name);
         }
@@ -218,6 +304,7 @@ pub fn main() !void {
     var hn_buf: [64]u8 = .{ 0 } ** 64;
     const hostname = try posix.gethostname(hn_buf[0..]);
     try stdout.print(
+        \\
         \\System Details:
         \\ - Hostname: {s}
         \\

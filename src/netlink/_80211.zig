@@ -553,7 +553,7 @@ pub const IFTYPE = enum(u32) {
     OCB2,
     NAN3,
 };
-
+/// Network Interface Info
 /// Result of `CMD_NEW_INTERFACE` which can be called w/ `getInterface()`.
 const NetworkInterface = struct {
     pub const AttrE = ATTR;
@@ -586,8 +586,9 @@ const NetworkInterface = struct {
     TX_POWER: ?u32 = null,
 };
 
+/// Wireless Physical Device (WIPHY) Info
 /// Result of `CMD_NEW_WIPHY` which can be called w/ `getWIPHY()`.
-pub const WIPHY = struct {
+pub const Wiphy = struct {
     pub const AttrE = ATTR;
 
     pub const BAND_ATTR = enum(u32) {
@@ -612,7 +613,7 @@ pub const WIPHY = struct {
         //MAX = @intCast(u32, @intFromEnum(__AFTER_LAST) - 1),
     };
 
-    const BAND = struct {
+    const Band = struct {
         pub const AttrE = BAND_ATTR;
         pub const _grouped_attr = {};
 
@@ -655,7 +656,7 @@ pub const WIPHY = struct {
             //MAX = @intCast(u32, @intFromEnum(__AFTER_LAST) - 1),
         };
 
-        pub const FREQUENCY = struct {
+        pub const Frequency = struct {
             pub const AttrE = FREQUENCY_ATTR;
             pub const _grouped_attr = {};
 
@@ -711,7 +712,7 @@ pub const WIPHY = struct {
             ALLOW_6GHZ_VLP_AP: ?bool = null,
         };
 
-        pub const HT_CAPA = extern struct {
+        pub const HT_Capa = extern struct {
             /// HT Capabilities Info field (bitfield with HT capabilities like 40 MHz support, SGI, MIMO, etc.)
             ht_cap_info: u16 = 0,
             /// A-MPDU Parameters field (defines max A-MPDU length and minimum MPDU spacing)
@@ -728,7 +729,7 @@ pub const WIPHY = struct {
 
 
         /// List of frequencies for the band
-        FREQS: ?[]const FREQUENCY = null,
+        FREQS: ?[]const Frequency = null,
         /// Supported data rates in the band
         RATES: ?[]const u32 = null,
         /// Modulation and Coding Scheme (MCS) settings for HT
@@ -814,7 +815,7 @@ pub const WIPHY = struct {
     /// Supported interface types, such as station, AP, monitor, etc.
     SUPPORTED_IFTYPES: ?[]const u32 = null,
     /// Supported frequency bands for the WIPHY
-    WIPHY_BANDS: ?[]const BAND= null,
+    WIPHY_BANDS: ?[]const Band= null,
     /// Supported commands for the WIPHY
     SUPPORTED_COMMANDS: ?[]const u32 = null,
     /// Maximum duration for remain-on-channel operations
@@ -1006,13 +1007,11 @@ pub const InformationElementHeader = extern struct {
     type: u8,
     len: u8,
 };
-
 /// Information Element Tag
 pub const InformationElement = struct {
     hdr: InformationElementHeader,
     data: []const u8,
 };
-
 /// Information Element Types
 pub const IE = enum(u8) {
     /// Service Set Identifier (SSID)
@@ -1101,9 +1100,7 @@ pub const IE = enum(u8) {
     /// Unknown (Used by this library for unknown tags)
     __UNKNOWN__,
 };
-
-
-/// Information Element 
+/// Information Elements Info
 pub const InformationElements = struct {
     pub const AttrE = IE;
     pub const AttrHdrT = InformationElementHeader;
@@ -1339,7 +1336,7 @@ pub const InformationElements = struct {
         Class134 = 134,
 
         pub fn getClass(freq_mhz: u32, channel_width_mhz: u32) ?@This() {
-            const channel = getChannel(freq_mhz) catch return null;
+            const channel = channelFromFreq(freq_mhz) catch return null;
             //log.debug("Ch: {d}", .{ channel });
 
             // 2.4 GHz Band
@@ -1398,7 +1395,7 @@ pub const InformationElements = struct {
         }
 
         /// Get a slice of Operating Classes as allocated bytes from the provided `wiphy`.
-        pub fn bytesFromWIPHY(alloc: mem.Allocator, wiphy: WIPHY) !?[]u8 {
+        pub fn bytesFromWIPHY(alloc: mem.Allocator, wiphy: Wiphy) !?[]u8 {
             const bands = wiphy.WIPHY_BANDS orelse return null;
             //const ht_40: u32 = 0b0001;
             //const vht_160: u32 = 0b0010;
@@ -1585,7 +1582,8 @@ pub const KEY = enum(u16) {
     DEFAULT_BEACON,
     __AFTER_LAST,
 };
-pub const KEY_ATTR = struct {
+/// Key Info
+pub const Key = struct {
     pub const AttrE = KEY;
 
     DATA: [16]u8,
@@ -1765,6 +1763,63 @@ pub const StationInfo = struct {
     CONNECTED_TO_AS: ?bool = null,
 };
 
+/// Represents the type of Wi-Fi channel.
+pub const CHANNEL_TYPE = enum(u32) {
+    /// 20 MHz, non-HT channel.
+    NO_HT,
+    /// 20 MHz HT channel.
+    HT20,
+    /// HT40 channel, secondary channel below the control channel.
+    HT40MINUS,
+    /// HT40 channel, secondary channel above the control channel.
+    HT40PLUS,
+
+    /// Derive the Channel Type from the provided Channel Width (`width`) and, optionally, the provided `channel`.
+    pub fn fromWidth(width: CHANNEL_WIDTH, channel: ?usize) @This() {
+        return switch(width) {
+            .@"20" => .HT20,
+            .@"40" => type40: {
+                const ch = channel orelse break :type40 .NO_HT;
+                if (!validateChannel(ch)) break :type40 .NO_HT;
+                break :type40 if (ch <= 14) .HT40MINUS else .HT40PLUS;
+            },
+            else => .NO_HT,
+        };
+    }
+};
+/// Represents channel width definitions.
+/// These values are used with the `NL80211_ATTR_CHANNEL_WIDTH` attribute.
+pub const CHANNEL_WIDTH = enum(u32) {
+    /// 20 MHz, non-HT channel.
+    @"20_NOHT",
+    /// 20 MHz HT channel.
+    @"20",
+    /// 40 MHz channel, requires `NL80211_ATTR_CENTER_FREQ1`.
+    @"40",
+    /// 80 MHz channel, requires `NL80211_ATTR_CENTER_FREQ1`.
+    @"80",
+    /// 80+80 MHz channel, requires `NL80211_ATTR_CENTER_FREQ1` and `NL80211_ATTR_CENTER_FREQ2`.
+    @"80P80",
+    /// 160 MHz channel, requires `NL80211_ATTR_CENTER_FREQ1`.
+    @"160",
+    /// 5 MHz OFDM channel.
+    @"5",
+    /// 10 MHz OFDM channel.
+    @"10",
+    /// 1 MHz OFDM channel.
+    @"1",
+    /// 2 MHz OFDM channel.
+    @"2",
+    /// 4 MHz OFDM channel.
+    @"4",
+    /// 8 MHz OFDM channel.
+    @"8",
+    /// 16 MHz OFDM channel.
+    @"16",
+    /// 320 MHz channel, requires `NL80211_ATTR_CENTER_FREQ1`.
+    @"320",
+};
+
 
 
 /// Get Netlink 80211 Control Info
@@ -1781,17 +1836,91 @@ pub fn deinitCtrlInfo(alloc: mem.Allocator) void {
     info.deinit(alloc);
 }
 
+
 /// Get the corresponding Channel of the provided Frequency (`freq_mhz`).
-pub fn getChannel(freq_mhz: usize) !usize {
-    return switch (freq_mhz) {
+pub fn channelFromFreq(freq_mhz: usize) !usize {
+    const channel = switch (freq_mhz) {
         0...2500 => (freq_mhz -| 2407) / 5,
         5000...6000 => (freq_mhz -| 5000) / 5,
-        else => error.UnknownChannel,
+        else => return error.UnknownChannel,
+    };
+    if (!validateChannel(channel)) return error.InvalidChannel;
+    return channel;
+}
+/// Get the corresponding Frequency of the provided `channel`.
+pub fn freqFromChannel(channel: usize) !usize {
+    if (!validateChannel(channel)) return error.InvalidFrequency;
+    return switch (channel) {
+        1...14 => 2407 + (5 * channel),
+        else => 5000 + (5 * channel),
     };
 }
+/// Validate a `channel`.
+pub fn validateChannel(channel: usize) bool {
+    return switch (channel) {
+        1...14 => true,
+        32...144,
+        184...196 => channel % 4 == 0 or (channel >= 135 and channel <= 138),
+        149...177 => channel & 4 == 1,
+        else => false,
+    };
+}
+/// Validate a Frequency (`freq`).
+pub fn validateFreq(freq: usize) bool {
+    return if (channelFromFreq(freq)) |_| true else |_| false;
+}
+
+/// Set the `channel` for the provided Interface (`if_index`)
+pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void {
+    setFreq(if_index, try freqFromChannel(channel), ch_width) catch |err| switch (err) {
+        error.InvalidFrequency => return error.InvalidChannel,
+        else => return err,
+    };
+}
+/// Set the Frequency (`freq`) for the provided Interface (`if_index`)
+pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const buf_len = comptime mem.alignForward(usize, (nl.generic.req_len + nl.attr_hdr_len + 8) * 12, 4);
+    var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
+    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
+    if (!validateFreq(freq)) return error.InvalidFrequency;
+    const freq_bytes = mem.toBytes(@as(u32, @intCast(freq)))[0..];
+    const width_bytes = mem.toBytes(@intFromEnum(ch_width))[0..];
+    const type_bytes = mem.toBytes(@intFromEnum(CHANNEL_TYPE.fromWidth(ch_width, try channelFromFreq(freq))))[0..];
+    const nl_sock = try nl.request(
+        fba.allocator(),
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .genh = .{
+                .cmd = c(CMD).SET_WIPHY,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).WIPHY_FREQ }, .data = freq_bytes },
+            .{ .hdr = .{ .type = c(ATTR).CENTER_FREQ1 }, .data = freq_bytes },
+            .{ .hdr = .{ .type = c(ATTR).WIPHY_FREQ_OFFSET }, .data = mem.toBytes(@as(u32, 0))[0..] },
+            .{ .hdr = .{ .type = c(ATTR).WIPHY_CHANNEL_TYPE }, .data = type_bytes },
+            .{ .hdr = .{ .type = c(ATTR).CHANNEL_WIDTH }, .data = width_bytes },
+
+        },
+    );
+    defer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
 
 /// Take Ownership of a Wireless Interface.
-/// This ensures that only the current process can manipulate the give interface.
+/// This ensures that only the current process can manipulate the given Interface (`if_index`).
 pub fn takeOwnership(if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const fam_id = info.FAMILY_ID;
@@ -1827,7 +1956,6 @@ pub fn takeOwnership(if_index: i32) !void {
 /// Set the Mode for the Interface
 pub fn setMode(if_index: i32, mode: u32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const fam_id = info.FAMILY_ID;
     const buf_len = comptime mem.alignForward(usize, (nl.generic.req_len + nl.attr_hdr_len + 8) * 4, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
@@ -1838,7 +1966,7 @@ pub fn setMode(if_index: i32, mode: u32) !void {
         .{
             .nlh = .{
                 .len = 0,
-                .type = fam_id,
+                .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
                 .pid = 0,
                 .seq = 12321,
@@ -2025,7 +2153,7 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !NetworkInterface {
 }
 
 /// Get details for a Wireless Physical Device (WIPHY).
-pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !WIPHY {
+pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     for (0..3) |_| {
         const nl_sock = try nl.request(
@@ -2105,15 +2233,15 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !WIPHY {
                 // WIPHY 
                 start = end;
                 end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
-                const wiphy = try nl.parse.fromBytes(alloc, WIPHY, resp_buf[start..end]);
-                errdefer nl.parse.freeBytes(alloc, WIPHY, wiphy);
+                const wiphy = try nl.parse.fromBytes(alloc, Wiphy, resp_buf[start..end]);
+                errdefer nl.parse.freeBytes(alloc, Wiphy, wiphy);
                 //{
                 //    const wiphy_str = try json.stringifyAlloc(alloc, wiphy, .{ .whitespace = .indent_4 });
                 //    defer alloc.free(wiphy_str);
                 //    log.debug("NEW WIPHY:\n{s}", .{ wiphy_str });
                 //}
                 if (wiphy.WIPHY == phy_index) return wiphy;
-                nl.parse.freeBytes(alloc, WIPHY, wiphy);
+                nl.parse.freeBytes(alloc, Wiphy, wiphy);
                 offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
             }
         }
@@ -2444,7 +2572,7 @@ pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
 }
 
 /// Derive HT and VHT Capability Info from the provided `bss` and `wiphy`
-pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: WIPHY) !struct{ ?[26]u8, ?[12]u8 } {
+pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, ?[12]u8 } {
     const ie_freq = bss.FREQUENCY orelse return error.MissingFreq;
     const bands = wiphy.WIPHY_BANDS orelse return error.MissingBands;
     //const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
@@ -2550,12 +2678,12 @@ pub fn assocWPA2(
     defer nl.parse.freeBytes(alloc, NetworkInterface, net_if);
     const phy_index = net_if.WIPHY orelse return error.MissingWIPHYIndex;
     const wiphy = try getWIPHY(alloc, if_index, phy_index);
-    defer nl.parse.freeBytes(alloc, WIPHY, wiphy);
+    defer nl.parse.freeBytes(alloc, Wiphy, wiphy);
     const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy) orelse return error.MissingOperatingClasses;
     defer alloc.free(op_classes);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
-    log.debug("Ch: {d}, Freq: {d}MHz", .{ try getChannel(wiphy_freq), wiphy_freq });
+    log.debug("Ch: {d}, Freq: {d}MHz", .{ try channelFromFreq(wiphy_freq), wiphy_freq });
     const bssid = bss.BSSID orelse return error.MissingBSSID;
     const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
     const rsn = ies.RSN orelse return error.MissingRSN;
@@ -2637,24 +2765,18 @@ pub fn assocWPA2(
             },
             .{
                 .hdr = .{ .type = c(ATTR).HT_CAPABILITY, .len = 30 },
-                //.data = ht_attr[0..],
                 .data = (ht_attr orelse @as([26]u8, .{ 0 } ** 26))[0..],
-                //.data = @as([26]u8, .{ 63 } ++ (.{ 0 } ** 25))[0..],
             },
             .{
                 .hdr = .{ .type = c(ATTR).HT_CAPABILITY_MASK, .len = 30 },
-                //.data = ht_attr[0..],
-                .data = (wiphy.HT_CAPABILITY_MASK)[0..] //orelse @as([26]u8, .{ 0 } ** 26))[0..],
-                //.data = @as([26]u8, .{ 63 } ++ (.{ 0 } ** 25))[0..],
+                .data = (wiphy.HT_CAPABILITY_MASK)[0..]
             },
             .{
                 .hdr = .{ .type = c(ATTR).VHT_CAPABILITY },
-                //.data = vht_attr[0..],
                 .data = (vht_attr orelse @as([12]u8, .{ 0 } ** 12))[0..],
             },
             .{
                 .hdr = .{ .type = c(ATTR).VHT_CAPABILITY_MASK },
-                //.data = vht_attr[0..],
                 .data = (wiphy.VHT_CAPABILITY_MASK)[0..], //orelse @as([12]u8, .{ 0 } ** 12))[0..],
             },
             //.{
@@ -2693,7 +2815,7 @@ pub fn sendControlFrame(
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 0,  // Could make this a parameter if needed
+                .seq = 12321,
                 .pid = 0,
             },
             .genh = .{
@@ -2712,7 +2834,7 @@ pub fn sendControlFrame(
             },
             .{
                 .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE },
-                .data = mem.toBytes(@as(u16, 0x888E))[0..],  // EAPOL
+                .data = mem.toBytes(@as(u16, 0x888E))[0..],
             },
             .{
                 .hdr = .{ .type = c(ATTR).CONTROL_PORT_NO_ENCRYPT },
@@ -2780,10 +2902,10 @@ pub fn addKey(
     nl_sock: posix.socket_t,
     if_index: i32,
     mac: ?[6]u8,
-    key: KEY_ATTR,
+    key: Key,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const key_bytes = try nl.parse.toBytes(alloc, KEY_ATTR, key);
+    const key_bytes = try nl.parse.toBytes(alloc, Key, key);
     defer alloc.free(key_bytes);
     try nl.reqOnSock(
         alloc,
