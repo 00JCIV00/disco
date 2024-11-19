@@ -269,7 +269,7 @@ pub fn setState(if_index: i32, state: u32) !void {
             .ifi = .{
                 .family = nl.AF.UNSPEC,
                 .index = if_index,
-                .change = c(IFF).UP,
+                .change = 0xFFFFFFFF,
                 .flags = state,
                 .type = 0,
             },

@@ -169,10 +169,12 @@ pub const setup_cmd = CommandT{
                         },
                         .{
                             .name = "state",
-                            .description = "Set the State of the given Interface. (UP or DOWN)",
+                            .description = "Set the State of the given Interface. (UP, DOWN, BROADCAST, etc). (Note, multiple flags can be set simultaneously)",
                             .long_name = "state",
                             .short_name = 's',
                             .val = ValueT.ofType(nl.route.IFF, .{
+                                .set_behavior = .Multi,
+                                .max_entries = 32,
                                 .parse_fn = struct {
                                     pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.route.IFF {
                                         var state_buf: [12]u8 = undefined;

@@ -146,9 +146,17 @@ pub fn main() !void {
                 try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, mac_buf });
             }
             if (set_if_opts.get("state")) |state_opt| setState: {
-                const new_state = state_opt.val.getAs(nl.route.IFF) catch break :setState;
+                const new_state, const flag_name = newState: {
+                    const states = state_opt.val.getAllAs(nl.route.IFF) catch break :setState;
+                    var new_state: u32 = 0;
+                    for (states) |state| new_state |= @intFromEnum(state);
+                    break :newState .{
+                        new_state,
+                        if (states.len == 1) @tagName(states[0]) else "Combined-State",
+                    };
+                };
                 try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
-                nl.route.setState(net_if.route_info.index, @intFromEnum(new_state)) catch |err| switch (err) {
+                nl.route.setState(net_if.route_info.index, new_state) catch |err| switch (err) {
                     error.OutOfMemory => {
                         log.err("Out of Memory!", .{});
                         return err;
@@ -162,7 +170,7 @@ pub fn main() !void {
                         return;
                     },
                 };
-                try stdout_file.print("Set the State for {s} to {s}.\n", .{ net_if.name, @tagName(new_state) });
+                try stdout_file.print("Set the State for {s} to {s}.\n", .{ net_if.name, flag_name });
             }
             if (set_if_opts.get("mode")) |mode_opt| setMode: {
                 const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
@@ -193,8 +201,8 @@ pub fn main() !void {
             if (set_if_opts.get("channel")) |chan_opt| setChannel: {
                 const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
                 const new_ch_width = newChMain: {
-                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20";
-                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20";
+                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
                 };
                 try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
                 try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
