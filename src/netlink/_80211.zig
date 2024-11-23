@@ -1820,6 +1820,42 @@ pub const CHANNEL_WIDTH = enum(u32) {
     @"320",
 };
 
+pub const Channels = struct {
+    pub const band_2G: []const usize = band2G: {
+        var channels: []usize = &.{};
+        for (1..15) |ch| {
+            if (validateChannel(ch)) channels = channels ++ &.{ ch };
+        }
+        break :band2G channels;
+    };
+    pub const band_5G: []const usize = band5G: {
+        var channels: []usize = &.{};
+        for (1..15) |ch| {
+            if (validateChannel(ch)) channels = channels ++ &.{ ch };
+        }
+        break :band5G channels;
+    };
+    pub const all: []const usize = band_2G ++ band_5G;
+};
+
+pub const Frequencies = struct {
+    pub const band_2G: []const usize = band2G: {
+        var freqs: []usize = &.{};
+        for (1..15) |freq| {
+            if (validateFreq(freq)) freqs = freqs ++ &.{ freq };
+        }
+        break :band2G freqs;
+    };
+    pub const band_5G: []const usize = band5G: {
+        var freqs: []usize = &.{};
+        for (1..15) |freq| {
+            if (validateFreq(freq)) freqs = freqs ++ &.{ freq };
+        }
+        break :band5G freqs;
+    };
+    pub const all: []const usize = band_2G ++ band_5G;
+};
+
 
 
 /// Get Netlink 80211 Control Info
@@ -2249,8 +2285,23 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
     return error.NoResultForWIPHY;
 }
 
+/// Config f/ `scanSSID()`.
+pub const ScanConfig = struct {
+    /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
+    /// (WIP)
+    nl_sock: ?posix.socket_t = null,
+    /// Frequencies to Scan. (Note, if this is left null, all compatible frequencies will be scanned.)
+    freqs: ?[]const u32 = null,
+    /// Number of times to retry the Scan.
+    retries: usize = 3,
+};
 /// Scan for the Information Element of a specific SSID.
-pub fn scanSSID(alloc: mem.Allocator, if_index: i32, ssid: []const u8) !ScanResults {
+pub fn scanSSID(
+    alloc: mem.Allocator,
+    if_index: i32,
+    ssid: []const u8,
+    config: ScanConfig,
+) !ScanResults {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     var ssid_data = try alloc.alloc(u8, switch (ssid.len) {
         0...8 => 8,
@@ -2258,12 +2309,43 @@ pub fn scanSSID(alloc: mem.Allocator, if_index: i32, ssid: []const u8) !ScanResu
         17...32 => 32,
         else => return error.SSIDTooLong,
     });
-    defer alloc.free(ssid_data);
     @memset(ssid_data[0..], 0);
     ssid_data[0] = @intCast(ssid.len + 4);
     ssid_data[2] = @intCast(ssid_data.len / 8 -| 1);
     @memcpy(ssid_data[(ssid_data.len - ssid.len)..], ssid);
-    for (0..3) |_| {
+    var attrs_buf = try std.ArrayListUnmanaged(nl.Attribute).initCapacity(alloc, 3);
+    try attrs_buf.appendSlice(
+        alloc,
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = try alloc.dupe(u8, mem.toBytes(if_index)[0..]) },
+            .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
+            .{ .hdr = .{ .type = c(ATTR).SCAN_FLAGS }, .data = try alloc.dupe(u8, mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ)[0..]) },
+        },
+    );
+    defer {
+        for (attrs_buf.items) |attr| alloc.free(attr.data);
+        attrs_buf.deinit(alloc);
+    }
+    if (config.freqs) |_freqs| addFreqs: {
+        if (_freqs.len == 0) break :addFreqs;
+        log.debug("Adding Scan Freqs:", .{});
+        var freq_attrs_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
+        for (_freqs) |freq| {
+            const freq_attr_hdr: nl.AttributeHeader = .{ .type = c(ATTR).WIPHY_FREQ, .len = 8 };
+            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq_attr_hdr)[0..]);
+            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq)[0..]);
+            log.debug("- Scan Freq: {d}MHz", .{ freq });
+        }
+        const freq_attrs_bytes = try freq_attrs_buf.toOwnedSlice(alloc);
+        try attrs_buf.append(alloc, .{ 
+            .hdr = .{ 
+                .type = c(ATTR).SCAN_FREQUENCIES, 
+                .len = @intCast(nl.attr_hdr_len + freq_attrs_bytes.len),
+            }, 
+            .data = freq_attrs_bytes, 
+        });
+    }
+    for (0..config.retries) |_| {
         const nl_sock = try nl.request(
             alloc,
             nl.NETLINK.GENERIC,
@@ -2274,22 +2356,17 @@ pub fn scanSSID(alloc: mem.Allocator, if_index: i32, ssid: []const u8) !ScanResu
                     .type = info.FAMILY_ID,
                     .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
                     .seq = 12321,
-                    .pid = 12321,
+                    .pid = 0,
                 },
                 .genh = .{
                     .cmd = c(CMD).TRIGGER_SCAN,
                     .version = 0,
                 },
             },
-            &.{
-                .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-                .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
-                .{ .hdr = .{ .type = c(ATTR).SCAN_FLAGS }, .data = mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ)[0..] },
-            },
+            attrs_buf.items,
         );
         defer posix.close(nl_sock);
         try nl.handleAck(nl_sock);
-
         const buf_size: u32 = 64_000;
         var timeout: usize = 3;
         var res_sock = try posix.socket(nl.AF.NETLINK, posix.SOCK.RAW, nl.NETLINK.GENERIC);
@@ -2415,7 +2492,6 @@ pub fn scanSSID(alloc: mem.Allocator, if_index: i32, ssid: []const u8) !ScanResu
                 }
                 nl.parse.freeBytes(alloc, ScanResults, results);
                 offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-                //return error.Testing;
             }
         }
     }
@@ -2953,6 +3029,14 @@ pub fn addKey(
     try nl.handleAck(nl_sock);
 }
 
+/// Config f/ `connectWPA2()`.
+pub const ConnectConfig = struct {
+    /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
+    /// (WIP)
+    nl_sock: ?posix.socket_t = null,
+    /// Frequencies to Scan. (Note, if this is left null, all compatible frequencies will be scanned.)
+    freqs: ?[]const u32 = null,
+};
 /// Connect to a WPA2 Network
 pub fn connectWPA2(
     alloc: mem.Allocator, 
@@ -2960,7 +3044,8 @@ pub fn connectWPA2(
     ssid: []const u8, 
     pmk: [32]u8,
     handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!struct{ [48]u8, [16]u8 },
-) !void {
+    config: ConnectConfig,
+) !posix.socket_t {
     const delay: usize = 30;
     //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     try takeOwnership(if_index);
@@ -2980,7 +3065,12 @@ pub fn connectWPA2(
         &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
     );
     time.sleep(delay * 10 * time.ns_per_ms);
-    const scan_results = try scanSSID(alloc, if_index, ssid);
+    const scan_results = try scanSSID(
+        alloc, 
+        if_index, 
+        ssid,
+        .{ .nl_sock = config.nl_sock, .freqs = config.freqs },
+    );
     defer nl.parse.freeBytes(alloc, ScanResults, scan_results);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
@@ -3028,6 +3118,5 @@ pub fn connectWPA2(
         posix.SO.RCVTIMEO,
         mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
     );
-    time.sleep(10 * time.ns_per_s);
-    posix.close(nl_sock);
+    return nl_sock;
 }

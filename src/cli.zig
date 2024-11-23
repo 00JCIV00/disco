@@ -71,9 +71,10 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
             .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
-        }
+        },
     }
 });
+const OptionT = CommandT.OptionT;
 const ValueT = CommandT.ValueT;
 
 /// The Root Setup Command for Coordz
@@ -116,7 +117,7 @@ pub const setup_cmd = CommandT{
                             .name = "channel-width",
                             .description = "Set the Channel/Frequency Width (in MHZ & Throughput) of the given Interface. (Note, this only works in conjunction with --channel or --freq)",
                             .long_name = "channel-width",
-                            .alias_long_names = &.{ "ch-width" },
+                            .alias_long_names = &.{ "ch-width", "frequency-width", "freq-width" },
                             .short_name = 'C',
                             .val = ValueT.ofType(nl._80211.CHANNEL_WIDTH, .{}),
                         },
@@ -218,6 +219,7 @@ pub const setup_cmd = CommandT{
             .name = "connect",
             .description = "Connect to a WiFi Network.",
             .opts = &.{
+                channels_opt,
                 .{
                     .name = "passphrase",
                     .description = "Set the Passhprase for the Network. (Between 8-63 characters)",
@@ -238,7 +240,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "security",
                     .short_name = 's',
                     .val = ValueT.ofType(wpa.Protocol, .{ .default_val = .wpa2 }),
-                }
+                },
             },
             .vals = &.{
                 ValueT.ofType([]const u8, .{
@@ -268,7 +270,7 @@ pub const setup_cmd = CommandT{
             .description = "Save the JSON output to the specified Log Path.",
             .short_name = 'l',
             .long_name = "log-path",
-            .val = CommandT.ValueT.ofType(fs.File, .{
+            .val = ValueT.ofType(fs.File, .{
                 .name = "log_path",
                 .description = "Path to the save JSON Log File.",
             }),
@@ -291,5 +293,24 @@ pub const setup_cmd = CommandT{
             .description = "The Network Interface to use. (This is mandatory)"
         }),
     },
+};
+
+
+// Multi-use Arguments
+/// Channels
+const channels_opt: OptionT = .{
+    .name = "channels",
+    .description = "Specify channels to be used. (By default, all channels will be used.)",
+    .short_name = 'c',
+    .long_name = "channels",
+    .val = ValueT.ofType(usize, .{
+        .set_behavior = .Multi,
+        .max_entries = 50,
+        .valid_fn = struct {
+            pub fn valCh(ch: usize, _: mem.Allocator) bool {
+                return nl._80211.validateChannel(ch);
+            }
+        }.valCh,
+    }),
 };
 

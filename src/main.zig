@@ -289,6 +289,16 @@ pub fn main() !void {
                 },
             };
         };
+        const freqs = freqs: {
+            const ch_opt = connect_opts.get("channels") orelse break :freqs null;
+            if (!ch_opt.val.isSet()) break :freqs null;
+            const channels = try ch_opt.val.getAllAs(usize);
+            var freqs_buf = try std.ArrayListUnmanaged(u32).initCapacity(alloc, 1);
+            for (channels) |ch| 
+                try freqs_buf.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+            break :freqs try freqs_buf.toOwnedSlice(alloc);
+        };
+        defer if (freqs) |_freqs| alloc.free(_freqs);
         try stdout_file.print("Connecting to {s}...\n", .{ ssid });
         switch (security) {
             .open, .wep => {
@@ -297,13 +307,15 @@ pub fn main() !void {
             },
             .wpa2 => {
                 const pmk = try wpa.genKey(.wpa2, ssid, pass);
-                try nl._80211.connectWPA2(
+                _ = try nl._80211.connectWPA2(
                     alloc, 
                     net_if.route_info.index, 
                     ssid, 
                     pmk,
                     wpa.handle4WHS,
+                    .{ .freqs = freqs },
                 );
+                try stdout_file.print("Connected to {s}.", .{ ssid });
             }, 
         }
     }
