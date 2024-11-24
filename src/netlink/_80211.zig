@@ -1830,7 +1830,7 @@ pub const Channels = struct {
     };
     pub const band_5G: []const usize = band5G: {
         var channels: []usize = &.{};
-        for (1..15) |ch| {
+        for (15..200) |ch| {
             if (validateChannel(ch)) channels = channels ++ &.{ ch };
         }
         break :band5G channels;
@@ -1841,14 +1841,14 @@ pub const Channels = struct {
 pub const Frequencies = struct {
     pub const band_2G: []const usize = band2G: {
         var freqs: []usize = &.{};
-        for (1..15) |freq| {
+        for (2000..3000) |freq| {
             if (validateFreq(freq)) freqs = freqs ++ &.{ freq };
         }
         break :band2G freqs;
     };
     pub const band_5G: []const usize = band5G: {
         var freqs: []usize = &.{};
-        for (1..15) |freq| {
+        for (5000..6000) |freq| {
             if (validateFreq(freq)) freqs = freqs ++ &.{ freq };
         }
         break :band5G freqs;
@@ -1897,7 +1897,7 @@ pub fn validateChannel(channel: usize) bool {
         1...14 => true,
         32...144,
         184...196 => channel % 4 == 0 or (channel >= 135 and channel <= 138),
-        149...177 => channel & 4 == 1,
+        149...177 => channel % 4 == 1,
         else => false,
     };
 }
@@ -2215,8 +2215,6 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
             },
         );
         defer posix.close(nl_sock);
-        //try nl.handleAck(nl_sock);
-
         var first_msg = true;
         var resp_multi = false;
         respLoop: while (first_msg or resp_multi) {
@@ -2230,12 +2228,12 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
             var offset: usize = 0;
             var inner_count: usize = 1;
             while (offset < resp_len) : (inner_count += 1) {
-                log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
+                //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
                 // Netlink Header
                 var start: usize = offset;
                 var end: usize = offset + @sizeOf(nl.MessageHeader);
                 const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+                //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
                 if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
                     return error.InvalidMessage;
                 if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
@@ -2252,30 +2250,25 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
                     }
                 }
                 resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
-                if (resp_multi) log.debug("Multi Part Message", .{});
+                if (resp_multi) //log.debug("Multi Part Message", .{});
                 if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
-                    log.debug("Done w/ Multi Part Message.", .{});
+                    //log.debug("Done w/ Multi Part Message.", .{});
                     resp_multi = false;
-                }
+                };
                 // General Header
                 start = end;
                 end += @sizeOf(nl.generic.Header);
                 const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
                 if (gen_hdr.cmd != c(CMD).NEW_WIPHY) {
-                    log.debug("Not a WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+                    //log.debug("Not a WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
                     continue :respLoop;
                 }
-                log.debug("Received New WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+                //log.debug("Received New WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
                 // WIPHY 
                 start = end;
                 end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
                 const wiphy = try nl.parse.fromBytes(alloc, Wiphy, resp_buf[start..end]);
                 errdefer nl.parse.freeBytes(alloc, Wiphy, wiphy);
-                //{
-                //    const wiphy_str = try json.stringifyAlloc(alloc, wiphy, .{ .whitespace = .indent_4 });
-                //    defer alloc.free(wiphy_str);
-                //    log.debug("NEW WIPHY:\n{s}", .{ wiphy_str });
-                //}
                 if (wiphy.WIPHY == phy_index) return wiphy;
                 nl.parse.freeBytes(alloc, Wiphy, wiphy);
                 offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
@@ -2319,7 +2312,10 @@ pub fn scanSSID(
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = try alloc.dupe(u8, mem.toBytes(if_index)[0..]) },
             .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
-            .{ .hdr = .{ .type = c(ATTR).SCAN_FLAGS }, .data = try alloc.dupe(u8, mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ)[0..]) },
+            .{
+                .hdr = .{ .type = c(ATTR).SCAN_FLAGS },
+                .data = try alloc.dupe(u8, mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH | c(SCAN_FLAG).RANDOM_SN)[0..]),
+            },
         },
     );
     defer {
@@ -2345,7 +2341,8 @@ pub fn scanSSID(
             .data = freq_attrs_bytes, 
         });
     }
-    for (0..config.retries) |_| {
+    attemptScan: for (0..config.retries) |attempt| {
+        log.debug("Scan Attempt {d}/{d} for SSID '{s}'", .{ attempt + 1, config.retries, ssid });
         const nl_sock = try nl.request(
             alloc,
             nl.NETLINK.GENERIC,
@@ -2394,7 +2391,7 @@ pub fn scanSSID(
         var resp_count: usize = 1;
         var resp_multi = false;
         respLoop: while (resp_timer.read() / time.ns_per_s < timeout * 2 or resp_multi) : (resp_count += 1) {
-            log.debug("Listening for response #{d}...", .{ resp_count });
+            //log.debug("Listening for response #{d}...", .{ resp_count });
             var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
             const resp_len = posix.recv(
                 res_sock,
@@ -2403,9 +2400,9 @@ pub fn scanSSID(
             ) catch |err| switch (err) {
                 error.WouldBlock => {
                     //return error.NoScanResults;
-                    if (tried_get) return error.NoScanResults;
+                    if (tried_get) continue :attemptScan; //return error.NoScanResults;
                     tried_get = true;
-                    log.debug("Attempting to Get Scan.", .{});
+                    //log.debug("Attempting to Get Scan.", .{});
                     posix.close(res_sock);
                     res_sock = try nl.request(
                         alloc,
@@ -2437,16 +2434,16 @@ pub fn scanSSID(
                 },
                 else => return err,
             };
-            log.debug("\n==================\nRESPONSE LEN: {d}B\n==================", .{ resp_len });
+            //log.debug("\n==================\nRESPONSE LEN: {d}B\n==================", .{ resp_len });
             var offset: usize = 0;
             var inner_count: usize = 1;
             while (offset < resp_len) : (inner_count += 1) {
-                log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
+                //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
                 // Netlink Header
                 var start: usize = offset;
                 var end: usize = offset + @sizeOf(nl.MessageHeader);
                 const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+                //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
                 if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
                     return error.InvalidMessage;
                 if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
@@ -2463,20 +2460,20 @@ pub fn scanSSID(
                     }
                 }
                 resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
-                if (resp_multi) log.debug("Multi Part Message", .{});
+                if (resp_multi) //log.debug("Multi Part Message", .{});
                 if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
-                    log.debug("Done w/ Multi Part Message.", .{});
+                    //log.debug("Done w/ Multi Part Message.", .{});
                     resp_multi = false;
-                }
+                };
                 // General Header
                 start = end;
                 end += @sizeOf(nl.generic.Header);
                 const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
                 if (gen_hdr.cmd != c(CMD).NEW_SCAN_RESULTS and gen_hdr.cmd != c(CMD).SCAN_ABORTED) {
-                    log.debug("Not a Scan Result. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+                    //log.debug("Not a Scan Result. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
                     continue :respLoop;
                 }
-                log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+                //log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
 
                 start = end;
                 end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
@@ -2485,7 +2482,7 @@ pub fn scanSSID(
                 if (results.BSS) |bss| {
                     if (bss.INFORMATION_ELEMENTS) |ies| {
                         if (ies.SSID) |scan_ssid| {
-                            log.debug("Scan Result SSID: {s}", .{ scan_ssid });
+                            log.debug("Scan Result SSID: {s} | Ch: {d}", .{ scan_ssid, try channelFromFreq(bss.FREQUENCY.?) });
                             if (mem.eql(u8, scan_ssid, ssid)) return results;
                         }
                     }
@@ -2696,7 +2693,6 @@ pub fn authWPA2(
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
     const bssid = bss.BSSID orelse return error.MissingBSSID;
-
     try nl.reqOnSock(
         alloc, 
         nl_sock,
@@ -2737,7 +2733,7 @@ pub fn authWPA2(
             },
         },
     );
-    errdefer posix.close(nl_sock);
+    //errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
 }
 
@@ -2869,7 +2865,7 @@ pub fn assocWPA2(
             },
         },
     );
-    errdefer posix.close(nl_sock);
+    //errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
 }
 
@@ -3032,10 +3028,13 @@ pub fn addKey(
 /// Config f/ `connectWPA2()`.
 pub const ConnectConfig = struct {
     /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
-    /// (WIP)
     nl_sock: ?posix.socket_t = null,
     /// Frequencies to Scan. (Note, if this is left null, all compatible frequencies will be scanned.)
     freqs: ?[]const u32 = null,
+    /// Number of times to retry the Connection.
+    retries: usize = 3,
+    /// Base delay (in milliseconds) following asynchronous Netlink function calls.
+    delay: usize = 30,
 };
 /// Connect to a WPA2 Network
 pub fn connectWPA2(
@@ -3046,17 +3045,17 @@ pub fn connectWPA2(
     handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!struct{ [48]u8, [16]u8 },
     config: ConnectConfig,
 ) !posix.socket_t {
-    const delay: usize = 30;
+    var attempts: usize = 0;
     //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     try takeOwnership(if_index);
-    time.sleep(delay * 10 * time.ns_per_ms);
+    time.sleep(config.delay * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).DOWN);
-    time.sleep(delay * 10 * time.ns_per_ms);
+    time.sleep(config.delay * time.ns_per_ms);
     try setMode(if_index, c(IFTYPE).STATION);
-    time.sleep(delay * 10 * time.ns_per_ms);
+    time.sleep(config.delay * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).UP);
-    time.sleep(delay * 10 * time.ns_per_ms);
-    const nl_sock = try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 10, .tv_usec = 0 });
+    time.sleep(config.delay * time.ns_per_ms);
+    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 10, .tv_usec = 0 });
     try registerFrames(
         alloc,
         nl_sock,
@@ -3064,28 +3063,39 @@ pub fn connectWPA2(
         &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
         &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
     );
-    time.sleep(delay * 10 * time.ns_per_ms);
+    time.sleep(config.delay * time.ns_per_ms);
     const scan_results = try scanSSID(
-        alloc, 
-        if_index, 
+        alloc,
+        if_index,
         ssid,
-        .{ .nl_sock = config.nl_sock, .freqs = config.freqs },
+        .{ .nl_sock = nl_sock, .freqs = config.freqs, .retries = config.retries },
     );
     defer nl.parse.freeBytes(alloc, ScanResults, scan_results);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
     const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
     defer alloc.free(ie_bytes);
-    time.sleep(delay * 10 * time.ns_per_ms);
+    time.sleep(config.delay * time.ns_per_ms);
     const bssid = bss.BSSID orelse return error.MissingBSSID;
     try resetKeyState(alloc, if_index, bssid);
-    time.sleep(delay * 20 * time.ns_per_ms);
     //const auth_type = determineAuthAlg(scan_results);
-    try authWPA2(alloc, nl_sock, if_index, ssid, scan_results);
-    time.sleep(delay * time.ns_per_ms);
-    try assocWPA2(alloc, nl_sock, if_index, ssid, scan_results);
+    var aa_err: anyerror!void = {};
+    errdefer posix.close(nl_sock);
+    while (attempts < config.retries) : (attempts += 1) {
+        time.sleep(config.delay * time.ns_per_ms);
+        authWPA2(alloc, nl_sock, if_index, ssid, scan_results) catch |err| {
+            aa_err = err;
+            continue;
+        };
+        time.sleep(config.delay * time.ns_per_ms);
+        assocWPA2(alloc, nl_sock, if_index, ssid, scan_results) catch |err| {
+            aa_err = err;
+            continue;
+        };
+        break;
+    }
+    try aa_err;
     const rsn_bytes = rsnBytes: {
-        errdefer posix.close(nl_sock);
         const rsn = ies.RSN orelse return error.MissingRSN;
         const bytes = try nl.parse.toBytes(alloc, InformationElements.RobustSecurityNetwork, rsn);
         errdefer alloc.free(bytes);
@@ -3096,7 +3106,13 @@ pub fn connectWPA2(
         break :rsnBytes try buf.toOwnedSlice(alloc);
     };
     defer alloc.free(rsn_bytes);
-    const ptk, const gtk = try handle4WHS(if_index, pmk, rsn_bytes);
+    const ptk, const gtk = keys: {
+        while (attempts < config.retries) {
+            const ptk, const gtk = handle4WHS(if_index, pmk, rsn_bytes) catch continue;
+            break :keys .{ ptk, gtk };
+        }
+        return error.Unsuccessful4WHS;
+    };
     inline for (&.{ ptk[32..], gtk[0..] }, 0..) |key, idx| {
         log.debug("Adding Key: {X:0>2}", .{ key });
         try addKey(

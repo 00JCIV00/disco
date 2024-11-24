@@ -93,7 +93,12 @@ pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
 }
 
 /// Set an `instance` of a Pointer Type (`T`) from the given `bytes`.
-pub fn setPtrFromBytes(alloc: mem.Allocator, T: type, instance: *T, bytes: []const u8) !void {
+pub fn setPtrFromBytes(
+    alloc: mem.Allocator, 
+    T: type, 
+    instance: *T, 
+    bytes: []const u8
+) !void {
     const raw_info = @typeInfo(T);
     if (raw_info != .Pointer) return error.NotAPointer;
     const info = raw_info.Pointer;
@@ -133,11 +138,17 @@ pub fn optFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
 }
 
 /// Set an `instance` of an Optional Type (`T`) from the given `bytes`.
-pub fn setOptFromBytes(alloc: mem.Allocator, T: type, instance: *T, bytes: []const u8) !void {
+pub fn setOptFromBytes(
+    alloc: mem.Allocator,
+    T: type,
+    instance: *T,
+    bytes: []const u8,
+) !void {
     const raw_info = @typeInfo(T);
     if (raw_info != .Optional) return error.NotAnOptional;
     const info = raw_info.Optional;
     const child_info = @typeInfo(info.child);
+    errdefer freeOptBytes(alloc, T, instance.*);
     if (instance.*) |*_instance| {
         if (child_info == .Pointer and child_info.Pointer.size == .Slice)
             return try setPtrFromBytes(alloc, info.child, _instance, bytes)

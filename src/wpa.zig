@@ -578,7 +578,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         log.debug(
             \\
             \\-------------------------------------
-            \\M2:
+            \\M4:
             \\- A1: {X:0>2}
             \\- A2: {X:0>2}
             \\- PMK: {X:0>2}
