@@ -19,6 +19,20 @@ const c = utils.toStruct;
 
 /// Control Info Map
 var ctrl_info: ?nl.generic.CtrlInfo = null;
+/// Get Netlink 80211 Control Info
+/// This will be stored in a Global Variable that should be deinialized with `deinitCtrlInfo()`.
+pub fn initCtrlInfo(alloc: mem.Allocator) !void {
+    log.debug("Collecting NL80211 Control Info...", .{});
+    defer log.debug("NL80211 Control Info Collected!", .{});
+
+    ctrl_info = nl.generic.CtrlInfo.init(alloc, "nl80211") catch return error.NetlinkFamilyNotFound;
+}
+/// Deinitialize Control Info
+pub fn deinitCtrlInfo(alloc: mem.Allocator) void {
+    var info = ctrl_info orelse return;
+    info.deinit(alloc);
+}
+
 
 
 // Constants
@@ -1858,21 +1872,6 @@ pub const Frequencies = struct {
 
 
 
-/// Get Netlink 80211 Control Info
-/// This will be stored in a Global Variable that should be deinialized with `deinitCtrlInfo()`.
-pub fn initCtrlInfo(alloc: mem.Allocator) !void {
-    log.debug("Collecting NL80211 Control Info...", .{});
-    defer log.debug("NL80211 Control Info Collected!", .{});
-
-    ctrl_info = nl.generic.CtrlInfo.init(alloc, "nl80211") catch return error.NetlinkFamilyNotFound;
-}
-/// Deinitialize Control Info
-pub fn deinitCtrlInfo(alloc: mem.Allocator) void {
-    var info = ctrl_info orelse return;
-    info.deinit(alloc);
-}
-
-
 /// Get the corresponding Channel of the provided Frequency (`freq_mhz`).
 pub fn channelFromFreq(freq_mhz: usize) !usize {
     const channel = switch (freq_mhz) {
@@ -2428,30 +2427,23 @@ pub fn scanSSID(
                     timeout *= 3;
                     timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
                     try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
-                    //try nl.handleAck(get_sock);
                     resp_timer.reset();
                     continue :respLoop;
                 },
                 else => return err,
             };
             //log.debug("\n==================\nRESPONSE LEN: {d}B\n==================", .{ resp_len });
-            var offset: usize = 0;
-            var inner_count: usize = 1;
-            while (offset < resp_len) : (inner_count += 1) {
+            //var offset: usize = 0;
+            var msg_iter: nl.parse.Iterator(nl.MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
+            while (msg_iter.next()) |msg| {
                 //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
-                // Netlink Header
-                var start: usize = offset;
-                var end: usize = offset + @sizeOf(nl.MessageHeader);
-                const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
                 //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
-                if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-                    return error.InvalidMessage;
-                if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-                    start = end;
-                    end += @sizeOf(nl.ErrorHeader);
-                    const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                // Netlink Header
+                if (msg.hdr.type == c(nl.NLMSG).ERROR) {
+                    const nl_err = mem.bytesAsValue(nl.ErrorHeader, msg.data);
                     switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                        .SUCCESS => {},
+                        //.SUCCESS => {},
+                        .SUCCESS => continue,
                         .BUSY => return error.BUSY,
                         else => |err| {
                             log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
@@ -2459,16 +2451,13 @@ pub fn scanSSID(
                         },
                     }
                 }
-                resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
-                if (resp_multi) //log.debug("Multi Part Message", .{});
-                if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
-                    //log.debug("Done w/ Multi Part Message.", .{});
-                    resp_multi = false;
-                };
+                resp_multi = msg.hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
+                //if (resp_multi) //log.debug("Multi Part Message", .{});
+                if (msg.hdr.type == c(nl.NLMSG).DONE) resp_multi = false;
                 // General Header
-                start = end;
-                end += @sizeOf(nl.generic.Header);
-                const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
+                var start: usize = 0;
+                var end: usize = @sizeOf(nl.generic.Header);
+                const gen_hdr = mem.bytesAsValue(nl.generic.Header, msg.data[start..end]);
                 if (gen_hdr.cmd != c(CMD).NEW_SCAN_RESULTS and gen_hdr.cmd != c(CMD).SCAN_ABORTED) {
                     //log.debug("Not a Scan Result. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
                     continue :respLoop;
@@ -2476,8 +2465,8 @@ pub fn scanSSID(
                 //log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
 
                 start = end;
-                end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
-                const results = try nl.parse.fromBytes(alloc, ScanResults, resp_buf[start..end]);
+                end = msg.data.len;
+                const results = try nl.parse.fromBytes(alloc, ScanResults, msg.data[start..end]);
                 errdefer nl.parse.freeBytes(alloc, ScanResults, results);
                 if (results.BSS) |bss| {
                     if (bss.INFORMATION_ELEMENTS) |ies| {
@@ -2488,7 +2477,6 @@ pub fn scanSSID(
                     }
                 }
                 nl.parse.freeBytes(alloc, ScanResults, results);
-                offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
             }
         }
     }

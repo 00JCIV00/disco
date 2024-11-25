@@ -497,3 +497,44 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
 //    if (meta.hasMethod(T, "writeToBytes")) return try instance.toBytes(writer);
 //}
 
+/// Config for creating an Iterator.
+pub const IteratorConfig = struct {
+    /// The Length Field Name
+    len_field: []const u8 = "len",
+    /// The Type Field Name (currently unused)
+    type_field: []const u8 = "type",
+};
+
+/// Iterator
+pub fn Iterator(
+    HdrT: type,
+    comptime iter_config: IteratorConfig) type {
+    return struct {
+        const config = iter_config;
+        const hdr_len = @sizeOf(HdrT);
+        const IterT = struct {
+            hdr: HdrT,
+            data: []const u8,
+        };
+        bytes: []const u8,
+        index: usize = 0,
+        fn rawNext(self: *@This(), is_peek: bool) ?IterT {
+            var start: usize = self.index;
+            var end: usize = self.index + hdr_len;
+            if (self.bytes.len -| end == 0) return null;
+            const hdr = mem.bytesToValue(HdrT, self.bytes[start..end]);
+            const iter_len = @field(hdr, config.len_field);
+            start = end;
+            end = self.index + iter_len;
+            if (self.bytes.len -| end == 0) return null;
+            if (!is_peek) self.index = end;
+            return .{ .hdr = hdr, .data = self.bytes[start..end] };
+        }
+        pub fn next(self: *@This()) ?IterT {
+            return self.rawNext(false);
+        }
+        pub fn peek(self: *@This()) ?IterT {
+            return self.rawNext(true);
+        }
+    };
+}
