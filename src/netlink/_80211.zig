@@ -1915,7 +1915,7 @@ pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void 
 /// Set the Frequency (`freq`) for the provided Interface (`if_index`)
 pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const buf_len = comptime mem.alignForward(usize, (nl.generic.req_len + nl.attr_hdr_len + 8) * 12, 4);
+    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 12, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     if (!validateFreq(freq)) return error.InvalidFrequency;
@@ -1934,7 +1934,7 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).SET_WIPHY,
                 .version = 1,
             },
@@ -1959,7 +1959,7 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
 pub fn takeOwnership(if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const fam_id = info.FAMILY_ID;
-    const buf_len = comptime mem.alignForward(usize, (nl.generic.req_len + nl.attr_hdr_len + 8) * 4, 4);
+    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     const nl_sock = try nl.request(
@@ -1974,7 +1974,7 @@ pub fn takeOwnership(if_index: i32) !void {
                 .pid = 0,
                 .seq = 12321,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).SET_INTERFACE,
                 .version = 1,
             },
@@ -1991,7 +1991,7 @@ pub fn takeOwnership(if_index: i32) !void {
 /// Set the Mode for the Interface
 pub fn setMode(if_index: i32, mode: u32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const buf_len = comptime mem.alignForward(usize, (nl.generic.req_len + nl.attr_hdr_len + 8) * 4, 4);
+    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     const nl_sock = try nl.request(
@@ -2006,7 +2006,7 @@ pub fn setMode(if_index: i32, mode: u32) !void {
                 .pid = 0,
                 .seq = 12321,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).SET_INTERFACE,
                 .version = 1,
             },
@@ -2035,7 +2035,7 @@ pub fn getStation(alloc: mem.Allocator, if_index: i32, bssid: [6]u8) !StationInf
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).GET_STATION,
                 .version = 1,
             },
@@ -2125,7 +2125,7 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !NetworkInterface {
                 .seq = 12321,
                 .pid = 12321,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).GET_INTERFACE,
                 .version = 0,
             },
@@ -2203,7 +2203,7 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
                     .seq = 12321,
                     .pid = 12321,
                 },
-                .genh = .{
+                .msg = .{
                     .cmd = c(CMD).GET_WIPHY,
                     .version = 0,
                 },
@@ -2354,7 +2354,7 @@ pub fn scanSSID(
                     .seq = 12321,
                     .pid = 0,
                 },
-                .genh = .{
+                .msg = .{
                     .cmd = c(CMD).TRIGGER_SCAN,
                     .version = 0,
                 },
@@ -2415,7 +2415,7 @@ pub fn scanSSID(
                                 .seq = 12321,
                                 .pid = 0,
                             },
-                            .genh = .{
+                            .msg = .{
                                 .cmd = c(CMD).GET_SCAN,
                                 .version = 0,
                             },
@@ -2522,7 +2522,7 @@ pub fn registerFrames(
                     .seq = 12321,
                     .pid = 0,
                 },
-                .genh = .{
+                .msg = .{
                     .cmd = c(CMD).REGISTER_FRAME,
                     .version = 1,
                 },
@@ -2579,7 +2579,7 @@ pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
                     .seq = 12321,
                     .pid = 0,
                 },
-                .genh = .{
+                .msg = .{
                     .cmd = c(CMD).DEL_KEY,
                     .version = 1,
                 },
@@ -2615,7 +2615,7 @@ pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).FLUSH_PMKSA,
                 .version = 0,
             },
@@ -2693,7 +2693,7 @@ pub fn authWPA2(
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).AUTHENTICATE,
                 .version = 0,
             },
@@ -2769,7 +2769,7 @@ pub fn assocWPA2(
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).ASSOCIATE,
                 .version = 1,
             },
@@ -2878,7 +2878,7 @@ pub fn sendControlFrame(
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).CONTROL_PORT_FRAME,
                 .version = 1,
             },
@@ -2933,7 +2933,7 @@ pub fn authPort(
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).SET_STATION,
                 .version = 0,
             },
@@ -2979,7 +2979,7 @@ pub fn addKey(
                 .seq = 12321,
                 .pid = 0,
             },
-            .genh = .{
+            .msg = .{
                 .cmd = c(CMD).NEW_KEY,
                 .version = 0,
             },
@@ -3095,7 +3095,7 @@ pub fn connectWPA2(
     };
     defer alloc.free(rsn_bytes);
     const ptk, const gtk = keys: {
-        while (attempts < config.retries) {
+        while (attempts < config.retries) : (attempts += 1) {
             const ptk, const gtk = handle4WHS(if_index, pmk, rsn_bytes) catch continue;
             break :keys .{ ptk, gtk };
         }

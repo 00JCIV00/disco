@@ -18,14 +18,7 @@ const utils = @import("../utils.zig");
 const c = utils.toStruct;
 
 /// Netlink General Request
-pub const Request = extern struct {
-    /// Netlink Header
-    nlh: nl.MessageHeader,
-    /// General Netlink Header
-    genh: Header,
-};
-/// Netlink General Request Length (Aligned to 4 Bytes for Netlink messaging.)
-pub const req_len = mem.alignForward(usize, @sizeOf(Request), 4);
+pub const Request = nl.Request(Header);
 /// General Netlink Message Header
 pub const Header = extern struct {
     /// General Netlink Command
@@ -134,13 +127,13 @@ pub const CtrlInfo = struct {
     /// Initialize Control Info for the specified `family`.
     pub fn init(alloc: mem.Allocator, family: []const u8) !@This() {
         // Request
-        const buf_len = comptime mem.alignForward(usize, (nl.generic.req_len + nl.attr_hdr_len + 7) * 2, 4);
+        const buf_len = comptime mem.alignForward(usize, (Request.len + nl.attr_hdr_len + 7) * 2, 4);
         var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
         var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
         const nl_sock = try nl.request(
             fba.allocator(),
             nl.NETLINK.GENERIC,
-            nl.generic.Request,
+            Request,
             .{
                 .nlh = .{
                     .len = 0,
@@ -149,11 +142,11 @@ pub const CtrlInfo = struct {
                     .seq = 12321,
                     .pid = 0,
                 },
-                .genh = .{
+                .msg = .{
                     .cmd = c(CTRL.CMD).GETFAMILY,
                     .version = 1,
                 },
-                },
+            },
             &.{ .{ .hdr = .{ .type = c(CTRL.ATTR).FAMILY_NAME }, .data = family } },
         );
         defer posix.close(nl_sock);
@@ -191,8 +184,8 @@ pub const CtrlInfo = struct {
             }
             // General Header
             start = end;
-            end += @sizeOf(nl.generic.Header);
-            const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
+            end += @sizeOf(Header);
+            const gen_hdr: *const Header = @alignCast(@ptrCast(resp_buf[start..end]));
             start = end;
             end = offset + nl_resp_hdr.len;
             offset += mem.alignForward(usize, nl_resp_hdr.len, 4);

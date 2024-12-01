@@ -50,6 +50,16 @@ pub const MessageHeader = extern struct {
     /// Process ID. This is useful for tracking this specific Request/Response.
     pid: u32,
 };
+/// Generic Netlink Request Header, wrapping the Netlink Message Header w/ the provided Family Message Header Type (MsgT).
+pub fn Request(MsgT: type) type {
+    return extern struct {
+        pub const len = mem.alignForward(u32, @sizeOf(@This()), 4);
+        /// Netlink Message Header
+        nlh: MessageHeader,
+        /// Family Message Header
+        msg: MsgT,
+    };
+}
 
 /// Netlink Attribute Header
 pub const AttributeHeader = extern struct {
@@ -241,6 +251,9 @@ pub fn handleAck(nl_sock: posix.socket_t) !void {
                     .BUSY => return error.BUSY,
                     .NOLINK => return error.NOLINK,
                     .ALREADY => return error.ALREADY,
+                    .EXIST => return error.EXIST,
+                    .ADDRNOTAVAIL => return error.ADDRNOTAVAIL,
+                    .SRCH => return error.SRCH,
                     else => |err| {
                         log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
                         return error.OSError;
