@@ -12,6 +12,8 @@ const posix = std.posix;
 
 const nl = @import("../nl.zig");
 const utils = @import("../utils.zig");
+const netdata = @import("../netdata.zig");
+const address = netdata.address;
 const c = utils.toStruct;
 
 
@@ -24,31 +26,137 @@ pub const InterfaceInfoMessage = extern struct {
     flags: u32,
     change: u32,
 };
-/// Netlink Route Layer2 Request
-pub const RequestL2 = extern struct {
-    /// Netlink Message Header
-    nlh: nl.MessageHeader,
-    /// Interface Info Message
-    ifi: InterfaceInfoMessage,
-};
-pub const InterfaceIP = extern struct {
+/// Interface Address Message (ifaddrmsg)
+pub const InterfaceAddress = extern struct {
     family: u8,
     prefix_len: u8,
     flags: u8,
     scope: u8,
     index: i32,
 };
-/// Netlink Route Layer3 Request
-pub const RequestL3 = extern struct {
-    /// Netlink Header
-    nlh: nl.MessageHeader,
-    /// Interface IP Address Message
-    ifa: InterfaceIP,
+/// Route Message (rtmsg)
+pub const RouteMessage = extern struct {
+    /// Address family
+    family: u8,
+    /// Destination length
+    dst_len: u8,
+    /// Source length
+    src_len: u8,
+    /// Type of Service
+    tos: u8,
+    /// Routing table ID
+    table: u8,
+    /// Routing protocol
+    protocol: u8,
+    /// Routing scope
+    scope: u8,
+    /// Routing type
+    type: u8,
+    /// Routing flags
+    flags: u32,
 };
-/// Netlink Route Layer2 Request Length
-pub const req_l2_len = mem.alignForward(u32, @sizeOf(RequestL2), 4);
-/// Netlink Route Layer3 Request Length
-pub const req_l3_len = mem.alignForward(u33, @sizeOf(RequestL3), 4);
+/// Netlink Route Interface Info (ifi) Request
+pub const RequestIFI = nl.Request(InterfaceInfoMessage);
+/// Netlink Route Interface Address (ifa) Request
+pub const RequestIFA = nl.Request(InterfaceAddress);
+/// Netlink Route Route Message (rtmsg) Request
+pub const RequestRTM = nl.Request(RouteMessage);
+
+/// Routing Attribute Types (RTA)
+pub const RTA = enum(u16) {
+    /// Unspecified routing attribute
+    UNSPEC,
+    /// Destination address
+    DST,
+    /// Source address
+    SRC,
+    /// Input interface
+    IIF,
+    /// Output interface
+    OIF,
+    /// Gateway address
+    GATEWAY,
+    /// Priority of the route
+    PRIORITY,
+    /// Preferred source address
+    PREFSRC,
+    /// Route metrics
+    METRICS,
+    /// Multipath information
+    MULTIPATH,
+    /// Protocol info (deprecated)
+    PROTOINFO,
+    /// Flow information
+    FLOW,
+    /// Cache information
+    CACHEINFO,
+    /// Session information (deprecated)
+    SESSION,
+    /// Multipath algorithm (deprecated)
+    MP_ALGO,
+    /// Routing table ID
+    TABLE,
+    /// Mark value
+    MARK,
+    /// Multicast forwarding cache stats
+    MFC_STATS,
+    /// Destination via another route
+    VIA,
+    /// New destination address
+    NEWDST,
+    /// Preference value
+    PREF,
+    /// Encapsulation type
+    ENCAP_TYPE,
+    /// Encapsulation data
+    ENCAP,
+    /// Expiration time
+    EXPIRES,
+    /// Padding
+    PAD,
+    /// User ID
+    UID,
+    /// TTL propagation
+    TTL_PROPAGATE,
+    /// IP protocol
+    IP_PROTO,
+    /// Source port
+    SPORT,
+    /// Destination port
+    DPORT,
+    /// Next-hop ID
+    NH_ID,
+};
+
+/// Route Types
+pub const RTN = enum(u8) {
+    /// Unspecified route type
+    UNSPEC,
+    /// Gateway or direct route
+    UNICAST,
+    /// Accept locally
+    LOCAL,
+    /// Accept locally as broadcast, send as broadcast
+    BROADCAST,
+    /// Accept locally as broadcast, but send as unicast
+    ANYCAST,
+    /// Multicast route
+    MULTICAST,
+    /// Drop packets
+    BLACKHOLE,
+    /// Destination is unreachable
+    UNREACHABLE,
+    /// Administratively prohibited
+    PROHIBIT,
+    /// Not in this table
+    THROW,
+    /// Translate this address
+    NAT,
+    /// Use external resolver
+    XRESOLVE,
+    /// Maximum value for route types
+    MAX,
+};
 
 /// Route Messages (RTM)
 pub const RTM = enum(u16) {
@@ -91,6 +199,8 @@ pub const RTM = enum(u16) {
     DELNSID = 69,
     GETNSID = 70,
 };
+/// Route Message Flags (RTM_F)
+
 
 /// Route Message Groups
 pub const RTMGRP = enum(u32) {
@@ -117,7 +227,6 @@ pub const RTMGRP = enum(u32) {
     /// Multicast group for IPv6 multicast membership changes
     IPV6_IFINFO = 1 << 10,
 };
-
 
 /// Interface Flags (IFF)
 pub const IFF = enum(u32) {
@@ -163,19 +272,197 @@ pub const IFF = enum(u32) {
     ECHO = 1 << 18,
 };
 
+/// Interface Address Attributes
+pub const IFA = enum(u16) {
+    /// Unspecified
+    UNSPEC = 0,
+    /// Interface address
+    ADDRESS = 1,
+    /// Local address
+    LOCAL = 2,
+    /// Interface label
+    LABEL = 3,
+    /// Broadcast address
+    BROADCAST = 4,
+    /// Anycast address
+    ANYCAST = 5,
+    /// Cache information
+    CACHEINFO = 6,
+    /// Multicast address
+    MULTICAST = 7,
+    /// Address flags
+    FLAGS = 8,
+    /// Route priority/metric for prefix route
+    RT_PRIORITY = 9,
+    /// Target network namespace ID
+    TARGET_NETNSID = 10,
+    /// Address protocol
+    PROTO = 11,
+   _,
+};
+
+/// Interface Address Flags (IFA_F)
+/// Address Flags
+pub const IFA_F = enum(u32) {
+    /// Secondary or Temporary address
+    SECONDARY = 0x01,
+    // TEMPORARY = 0x01, // Shared with SECONDARY
+    /// No Duplicate Address Detection (DAD)
+    NODAD = 0x02,
+    /// Optimistic address (e.g., tentative)
+    OPTIMISTIC = 0x04,
+    /// Duplicate Address Detection failed
+    DADFAILED = 0x08,
+    /// Home address
+    HOMEADDRESS = 0x10,
+    /// Deprecated address
+    DEPRECATED = 0x20,
+    /// Tentative address
+    TENTATIVE = 0x40,
+    /// Permanent address
+    PERMANENT = 0x80,
+    /// Manage temporary addresses
+    MANAGETEMPADDR = 0x100,
+    /// No prefix route
+    NOPREFIXROUTE = 0x200,
+    /// Multicast auto-join
+    MCAUTOJOIN = 0x400,
+    /// Stable privacy address
+    STABLE_PRIVACY = 0x800,
+};
+
+/// Scope of the Route
+pub const RT_SCOPE = enum(u8) {
+    /// Universal scope
+    UNIVERSE = 0,
+    /// Site-specific scope (user-defined)
+    SITE = 200,
+    /// Link-specific scope
+    LINK = 253,
+    /// Host-specific scope
+    HOST = 254,
+    /// Nowhere (invalid scope)
+    NOWHERE = 255,
+};
+
+/// Routing Table (RT_TABLE) Classes
+pub const RT_TABLE = enum(u8) {
+    /// Unspecified routing table
+    UNSPEC = 0,
+    /// Compatibility routing table
+    COMPAT = 252,
+    /// Default routing table
+    DEFAULT = 253,
+    /// Main routing table
+    MAIN = 254,
+    /// Local routing table
+    LOCAL = 255,
+    ///// Maximum value for routing tables
+    //MAX = 0xFFFFFFFF,
+};
+
+/// Routing Netlink Groups
+pub const RTNLGRP = enum(u32) {
+    NONE,
+    LINK,
+    NOTIFY,
+    NEIGH,
+    TC,
+    IPV4_IFADDR,
+    IPV4_MROUTE,
+    IPV4_ROUTE,
+    IPV4_RULE,
+    IPV6_IFADDR,
+    IPV6_MROUTE,
+    IPV6_ROUTE,
+    IPV6_IFINFO,
+    DECnet_IFADDR,
+    NOP2,
+    DECnet_ROUTE,
+    DECnet_RULE,
+    NOP4,
+    IPV6_PREFIX,
+    IPV6_RULE,
+    ND_USEROPT,
+    PHONET_IFADDR,
+    PHONET_ROUTE,
+    DCB,
+    IPV4_NETCONF,
+    IPV6_NETCONF,
+    MDB,
+    MPLS_ROUTE,
+    NSID,
+    MPLS_NETCONF,
+    IPV4_MROUTE_R,
+    IPV6_MROUTE_R,
+    NEXTHOP,
+    BRVLAN,
+    MCTP_IFADDR,
+    TUNNEL,
+    STATS,
+    __RTNLGRP_MAX,
+};
+
+/// Route Protocol
+pub const RTPROT = enum(u8) {
+    /// non-route, used when new device is added
+    UNSPEC = 0,
+    /// route installed due to ICMP redirect
+    REDIRECT = 1,
+    /// route installed by kernel
+    KERNEL = 2,
+    /// route installed during boot
+    BOOT = 3,
+    /// route installed by administrator
+    STATIC = 4,
+    /// route installed by gated
+    GATED = 8,
+    /// route installed by Router Advertisement
+    RA = 9,
+    /// route installed by Merit MRT
+    MRT = 10,
+    /// route installed by Zebra/Quagga
+    ZEBRA = 11,
+    /// route installed by Bird
+    BIRD = 12,
+    /// route installed by DECnet routing daemon
+    DNROUTED = 13,
+    /// route installed by XORP
+    XORP = 14,
+    /// route installed by Netsukuku
+    NTK = 15,
+    /// route installed by DHCP
+    DHCP = 16,
+    /// route installed by multicast routing
+    MROUTED = 17,
+    /// route installed by Babel
+    BABEL = 42,
+    /// route installed by BGP
+    BGP = 186,
+    /// route installed by IS-IS
+    ISIS = 187,
+    /// route installed by OSPF
+    OSPF = 188,
+    /// route installed by RIP
+    RIP = 189,
+    /// route installed by EIGRP
+    EIGRP = 192,
+    _,
+};
+
 const IFNAMESIZE = posix.IFNAMESIZE;
 
 
 /// Get the Index of an Interface from the provided Interface Name (`if_name`).
 /// Implicitly allocates double the message length to the stack.
 pub fn getIfIdx(if_name: []const u8) !i32 {
-    const buf_len = comptime mem.alignForward(usize, (req_l2_len + nl.attr_hdr_len + IFNAMESIZE) * 2, 4);
+    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + IFNAMESIZE) * 2, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     const nl_sock = try nl.request(
         fba.allocator(),
         nl.NETLINK.ROUTE,
-        RequestL2,
+        RequestIFI,
         .{
             .nlh = .{
                 .len = 0,
@@ -184,7 +471,7 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
                 .seq = 12321,
                 .pid = 0,
             },
-            .ifi = .{
+            .msg = .{
                 .family = nl.AF.PACKET,
                 .index = 0,
                 .flags = 0,
@@ -251,13 +538,13 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
 /// Set the provided Interface (`if_index`) to the Up or Down State (`state`).
 /// Implicitly allocates double the message length to the stack.
 pub fn setState(if_index: i32, state: u32) !void {
-    const buf_len = comptime mem.alignForward(usize, (req_l2_len + nl.attr_hdr_len + 4) * 2, 4);
+    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 4) * 2, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     const nl_sock = try nl.request(
         fba.allocator(),
         nl.NETLINK.ROUTE,
-        RequestL2,
+        RequestIFI,
         .{
             .nlh = .{
                 .len = 0,
@@ -266,7 +553,7 @@ pub fn setState(if_index: i32, state: u32) !void {
                 .seq = 12321,
                 .pid = 0,
             },
-            .ifi = .{
+            .msg = .{
                 .family = nl.AF.UNSPEC,
                 .index = if_index,
                 .change = 0xFFFFFFFF,
@@ -283,14 +570,14 @@ pub fn setState(if_index: i32, state: u32) !void {
 /// Set the MAC (`mac`) of the provided Interface (`if_index`).
 /// Implicitly allocates double the message length to the stack.
 pub fn setMAC(if_index: i32, mac: [6]u8) !void {
-    const buf_len = comptime mem.alignForward(usize, (req_l2_len + nl.attr_hdr_len + 6) * 2, 4);
+    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 6) * 2, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     try setState(if_index, c(IFF).DOWN);
     const nl_sock = try nl.request(
         fba.allocator(),
         nl.NETLINK.ROUTE,
-        RequestL2,
+        RequestIFI,
         .{
             .nlh = .{
                 .type = c(RTM).NEWLINK,
@@ -298,7 +585,7 @@ pub fn setMAC(if_index: i32, mac: [6]u8) !void {
                 .seq = 12321,
                 .pid = 0,
             },
-            .ifi = .{
+            .msg = .{
                 .family = nl.AF.UNSPEC,
                 .index = if_index,
                 .change = 0,
@@ -313,6 +600,204 @@ pub fn setMAC(if_index: i32, mac: [6]u8) !void {
     try setState(if_index, c(IFF).UP);
 }
 
+/// Add IP address to interface
+pub fn addIP(
+    alloc: mem.Allocator,
+    if_index: i32,
+    ip: [4]u8,
+    prefix_len: u8,
+) !void {
+    const flags = c(IFA_F).PERMANENT;
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        RequestIFA,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = c(RTM).NEWADDR,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .family = nl.AF.INET,
+                .prefix_len = prefix_len,
+                .flags = @intCast(flags & 0xFF),
+                .scope = c(RT_SCOPE).UNIVERSE,
+                .index = if_index,
+            },
+        },
+        &.{
+            .{
+                .hdr = .{ .type = c(IFA).LOCAL },
+                .data = &ip,
+            },
+            .{
+                .hdr = .{ .type = c(IFA).FLAGS },
+                .data = mem.toBytes(flags)[0..],
+            },
+        },
+    );
+    defer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
+/// Delete IP address from interface
+pub fn deleteIP(
+    alloc: mem.Allocator,
+    if_index: i32,
+    ip: [4]u8,
+    prefix_len: u8,
+) !void {
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        RequestIFA,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = c(RTM).DELADDR,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .family = nl.AF.INET,
+                .prefix_len = prefix_len,
+                .flags = 0,
+                .scope = c(RT_SCOPE).UNIVERSE,
+                .index = if_index,
+            },
+        },
+        &.{
+            .{
+                .hdr = .{ .type = c(IFA).LOCAL },
+                .data = &ip,
+            },
+        },
+    );
+    defer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
+/// Route Config
+pub const RouteConfig = struct {
+    cidr: u8 = 24,
+    gateway: ?[4]u8 = null,
+};
+/// Add route to routing table
+pub fn addRoute(
+    alloc: mem.Allocator,
+    if_index: i32,
+    dest: [4]u8,
+    config: RouteConfig,
+) !void {
+    var attrs = std.ArrayListUnmanaged(nl.Attribute){};
+    defer attrs.deinit(alloc);
+    // Always add destination network
+    try attrs.append(alloc, .{
+        .hdr = .{ .type = c(RTA).DST },
+        .data = &dest,
+    });
+    // Add gateway if provided
+    if (config.gateway) |gw| {
+        try attrs.append(alloc, .{
+            .hdr = .{ .type = c(RTA).GATEWAY },
+            .data = &gw,
+        });
+    }
+    // Add output interface
+    try attrs.append(alloc, .{
+        .hdr = .{ .type = c(RTA).OIF },
+        .data = mem.toBytes(if_index)[0..],
+    });
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        RequestRTM,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = c(RTM).NEWROUTE,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).CREATE | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .family = nl.AF.INET,
+                .dst_len = config.cidr,
+                .src_len = 0,
+                .tos = 0,
+                .table = c(RT_TABLE).MAIN,
+                .protocol = c(RTPROT).BOOT,
+                .scope = if (config.gateway != null) c(RT_SCOPE).UNIVERSE else c(RT_SCOPE).LINK,
+                .type = c(RTN).UNICAST,
+                .flags = 0,
+            },
+        },
+        attrs.items,
+    );
+    defer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
+/// Delete route from routing table
+pub fn deleteRoute(
+    alloc: mem.Allocator,
+    if_index: i32,
+    dest: [4]u8,
+    config: RouteConfig,
+) !void {
+    var attrs = std.ArrayListUnmanaged(nl.Attribute){};
+    defer attrs.deinit(alloc);
+    // Always add destination network
+    try attrs.append(alloc, .{
+        .hdr = .{ .type = c(RTA).DST },
+        .data = &dest,
+    });
+    // Add gateway if provided
+    if (config.gateway) |gw| {
+        try attrs.append(alloc, .{
+            .hdr = .{ .type = c(RTA).GATEWAY },
+            .data = &gw,
+        });
+    }
+    // Add output interface
+    try attrs.append(alloc, .{
+        .hdr = .{ .type = c(RTA).OIF },
+        .data = mem.toBytes(if_index)[0..],
+    });
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        RequestRTM,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = c(RTM).DELROUTE,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .family = nl.AF.INET,
+                .dst_len = config.cidr,
+                .src_len = 0,
+                .tos = 0,
+                .table = c(RT_TABLE).MAIN,
+                .protocol = c(RTPROT).BOOT,
+                .scope = if (config.gateway != null) c(RT_SCOPE).UNIVERSE else c(RT_SCOPE).LINK,
+                .type = c(RTN).UNICAST,
+                .flags = 0,
+            },
+        },
+        attrs.items,
+    );
+    defer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
 /// Device Info. Simple Struct for common Device data from rtnetlink 
 pub const DeviceInfo = struct {
     index: i32,
@@ -325,13 +810,13 @@ pub const DeviceInfo = struct {
         dev.index = if_index;
         dev.ips = .{ null } ** 10;
 
-        const l2_buf_len = comptime mem.alignForward(usize, (req_l2_len + nl.attr_hdr_len + 6) * 2, 4);
+        const l2_buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 6) * 2, 4);
         var l2_req_buf: [l2_buf_len]u8 = .{ 0 } ** l2_buf_len;
         var l2_fba = heap.FixedBufferAllocator.init(l2_req_buf[0..]);
         const l2_sock = try nl.request(
             l2_fba.allocator(),
             nl.NETLINK.ROUTE,
-            RequestL2,
+            RequestIFI,
             .{
                 .nlh = .{
                     .len = 0,
@@ -340,7 +825,7 @@ pub const DeviceInfo = struct {
                     .seq = 12321,
                     .pid = 0,
                 },
-                .ifi = .{
+                .msg = .{
                     .family = nl.AF.UNSPEC,
                     .index = if_index,
                     .type = 0,
@@ -410,22 +895,22 @@ pub const DeviceInfo = struct {
         }
         if (set_count < 2) return error.DetailsNotProvided;
 
-        const l3_buf_len = comptime mem.alignForward(usize, (req_l3_len + nl.attr_hdr_len + 6) * 2, 4);
+        const l3_buf_len = comptime mem.alignForward(usize, (RequestIFA.len + nl.attr_hdr_len + 6) * 2, 4);
         var l3_req_buf: [l3_buf_len]u8 = .{ 0 } ** l3_buf_len;
         var l3_fba = heap.FixedBufferAllocator.init(l3_req_buf[0..]);
         const l3_sock = try nl.request(
             l3_fba.allocator(),
             nl.NETLINK.ROUTE,
-            RequestL3,
+            RequestIFA,
             .{
                 .nlh = .{
                     .len = 0,
                     .type = c(RTM).GETADDR,
                     .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
-                    .pid = 0,
                     .seq = 12321,
+                    .pid = 0,
                 },
-                .ifa = .{
+                .msg = .{
                     .family = nl.AF.INET,
                     .index = if_index,
                     .prefix_len = 24,
@@ -472,8 +957,8 @@ pub const DeviceInfo = struct {
                 if (nl_resp_hdr.type == c(nl.NLMSG).DONE) break :respL3;
                 if (nl_resp_hdr.type == c(RTM).NEWADDR) ipAddr: {
                     start = end;
-                    end += @sizeOf(InterfaceIP);
-                    const ifa_msg: *const InterfaceIP = @alignCast(@ptrCast(resp_buf[start..end]));
+                    end += @sizeOf(InterfaceAddress);
+                    const ifa_msg: *const InterfaceAddress = @alignCast(@ptrCast(resp_buf[start..end]));
                     if (ifa_msg.index != if_index) break :ipAddr;
                     start = end;
                     end += nl.attr_hdr_len;
@@ -512,7 +997,7 @@ pub const DeviceInfo = struct {
     ) !void {
         try writer.print("- Index: {d}\n", .{ self.index });
         try writer.print("- MAC:   ", .{});
-        try utils.printAddr(self.mac[0..], ":", "{X:0>2}", writer);
+        try address.printAddr(self.mac[0..], ":", "{X:0>2}", writer);
         try writer.print("\n", .{});
         try writer.print("- MTU:   {d}\n", .{ self.mtu });
         if (self.ips[0] == null) return;
@@ -520,7 +1005,7 @@ pub const DeviceInfo = struct {
         for (self.ips) |ip| {
             const _ip = ip orelse return;
             try writer.print("  - ", .{});
-            try utils.printAddr(_ip[0..], ".", "{d}", writer);
+            try address.printAddr(_ip[0..], ".", "{d}", writer);
             try writer.print("\n", .{});
         }
     }
@@ -537,7 +1022,7 @@ pub const DeviceInfo = struct {
 //                .seq = 0,
 //                .pid = 50505,
 //            },
-//            .ifi = .{
+//            .msg = .{
 //                .family = AF.PACKET,
 //                .index = 0,
 //                .flags = 0,

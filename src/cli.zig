@@ -17,17 +17,22 @@ const time = std.time;
 
 const cova = @import("cova");
 const nl = @import("nl.zig");
+const netdata = @import("netdata.zig");
+const address = netdata.address;
 const wpa = @import("wpa.zig");
 
 /// The Cova Command Type for DisCo.
 pub const CommandT = cova.Command.Custom(.{
     .global_help_prefix = "DisCo",
     .help_category_order = &.{ .Prefix, .Usage, .Header, .Aliases, .Examples, .Values, .Options, .Commands },
+    .allow_abbreviated_cmds = true,
+    .abbreviated_min_len = 1,
     .val_config = .{
         .custom_types = &.{
             net.Address,
             fs.File,
             [6]u8,
+            [4]u8,
             nl.route.IFF,
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
@@ -68,6 +73,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = bool, .alias = "toggle" },
             .{ .ChildT = []const u8, .alias = "text" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
+            .{ .ChildT = [4]u8, .alias = "ip_address" },
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
             .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
@@ -142,30 +148,8 @@ pub const setup_cmd = CommandT{
                             .short_name = 'm',
                             .val = ValueT.ofType([6]u8, .{
                                 .name = "address",
-                                .parse_fn = struct{
-                                    pub fn macParseFn(arg: []const u8, _: mem.Allocator) ![6]u8 {
-                                        // TODO Add random/vendor support
-                                        if (arg.len < 12 or arg.len > 17)
-                                            return error.AddressNotValid;
-                                        var text_buf: [12]u8 = undefined;
-                                        var idx: usize = 0;
-                                        for (arg) |c| {
-                                            if (mem.indexOfScalar(u8, "-_: ", c) != null) 
-                                                continue;
-                                            if (mem.indexOfScalar(u8, "0123456789abcdefABCDEF", c) == null) 
-                                                return error.InvalidMAC;
-                                            text_buf[idx] = if (c >= 'A' or c < 'a') c else c + 32;
-                                            idx += 1;
-                                        }
-                                        var addr_buf: [6]u8 = undefined;
-                                        for (addr_buf[0..], 0..) |*byte, addr_idx| {
-                                            const start = addr_idx * 2;
-                                            const end = start + 2;
-                                            byte.* = try fmt.parseInt(u8, text_buf[start..end], 16);
-                                        }
-                                        return addr_buf;
-                                    }
-                                }.macParseFn,
+                                // TODO Add random/vendor support
+                                .parse_fn = address.parseMAC,
                             })
                         },
                         .{
@@ -241,6 +225,18 @@ pub const setup_cmd = CommandT{
                     .short_name = 's',
                     .val = ValueT.ofType(wpa.Protocol, .{ .default_val = .wpa2 }),
                 },
+                .{
+                    .name = "dhcp",
+                    .description = "Obtain an IP Address via DHCP upon successful connection.",
+                    .long_name = "dhcp",
+                    .short_name = 'd',
+                },
+                .{
+                    .name = "gateway",
+                    .description = "Automatically set the Gateway after obtaining an IP Address.",
+                    .long_name = "gateway",
+                    .short_name = 'g',
+                },
             },
             .vals = &.{
                 ValueT.ofType([]const u8, .{
@@ -252,6 +248,75 @@ pub const setup_cmd = CommandT{
                         }
                     }.validPass,
                 }),
+            },
+        },
+        .{
+            .name = "add",
+            .description = "Add a Connection attribute.",
+            .opts = &.{
+                .{
+                    .name = "ip",
+                    .description = "Add an IP Address to the given Interface.",
+                    .long_name = "ip",
+                    .val = ValueT.ofType([4]u8, .{
+                        .parse_fn = address.parseIP,
+                    }),
+                },
+                .{
+                    .name = "route",
+                    .description = "Add a Route to the given Interface.",
+                    .long_name = "route",
+                    .alias_long_names = &.{ "rt" },
+                    .short_name = 'r',
+                    .val = ValueT.ofType([4]u8, .{
+                        .parse_fn = address.parseIP,
+                    }),
+                },
+                .{
+                    .name = "subnet",
+                    .description = "Specify a Subnet Mask (in CIDR or IP notation) for the IP Address or Route being added to given Interface. (Used in conjunction with `--ip` or `--route`. Default = 24)",
+                    .long_name = "subnet",
+                    .short_name = 's',
+                    .val = ValueT.ofType(u8, .{
+                        .default_val = 24,
+                        .parse_fn = address.parseCIDR,
+                    }),
+                },
+            },
+        },
+        .{
+            .name = "delete",
+            .alias_names = &.{ "remove", "rm" },
+            .description = "Delete/Remove a Connection attribute.",
+            .opts = &.{
+                .{
+                    .name = "ip",
+                    .description = "Remove an IP Address from the given Interface.",
+                    .long_name = "ip",
+                    .val = ValueT.ofType([4]u8, .{
+                        .parse_fn = address.parseIP,
+                    }),
+                },
+                .{
+                    .name = "route",
+                    .description = "Remove a Route from the given Interface.",
+                    .long_name = "route",
+                    .alias_long_names = &.{ "rt" },
+                    .short_name = 'r',
+                    .val = ValueT.ofType([4]u8, .{
+                        .parse_fn = address.parseIP,
+                    }),
+                },
+                .{
+                    .name = "subnet",
+                    .description = "Specify a Subnet Mask to identify the IP Address or Route being removed from the given Interface. (Used in conjunction with `--ip` or `--route`)",
+                    .long_name = "subnet",
+                    .short_name = 's',
+                    .val = ValueT.ofType(u8, .{
+                        .default_val = 24,
+                        .parse_fn = address.parseCIDR,
+                    }),
+                },
             },
         },
         CommandT.from(@TypeOf(wpa.genKey), .{

@@ -13,11 +13,13 @@ const cova = @import("cova");
 const cli = @import("cli.zig");
 
 const art = @import("art.zig");
+const netdata = @import("netdata.zig");
 const nl = @import("nl.zig");
 const sys = @import("sys.zig");
 const utils = @import("utils.zig");
 const wpa = @import("wpa.zig");
 
+const address = netdata.address;
 const c = utils.toStruct;
 const NetworkInterface = @import("NetworkInterface.zig");
 
@@ -265,6 +267,103 @@ pub fn main() !void {
             raw_net_if = try NetworkInterface.get(net_if.name);
         }
     }
+    if (main_cmd.matchSubCmd("add")) |add_cmd| {
+        checkRoot(stdout_file.any());
+        checkIF(raw_net_if, stdout_file.any());
+        const net_if: NetworkInterface = raw_net_if.?;
+        const add_opts = try add_cmd.getOpts(.{});
+        const cidr = try (add_opts.get("subnet").?).val.getAs(u8);
+        if (add_opts.get("ip")) |ip_opt| setIP: {
+            const ip = try ip_opt.val.getAs([4]u8);
+            var ip_buf = std.ArrayListUnmanaged(u8){};
+            defer ip_buf.deinit(alloc);
+            try address.printAddr(ip[0..], ".", "{d}", ip_buf.writer(alloc).any());
+            try stdout_file.print("Adding new IP Address '{s}'...\n", .{ ip_buf.items });
+            nl.route.addIP(
+                alloc,
+                net_if.route_info.index,
+                ip,
+                cidr,
+            ) catch |err| switch (err) {
+                error.EXIST => {
+                    try stdout_file.print("The IP Address '{s}' is already set.\n", .{ ip_buf.items });
+                    break :setIP;
+                },
+                else => return err,
+            };
+            try stdout_file.print("Added new IP Address '{s}'.\n", .{ ip_buf.items });
+        }
+        if (add_opts.get("route")) |route_opt| setRoute: {
+            const route = try route_opt.val.getAs([4]u8);
+            var route_buf = std.ArrayListUnmanaged(u8){};
+            defer route_buf.deinit(alloc);
+            try address.printAddr(route[0..], ".", "{d}", route_buf.writer(alloc).any());
+            try stdout_file.print("Adding new Route '{s}'...\n", .{ route_buf.items });
+            nl.route.addRoute(
+                alloc,
+                net_if.route_info.index,
+                route,
+                .{ .cidr = cidr },
+            ) catch |err| switch (err) {
+                error.EXIST => {
+                    try stdout_file.print("The Route '{s}' is already set.\n", .{ route_buf.items });
+                    break :setRoute;
+                },
+                else => return err,
+            };
+            try stdout_file.print("Added new Route '{s}'.\n", .{ route_buf.items });
+        }
+        time.sleep(100 * time.ns_per_ms);
+    }
+    if (main_cmd.matchSubCmd("delete")) |add_cmd| {
+        checkRoot(stdout_file.any());
+        checkIF(raw_net_if, stdout_file.any());
+        const net_if: NetworkInterface = raw_net_if.?;
+        const delete_opts = try add_cmd.getOpts(.{});
+        const cidr = try (delete_opts.get("subnet").?).val.getAs(u8);
+        if (delete_opts.get("ip")) |ip_opt| setIP: {
+            const ip = try ip_opt.val.getAs([4]u8);
+            var ip_buf = std.ArrayListUnmanaged(u8){};
+            defer ip_buf.deinit(alloc);
+            try address.printAddr(ip[0..], ".", "{d}", ip_buf.writer(alloc).any());
+            try stdout_file.print("Deleting the IP Address '{s}'...\n", .{ ip_buf.items });
+            nl.route.deleteIP(
+                alloc,
+                net_if.route_info.index,
+                ip,
+                cidr,
+            ) catch |err| switch (err) {
+                error.ADDRNOTAVAIL => {
+                    try stdout_file.print("The IP Address '{s}' could not be found.\n", .{ ip_buf.items });
+                    break :setIP;
+                },
+                else => return err,
+            };
+            try stdout_file.print("Deleted the IP Address '{s}'.\n", .{ ip_buf.items });
+        }
+        if (delete_opts.get("route")) |route_opt| delRoute: {
+            const route = try route_opt.val.getAs([4]u8);
+            var route_buf = std.ArrayListUnmanaged(u8){};
+            defer route_buf.deinit(alloc);
+            try address.printAddr(route[0..], ".", "{d}", route_buf.writer(alloc).any());
+            try stdout_file.print("Deleting new Route '{s}'...\n", .{ route_buf.items });
+            nl.route.deleteRoute(
+                alloc,
+                net_if.route_info.index,
+                route,
+                .{ .cidr = cidr },
+            ) catch |err| switch (err) {
+                error.ADDRNOTAVAIL, 
+                error.SRCH => {
+                    try stdout_file.print("The Route '{s}' could not be found.\n", .{ route_buf.items });
+                    break :delRoute;
+                },
+                else => return err,
+            };
+            try stdout_file.print("Deleted Route '{s}'.\n", .{ route_buf.items });
+        }
+        time.sleep(100 * time.ns_per_ms);
+    }
     if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
@@ -294,7 +393,7 @@ pub fn main() !void {
             if (!ch_opt.val.isSet()) break :freqs null;
             const channels = try ch_opt.val.getAllAs(usize);
             var freqs_buf = try std.ArrayListUnmanaged(u32).initCapacity(alloc, 1);
-            for (channels) |ch| 
+            for (channels) |ch|
                 try freqs_buf.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
             break :freqs try freqs_buf.toOwnedSlice(alloc);
         };
@@ -315,9 +414,16 @@ pub fn main() !void {
                     wpa.handle4WHS,
                     .{ .freqs = freqs },
                 );
-                try stdout_file.print("Connected to {s}.", .{ ssid });
+                try stdout_file.print("Connected to {s}.\n", .{ ssid });
             }, 
         }
+        if (connect_cmd.checkFlag("dhcp")) {
+            try stdout_file.print("(WIP) Obtaining an IP Address via DHCP...\n", .{});
+            const gateway = connect_cmd.checkFlag("gateway");
+            //_ = try nl.route.initDHCP(alloc, net_if.route_info.index, gateway);
+            _ = gateway;
+        }
+        time.sleep(10 * time.ns_per_s);
     }
 
     // System Details
