@@ -6,12 +6,12 @@ const io = std.io;
 const fmt = std.fmt;
 const mem = std.mem;
 
-/// Print a Network Address (IPv4, IPv6, MAC)
+/// Print a Network Address (IPv4, IPv6, MAC) using the provided `writer`.
 pub fn printAddr(
     bytes: []const u8, 
     comptime sep: []const u8, 
     comptime byte_fmt: []const u8, 
-    writer: io.AnyWriter,
+    writer: anytype,//io.AnyWriter,
 ) !void {
     if (bytes.len == 0) return;
     try writer.print(byte_fmt, .{ bytes[0] });
@@ -19,8 +19,68 @@ pub fn printAddr(
     for (bytes[1..]) |byte| try writer.print(sep ++ byte_fmt, .{ byte });
 }
 
+/// Print a Network Address (IPv4, IPv6, MAC) using the provided Allocator (`alloc`).
+pub fn printAddrAlloc(
+    bytes: []const u8,
+    comptime sep: []const u8,
+    comptime byte_fmt: []const u8,
+    alloc: mem.Allocator,
+) ![]const u8 {
+    var buf = std.ArrayListUnmanaged(u8){};
+    errdefer buf.deinit(alloc);
+    const writer = buf.writer(alloc).any();
+    try printAddr(
+        bytes,
+        sep,
+        byte_fmt,
+        writer,
+    );
+    return try buf.toOwnedSlice(alloc);
+}
+
+/// IPv4 Address
+pub const IPv4 = struct {
+    addr: [4]u8,
+    cidr: u8 = 24,
+
+    /// Get an IPv4 w/ or w/o CIDR from the provided String (`str`);
+    pub fn fromStr(str: []const u8) !@This() {
+        if (ascii.eqlIgnoreCase(str, "default")) return .{
+            .addr = .{ 0, 0, 0, 0 },
+            .cidr = 0,
+        };
+        var ip: @This() = undefined;
+        ip.cidr = 24;
+        var iter = mem.tokenizeScalar(u8, str, '/');
+        var idx: usize = 0;
+        while (iter.next()) |item| : (idx += 1) {
+            switch (idx) {
+                0 => ip.addr = try parseIP(item),
+                1 => ip.cidr = try parseCIDR(item),
+                else => return error.InvalidIPv4,
+            }
+        }
+        return ip;
+    }
+
+    pub fn format(
+        self: @This(), 
+        _: []const u8, 
+        _: fmt.FormatOptions, 
+        writer: anytype,
+    ) !void {
+        try printAddr(
+            self.addr[0..],
+            ".",
+            "{d}",
+            writer,
+        );
+        try writer.print("/{d}", .{ self.cidr });
+    }
+};
+
 /// Parse a MAC Address from the provided String (`str`).
-pub fn parseMAC(str: []const u8, _: mem.Allocator) ![6]u8 {
+pub fn parseMAC(str: []const u8) ![6]u8 {
     if (str.len < 12 or str.len > 17)
         return error.AddressNotValid;
     var text_buf: [12]u8 = undefined;
@@ -43,7 +103,7 @@ pub fn parseMAC(str: []const u8, _: mem.Allocator) ![6]u8 {
 }
 
 /// Parse an IP Address from the provided String (`str`).
-pub fn parseIP(str: []const u8, _: mem.Allocator) ![4]u8 {
+pub fn parseIP(str: []const u8) ![4]u8 {
     const trimmed = mem.trim(u8, str[0..], ascii.whitespace[0..]);
     var iter = mem.splitScalar(u8, trimmed, '.');
     var bytes: [4]u8 = undefined;
@@ -55,7 +115,7 @@ pub fn parseIP(str: []const u8, _: mem.Allocator) ![4]u8 {
 }
 
 /// Parse a Subnet Mask in IPv4 Notation from the provided String (`str`).
-pub fn parseSubnet(str: []const u8, _: mem.Allocator) ![4]u8 {
+pub fn parseSubnet(str: []const u8) ![4]u8 {
     if (str.len == 0 or str.len > 15) return error.InvalidSubnet;
     if (str.len < 4) {
         const cidr = try fmt.parseInt(u8, str, 10);
@@ -65,7 +125,7 @@ pub fn parseSubnet(str: []const u8, _: mem.Allocator) ![4]u8 {
         return mem.toBytes(bytes_int);
     }
     // TODO Rework unneeded allocator
-    const subnet = try parseIP(str, std.heap.page_allocator);
+    const subnet = try parseIP(str);
     for (subnet[1..4], 0..) |b, i| {
         if (b >= subnet[i]) continue;
         return error.InvalidSubnet;
@@ -74,12 +134,12 @@ pub fn parseSubnet(str: []const u8, _: mem.Allocator) ![4]u8 {
 }
 
 /// Parse a Subnet Mask in CIDR Notation from the provided String (`str`).
-pub fn parseCIDR(str: []const u8, _: mem.Allocator) !u8 {
+pub fn parseCIDR(str: []const u8) !u8 {
     const cidr = switch (str.len) {
         1...4 => try fmt.parseInt(u8, str, 0),
         7...15 => subnet: {
             // TODO Rework unneeded allocator
-            const bytes = try parseSubnet(str, std.heap.page_allocator);
+            const bytes = try parseSubnet(str);
             const num = mem.bytesToValue(u32, bytes[0..]);
             var cidr: u8 = 0;
             for (0..32) |i| {

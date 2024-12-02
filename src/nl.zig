@@ -254,6 +254,7 @@ pub fn handleAck(nl_sock: posix.socket_t) !void {
                     .EXIST => return error.EXIST,
                     .ADDRNOTAVAIL => return error.ADDRNOTAVAIL,
                     .SRCH => return error.SRCH,
+                    .NETUNREACH => return error.NETUNREACH,
                     else => |err| {
                         log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
                         return error.OSError;

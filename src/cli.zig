@@ -33,6 +33,7 @@ pub const CommandT = cova.Command.Custom(.{
             fs.File,
             [6]u8,
             [4]u8,
+            address.IPv4,
             nl.route.IFF,
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
@@ -89,119 +90,47 @@ pub const setup_cmd = CommandT{
     .description = "Discreetly Connect to networks.",
     .examples = &.{
         "disco wlan0",
-        "disco wlan0 set if --mac 00:11:22:aa:bb:cc",
+        "disco wlan0 set --mac 00:11:22:aa:bb:cc",
+        "disco wlan0 add --ip 192.168.10.10",
+        "disco wlan0 del --route 192.168.0.0 -s 16",
+        "disco sys set --hostname 'shaggy'",
     },
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
-    .sub_cmds = &.{
+    .vals = &.{
+        ValueT.ofType([]const u8, .{
+            .name = "interface",
+            .description = "The Network Interface to use. (This is mandatory)"
+        }),
+    },
+    // TODO Implement these Base Options
+    .opts = &.{
         .{
-            .name = "set",
-            .alias_names = &.{ "change" },
-            .description = "Set a Connection attribute.",
-            .sub_cmds_mandatory = false,
-            .sub_cmds = &.{
-                .{
-                    .name = "interface",
-                    .alias_names = &.{ "if" },
-                    .description = "Set a Connection attribute for the specified Interface.",
-                    .opts = &.{
-                        .{
-                            .name = "channel",
-                            .description = "Set the Channel of the given Interface. (Note, this will set the card to Up in Monitor mode)",
-                            .long_name = "channel",
-                            .short_name = 'c',
-                            .val = ValueT.ofType(usize, .{
-                                .name = "chan",
-                                .valid_fn = struct{
-                                    pub fn valCh(ch: usize, _: mem.Allocator) bool {
-                                        return nl._80211.validateChannel(ch);
-                                    }
-                                }.valCh,
-                            }),
-                        },
-                        .{
-                            .name = "channel-width",
-                            .description = "Set the Channel/Frequency Width (in MHZ & Throughput) of the given Interface. (Note, this only works in conjunction with --channel or --freq)",
-                            .long_name = "channel-width",
-                            .alias_long_names = &.{ "ch-width", "frequency-width", "freq-width" },
-                            .short_name = 'C',
-                            .val = ValueT.ofType(nl._80211.CHANNEL_WIDTH, .{}),
-                        },
-                        .{
-                            .name = "frequency",
-                            .description = "Set the frequency (in MHz) of the given Interface. (Note, this will set the card to Up in Monitor mode)",
-                            .long_name = "frequency",
-                            .short_name = 'f',
-                            .val = ValueT.ofType(usize, .{
-                                .name = "freq",
-                                .valid_fn = struct{
-                                    pub fn valFreq(freq: usize, _: mem.Allocator) bool {
-                                        return nl._80211.validateFreq(freq);
-                                    }
-                                }.valFreq,
-                            }),
-                        },
-                        .{
-                            .name = "mac",
-                            .description = "Set the MAC Address of the given Interface.",
-                            .long_name = "mac",
-                            .short_name = 'm',
-                            .val = ValueT.ofType([6]u8, .{
-                                .name = "address",
-                                // TODO Add random/vendor support
-                                .parse_fn = address.parseMAC,
-                            })
-                        },
-                        .{
-                            .name = "state",
-                            .description = "Set the State of the given Interface. (UP, DOWN, BROADCAST, etc). (Note, multiple flags can be set simultaneously)",
-                            .long_name = "state",
-                            .short_name = 's',
-                            .val = ValueT.ofType(nl.route.IFF, .{
-                                .set_behavior = .Multi,
-                                .max_entries = 32,
-                                .parse_fn = struct {
-                                    pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.route.IFF {
-                                        var state_buf: [12]u8 = undefined;
-                                        if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.route.IFF, arg) orelse error.InvalidState;
-                                        const state = ascii.upperString(state_buf[0..], arg[0..@min(arg.len, 12)]);
-                                        return meta.stringToEnum(nl.route.IFF, state) orelse error.InvalidState;
-                                    }
-                                }.parseIFF,
-                            }),
-                        },
-                        .{
-                            .name = "mode",
-                            .description = "Set the Mode of the given Interface. (MONITOR, STATION, AP, etc)",
-                            .long_name = "mode",
-                            .short_name = 'M',
-                            .val = ValueT.ofType(nl._80211.IFTYPE, .{
-                                .parse_fn = struct {
-                                    pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl._80211.IFTYPE {
-                                        var mode_buf: [12]u8 = undefined;
-                                        if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl._80211.IFTYPE, arg) orelse error.Invalidmode;
-                                        const mode = ascii.upperString(mode_buf[0..], arg[0..@min(arg.len, 12)]);
-                                        return meta.stringToEnum(nl._80211.IFTYPE, mode) orelse error.InvalidMode;
-                                    }
-                                }.parseIFF,
-                            }),
-                        }
-                    },
-                },
-            },
-            .opts = &.{
-                .{
-                    .name = "hostname",
-                    .description = "Set a new Hostname.",
-                    .long_name = "hostname",
-                    .short_name = 'H',
-                    .val = ValueT.ofType([]const u8, .{}),
-                }
-            }
+            .name = "log-path",
+            .description = "Save the JSON output to the specified Log Path.",
+            .short_name = 'l',
+            .long_name = "log-path",
+            .val = ValueT.ofType(fs.File, .{
+                .name = "log_path",
+                .description = "Path to the save JSON Log File.",
+            }),
         },
         .{
+            .name = "no-tui",
+            .description = "Run DisCo without a TUI.",
+            .short_name = 'n',
+            .long_name = "no-tui",
+        },
+        .{
+            .name = "no-mouse",
+            .description = "Disable mouse events for the TUI.",
+            .long_name = "no-mouse",
+        },
+    },
+    .sub_cmds = &.{
+        .{
             .name = "connect",
-            .description = "Connect to a WiFi Network.",
+            .description = "Connect to a WiFi Network using the specified Interface.",
             .opts = &.{
                 channels_opt,
                 .{
@@ -235,6 +164,7 @@ pub const setup_cmd = CommandT{
                     .name = "gateway",
                     .description = "Automatically set the Gateway after obtaining an IP Address.",
                     .long_name = "gateway",
+                    .alias_long_names = &.{ "gw" },
                     .short_name = 'g',
                 },
             },
@@ -251,50 +181,149 @@ pub const setup_cmd = CommandT{
             },
         },
         .{
-            .name = "add",
-            .description = "Add a Connection attribute.",
+            .name = "set",
+            .alias_names = &.{ "change" },
+            .description = "Set/Change a Connection attribute for the specified Interface.",
+            .sub_cmds_mandatory = false,
             .opts = &.{
                 .{
-                    .name = "ip",
-                    .description = "Add an IP Address to the given Interface.",
-                    .long_name = "ip",
-                    .val = ValueT.ofType([4]u8, .{
-                        .parse_fn = address.parseIP,
+                    .name = "channel",
+                    .description = "Set the Channel of the given Interface. (Note, this will set the card to Up in Monitor mode)",
+                    .long_name = "channel",
+                    .short_name = 'c',
+                    .val = ValueT.ofType(usize, .{
+                        .name = "chan",
+                        .valid_fn = struct{
+                            pub fn valCh(ch: usize, _: mem.Allocator) bool {
+                                return nl._80211.validateChannel(ch);
+                            }
+                        }.valCh,
                     }),
                 },
                 .{
-                    .name = "route",
-                    .description = "Add a Route to the given Interface.",
-                    .long_name = "route",
-                    .alias_long_names = &.{ "rt" },
-                    .short_name = 'r',
-                    .val = ValueT.ofType([4]u8, .{
-                        .parse_fn = address.parseIP,
+                    .name = "channel-width",
+                    .description = "Set the Channel/Frequency Width (in MHZ & Throughput) of the given Interface. (Note, this only works in conjunction with --channel or --freq)",
+                    .long_name = "channel-width",
+                    .alias_long_names = &.{ "ch-width", "frequency-width", "freq-width" },
+                    .short_name = 'C',
+                    .val = ValueT.ofType(nl._80211.CHANNEL_WIDTH, .{}),
+                },
+                .{
+                    .name = "frequency",
+                    .description = "Set the frequency (in MHz) of the given Interface. (Note, this will set the card to Up in Monitor mode)",
+                    .long_name = "frequency",
+                    .short_name = 'f',
+                    .val = ValueT.ofType(usize, .{
+                        .name = "freq",
+                        .valid_fn = struct{
+                            pub fn valFreq(freq: usize, _: mem.Allocator) bool {
+                                return nl._80211.validateFreq(freq);
+                            }
+                        }.valFreq,
                     }),
                 },
                 .{
-                    .name = "subnet",
-                    .description = "Specify a Subnet Mask (in CIDR or IP notation) for the IP Address or Route being added to given Interface. (Used in conjunction with `--ip` or `--route`. Default = 24)",
-                    .long_name = "subnet",
+                    .name = "mac",
+                    .description = "Set the MAC Address of the given Interface.",
+                    .long_name = "mac",
+                    .short_name = 'm',
+                    .val = ValueT.ofType([6]u8, .{
+                        .name = "address",
+                        // TODO Add random/vendor support
+                        .parse_fn = parseMAC,
+                    })
+                },
+                .{
+                    .name = "state",
+                    .description = "Set the State of the given Interface. (UP, DOWN, BROADCAST, etc). (Note, multiple flags can be set simultaneously)",
+                    .long_name = "state",
                     .short_name = 's',
-                    .val = ValueT.ofType(u8, .{
-                        .default_val = 24,
-                        .parse_fn = address.parseCIDR,
+                    .val = ValueT.ofType(nl.route.IFF, .{
+                        .set_behavior = .Multi,
+                        .max_entries = 32,
+                        .parse_fn = struct {
+                            pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.route.IFF {
+                                var state_buf: [12]u8 = undefined;
+                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.route.IFF, arg) orelse error.InvalidState;
+                                const state = ascii.upperString(state_buf[0..], arg[0..@min(arg.len, 12)]);
+                                return meta.stringToEnum(nl.route.IFF, state) orelse error.InvalidState;
+                            }
+                        }.parseIFF,
+                    }),
+                },
+                .{
+                    .name = "mode",
+                    .description = "Set the Mode of the given Interface. (MONITOR, STATION, AP, etc)",
+                    .long_name = "mode",
+                    .short_name = 'M',
+                    .val = ValueT.ofType(nl._80211.IFTYPE, .{
+                        .parse_fn = struct {
+                            pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl._80211.IFTYPE {
+                                var mode_buf: [12]u8 = undefined;
+                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl._80211.IFTYPE, arg) orelse error.Invalidmode;
+                                const mode = ascii.upperString(mode_buf[0..], arg[0..@min(arg.len, 12)]);
+                                return meta.stringToEnum(nl._80211.IFTYPE, mode) orelse error.InvalidMode;
+                            }
+                        }.parseIFF,
                     }),
                 },
             },
         },
         .{
+            .name = "add",
+            .description = "Add a Connection attribute to the specified Interface.",
+            .opts = &.{
+                .{
+                    .name = "ip",
+                    .description = "Add an IP Address to the given Interface.",
+                    .long_name = "ip",
+                    .val = ValueT.ofType(address.IPv4, .{
+                        .parse_fn = parseIPv4,
+                    }),
+                },
+                .{
+                    .name = "route",
+                    .description = "Add a Route to the given Interface. (A default gateway, '0.0.0.0', can be added using `default`)",
+                    .long_name = "route",
+                    .alias_long_names = &.{ "rt" },
+                    .short_name = 'r',
+                    .val = ValueT.ofType(address.IPv4, .{
+                        .parse_fn = parseIPv4,
+                    }),
+                },
+                .{
+                    .name = "gateway",
+                    .description = "Add a Gateway for the provided Route. (Used in conjuction with `--route`)",
+                    .long_name = "gateway",
+                    .alias_long_names = &.{ "gw", "via" },
+                    .short_name = 'g',
+                    .val = ValueT.ofType(address.IPv4, .{
+                        .parse_fn = parseIPv4,
+                    }),
+                },
+                //.{
+                //    .name = "subnet",
+                //    .description = "Specify a Subnet Mask (in CIDR or IP notation) for the IP Address or Route being added to given Interface. (Used in conjunction with `--ip` or `--route`. Default = 24)",
+                //    .long_name = "subnet",
+                //    .short_name = 's',
+                //    .val = ValueT.ofType(u8, .{
+                //        .default_val = 24,
+                //        .parse_fn = address.parseCIDR,
+                //    }),
+                //},
+            },
+        },
+        .{
             .name = "delete",
             .alias_names = &.{ "remove", "rm" },
-            .description = "Delete/Remove a Connection attribute.",
+            .description = "Delete/Remove a Connection attribute from the specified Interface.",
             .opts = &.{
                 .{
                     .name = "ip",
                     .description = "Remove an IP Address from the given Interface.",
                     .long_name = "ip",
-                    .val = ValueT.ofType([4]u8, .{
-                        .parse_fn = address.parseIP,
+                    .val = ValueT.ofType(address.IPv4, .{
+                        .parse_fn = parseIPv4,
                     }),
                 },
                 .{
@@ -303,19 +332,48 @@ pub const setup_cmd = CommandT{
                     .long_name = "route",
                     .alias_long_names = &.{ "rt" },
                     .short_name = 'r',
-                    .val = ValueT.ofType([4]u8, .{
-                        .parse_fn = address.parseIP,
+                    .val = ValueT.ofType(address.IPv4, .{
+                        .parse_fn = parseIPv4,
                     }),
                 },
                 .{
-                    .name = "subnet",
-                    .description = "Specify a Subnet Mask to identify the IP Address or Route being removed from the given Interface. (Used in conjunction with `--ip` or `--route`)",
-                    .long_name = "subnet",
-                    .short_name = 's',
-                    .val = ValueT.ofType(u8, .{
-                        .default_val = 24,
-                        .parse_fn = address.parseCIDR,
+                    .name = "gateway",
+                    .description = "Add a Gateway for the provided Route. (Used in conjuction with `--route`)",
+                    .long_name = "gateway",
+                    .alias_long_names = &.{ "gw", "via" },
+                    .short_name = 'g',
+                    .val = ValueT.ofType(address.IPv4, .{
+                        .parse_fn = parseIPv4,
                     }),
+                },
+                //.{
+                //    .name = "subnet",
+                //    .description = "Specify a Subnet Mask to identify the IP Address or Route being removed from the given Interface. (Used in conjunction with `--ip` or `--route`)",
+                //    .long_name = "subnet",
+                //    .short_name = 's',
+                //    .val = ValueT.ofType(u8, .{
+                //        .default_val = 24,
+                //        .parse_fn = address.parseCIDR,
+                //    }),
+                //},
+            },
+        },
+        .{
+            .name = "system",
+            .description = "Manage System attributes.",
+            .sub_cmds = &.{
+                .{
+                    .name = "set",
+                    .description = "Set System attributes.",
+                    .opts = &.{
+                        .{
+                            .name = "hostname",
+                            .description = "Set a new Hostname.",
+                            .long_name = "hostname",
+                            .short_name = 'H',
+                            .val = ValueT.ofType([]const u8, .{}),
+                        },
+                    },
                 },
             },
         },
@@ -327,35 +385,6 @@ pub const setup_cmd = CommandT{
                 .{ "ssid", "WiFi Network SSID." },
                 .{ "passphrase", "WiFi Network Passphrase." },
             },
-        }),
-    },
-    .opts = &.{
-        .{
-            .name = "log-path",
-            .description = "Save the JSON output to the specified Log Path.",
-            .short_name = 'l',
-            .long_name = "log-path",
-            .val = ValueT.ofType(fs.File, .{
-                .name = "log_path",
-                .description = "Path to the save JSON Log File.",
-            }),
-        },
-        .{
-            .name = "no-tui",
-            .description = "Run coordz without a TUI.",
-            .short_name = 'n',
-            .long_name = "no-tui",
-        },
-        .{
-            .name = "no-mouse",
-            .description = "Disable mouse events for the TUI.",
-            .long_name = "no-mouse",
-        },
-    },
-    .vals = &.{
-        ValueT.ofType([]const u8, .{
-            .name = "interface",
-            .description = "The Network Interface to use. (This is mandatory)"
         }),
     },
 };
@@ -379,3 +408,11 @@ const channels_opt: OptionT = .{
     }),
 };
 
+// Function Wrappers
+fn parseIPv4(arg: []const u8, _: mem.Allocator) !address.IPv4 {
+    return try address.IPv4.fromStr(arg);
+}
+
+fn parseMAC(arg: []const u8, _: mem.Allocator) ![6]u8 {
+    return try address.parseMAC(arg);
+}

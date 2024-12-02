@@ -108,259 +108,274 @@ pub fn main() !void {
     };
 
     // Single Use
+    // - System
+    if (main_cmd.matchSubCmd("system")) |sys_cmd| {
+        checkRoot(stdout_file.any());
+        if (sys_cmd.matchSubCmd("set")) |set_cmd| {
+            const set_opts = try set_cmd.getOpts(.{});
+            if (set_opts.get("hostname")) |hn_opt| newHN: {
+                const new_hn = hn_opt.val.getAs([]const u8) catch break :newHN;
+                try stdout_file.print("Setting the hostname to {s}...\n", .{ new_hn });
+                try sys.setHostName(new_hn);
+            }
+        }
+    }
     // - Set
     if (main_cmd.matchSubCmd("set")) |set_cmd| {
         checkRoot(stdout_file.any());
-        const set_opts = try set_cmd.getOpts(.{});
-        if (set_opts.get("hostname")) |hn_opt| newHN: {
-            const new_hn = hn_opt.val.getAs([]const u8) catch break :newHN;
-            try stdout_file.print("Setting the hostname to {s}...\n", .{ new_hn });
-            try sys.setHostName(new_hn);
+        checkIF(raw_net_if, stdout_file.any());
+        const net_if: NetworkInterface = raw_net_if.?;
+        const set_if_opts = try set_cmd.getOpts(.{});
+        if (set_if_opts.get("mac")) |mac_opt| setMAC: {
+            const new_mac = mac_opt.val.getAs([6]u8) catch break :setMAC;
+            try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
+            nl.route.setMAC(net_if.route_info.index, new_mac) catch |err| switch (err) {
+                error.OutOfMemory => {
+                    log.err("Out of Memory!", .{});
+                    return err;
+                },
+                error.BUSY => {
+                    log.err("The interface '{s}' is busy so the MAC could not be set.", .{ net_if.name });
+                    break :setMAC;
+                },
+                else => {
+                    log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ net_if.name });
+                    return;
+                },
+            };
+            var mac_buf: [17]u8 = .{ ':' } ** 17;
+            for (new_mac, 0..6) |byte, idx| {
+                const start = if (idx == 0) 0 else idx * 3;
+                const end = start + 2;
+                _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
+            }
+            try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, mac_buf });
         }
-        // Set Interface
-        if (set_cmd.matchSubCmd("interface")) |set_if_cmd| {
-            checkIF(raw_net_if, stdout_file.any());
-            const net_if: NetworkInterface = raw_net_if.?;
-            const set_if_opts = try set_if_cmd.getOpts(.{});
-            if (set_if_opts.get("mac")) |mac_opt| setMAC: {
-                const new_mac = mac_opt.val.getAs([6]u8) catch break :setMAC;
-                try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
-                nl.route.setMAC(net_if.route_info.index, new_mac) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the MAC could not be set.", .{ net_if.name });
-                        break :setMAC;
-                    },
-                    else => {
-                        log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ net_if.name });
-                        return;
-                    },
+        if (set_if_opts.get("state")) |state_opt| setState: {
+            const new_state, const flag_name = newState: {
+                const states = state_opt.val.getAllAs(nl.route.IFF) catch break :setState;
+                var new_state: u32 = 0;
+                for (states) |state| new_state |= @intFromEnum(state);
+                break :newState .{
+                    new_state,
+                    if (states.len == 1) @tagName(states[0]) else "Combined-State",
                 };
-                var mac_buf: [17]u8 = .{ ':' } ** 17;
-                for (new_mac, 0..6) |byte, idx| {
-                    const start = if (idx == 0) 0 else idx * 3;
-                    const end = start + 2;
-                    _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
-                }
-                try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, mac_buf });
-            }
-            if (set_if_opts.get("state")) |state_opt| setState: {
-                const new_state, const flag_name = newState: {
-                    const states = state_opt.val.getAllAs(nl.route.IFF) catch break :setState;
-                    var new_state: u32 = 0;
-                    for (states) |state| new_state |= @intFromEnum(state);
-                    break :newState .{
-                        new_state,
-                        if (states.len == 1) @tagName(states[0]) else "Combined-State",
-                    };
-                };
-                try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
-                nl.route.setState(net_if.route_info.index, new_state) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the State could not be set.", .{ net_if.name });
-                        break :setState;
-                    },
-                    else => {
-                        log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ net_if.name });
-                        return;
-                    },
-                };
-                try stdout_file.print("Set the State for {s} to {s}.\n", .{ net_if.name, flag_name });
-            }
-            if (set_if_opts.get("mode")) |mode_opt| setMode: {
-                const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
-                try stdout_file.print("Setting the Mode for {s}...\n", .{ net_if.name });
-                nl.route.setState(net_if.route_info.index, c(nl.route.IFF).DOWN) catch { 
-                    log.warn("Unable to set the interface down.", .{});
-                };
-                defer nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
-                    log.warn("Unable to set the interface up.", .{});
-                };
-                time.sleep(100 * time.ns_per_ms);
-                nl._80211.setMode(net_if.route_info.index, @intFromEnum(new_mode)) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the Mode could not be set.", .{ net_if.name });
-                        break :setMode;
-                    },
-                    else => {
-                        log.err("Netlink request error. The Mode for interface '{s}' could not be set.", .{ net_if.name });
-                        return;
-                    },
-                };
-                try stdout_file.print("Set the Mode for {s} to {s}.\n", .{ net_if.name, @tagName(new_mode) });
-            }
-            if (set_if_opts.get("channel")) |chan_opt| setChannel: {
-                const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
-                const new_ch_width = newChMain: {
-                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                };
-                try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
-                try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
-                nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
-                    log.warn("Unable to set the interface up.", .{});
-                };
-                time.sleep(100 * time.ns_per_ms);
-                nl._80211.setChannel(net_if.route_info.index, new_ch, new_ch_width) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the Channel could not be set.", .{ net_if.name });
-                        break :setChannel;
-                    },
-                    error.InvalidChannel, error.InvalidFrequency => {
-                        log.err("The channel '{d}' is invalid.", .{ new_ch });
-                        break :setChannel;
-                    },
-                    else => {
-                        log.err("Netlink request error. The Channel for interface '{s}' could not be set.", .{ net_if.name });
-                        return err;
-                    },
-                };
-                try stdout_file.print("Set the Channel for {s} to {d}.\n", .{ net_if.name, new_ch });
-            }
-            if (set_if_opts.get("frequency")) |freq_opt| setFreq: {
-                const new_freq = freq_opt.val.getAs(usize) catch break :setFreq;
-                const new_ch_width = newChMain: {
-                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                };
-                try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
-                try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
-                nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
-                    log.warn("Unable to set the interface up.", .{});
-                };
-                time.sleep(100 * time.ns_per_ms);
-                nl._80211.setFreq(net_if.route_info.index, new_freq, new_ch_width) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the Frequency could not be set.", .{ net_if.name });
-                        break :setFreq;
-                    },
-                    error.InvalidFrequency => {
-                        log.err("The Frequency '{d}'MHz is invalid.", .{ new_freq });
-                        break :setFreq;
-                    },
-                    else => {
-                        log.err("Netlink request error. The Frequency for interface '{s}' could not be set.", .{ net_if.name });
-                        return err;
-                    },
-                };
-                try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ net_if.name, new_freq });
-            }
-            raw_net_if = try NetworkInterface.get(net_if.name);
+            };
+            try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
+            nl.route.setState(net_if.route_info.index, new_state) catch |err| switch (err) {
+                error.OutOfMemory => {
+                    log.err("Out of Memory!", .{});
+                    return err;
+                },
+                error.BUSY => {
+                    log.err("The interface '{s}' is busy so the State could not be set.", .{ net_if.name });
+                    break :setState;
+                },
+                else => {
+                    log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ net_if.name });
+                    return;
+                },
+            };
+            try stdout_file.print("Set the State for {s} to {s}.\n", .{ net_if.name, flag_name });
         }
+        if (set_if_opts.get("mode")) |mode_opt| setMode: {
+            const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
+            try stdout_file.print("Setting the Mode for {s}...\n", .{ net_if.name });
+            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).DOWN) catch { 
+                log.warn("Unable to set the interface down.", .{});
+            };
+            defer nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+                log.warn("Unable to set the interface up.", .{});
+            };
+            time.sleep(100 * time.ns_per_ms);
+            nl._80211.setMode(net_if.route_info.index, @intFromEnum(new_mode)) catch |err| switch (err) {
+                error.OutOfMemory => {
+                    log.err("Out of Memory!", .{});
+                    return err;
+                },
+                error.BUSY => {
+                    log.err("The interface '{s}' is busy so the Mode could not be set.", .{ net_if.name });
+                    break :setMode;
+                },
+                else => {
+                    log.err("Netlink request error. The Mode for interface '{s}' could not be set.", .{ net_if.name });
+                    return;
+                },
+            };
+            try stdout_file.print("Set the Mode for {s} to {s}.\n", .{ net_if.name, @tagName(new_mode) });
+        }
+        if (set_if_opts.get("channel")) |chan_opt| setChannel: {
+            const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
+            const new_ch_width = newChMain: {
+                const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+                break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+            };
+            try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
+            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).DOWN) catch { 
+                log.warn("Unable to set the interface down.", .{});
+            };
+            time.sleep(100 * time.ns_per_ms);
+            try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
+            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+                log.warn("Unable to set the interface up.", .{});
+            };
+            time.sleep(100 * time.ns_per_ms);
+            nl._80211.setChannel(net_if.route_info.index, new_ch, new_ch_width) catch |err| switch (err) {
+                error.OutOfMemory => {
+                    log.err("Out of Memory!", .{});
+                    return err;
+                },
+                error.BUSY => {
+                    log.err("The interface '{s}' is busy so the Channel could not be set.", .{ net_if.name });
+                    break :setChannel;
+                },
+                error.InvalidChannel, error.InvalidFrequency => {
+                    log.err("The channel '{d}' is invalid.", .{ new_ch });
+                    break :setChannel;
+                },
+                else => {
+                    log.err("Netlink request error. The Channel for interface '{s}' could not be set.", .{ net_if.name });
+                    return err;
+                },
+            };
+            try stdout_file.print("Set the Channel for {s} to {d}.\n", .{ net_if.name, new_ch });
+        }
+        if (set_if_opts.get("frequency")) |freq_opt| setFreq: {
+            const new_freq = freq_opt.val.getAs(usize) catch break :setFreq;
+            const new_ch_width = newChMain: {
+                const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+                break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+            };
+            try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
+            try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
+            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+                log.warn("Unable to set the interface up.", .{});
+            };
+            time.sleep(100 * time.ns_per_ms);
+            nl._80211.setFreq(net_if.route_info.index, new_freq, new_ch_width) catch |err| switch (err) {
+                error.OutOfMemory => {
+                    log.err("Out of Memory!", .{});
+                    return err;
+                },
+                error.BUSY => {
+                    log.err("The interface '{s}' is busy so the Frequency could not be set.", .{ net_if.name });
+                    break :setFreq;
+                },
+                error.InvalidFrequency => {
+                    log.err("The Frequency '{d}'MHz is invalid.", .{ new_freq });
+                    break :setFreq;
+                },
+                else => {
+                    log.err("Netlink request error. The Frequency for interface '{s}' could not be set.", .{ net_if.name });
+                    return err;
+                },
+            };
+            try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ net_if.name, new_freq });
+        }
+        raw_net_if = try NetworkInterface.get(net_if.name);
     }
     if (main_cmd.matchSubCmd("add")) |add_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
         const net_if: NetworkInterface = raw_net_if.?;
         const add_opts = try add_cmd.getOpts(.{});
-        const cidr = try (add_opts.get("subnet").?).val.getAs(u8);
+        //const cidr = try (add_opts.get("subnet").?).val.getAs(u8);
         if (add_opts.get("ip")) |ip_opt| setIP: {
-            const ip = try ip_opt.val.getAs([4]u8);
-            var ip_buf = std.ArrayListUnmanaged(u8){};
-            defer ip_buf.deinit(alloc);
-            try address.printAddr(ip[0..], ".", "{d}", ip_buf.writer(alloc).any());
-            try stdout_file.print("Adding new IP Address '{s}'...\n", .{ ip_buf.items });
+            const ip = try ip_opt.val.getAs(address.IPv4);
+            try stdout_file.print("Adding new IP Address '{s}'...\n", .{ ip });
             nl.route.addIP(
                 alloc,
                 net_if.route_info.index,
-                ip,
-                cidr,
+                ip.addr,
+                ip.cidr,
             ) catch |err| switch (err) {
                 error.EXIST => {
-                    try stdout_file.print("The IP Address '{s}' is already set.\n", .{ ip_buf.items });
+                    try stdout_file.print("The IP Address '{s}' is already set.\n", .{ ip });
                     break :setIP;
                 },
                 else => return err,
             };
-            try stdout_file.print("Added new IP Address '{s}'.\n", .{ ip_buf.items });
+            try stdout_file.print("Added new IP Address '{s}'.\n", .{ ip });
         }
         if (add_opts.get("route")) |route_opt| setRoute: {
-            const route = try route_opt.val.getAs([4]u8);
-            var route_buf = std.ArrayListUnmanaged(u8){};
-            defer route_buf.deinit(alloc);
-            try address.printAddr(route[0..], ".", "{d}", route_buf.writer(alloc).any());
-            try stdout_file.print("Adding new Route '{s}'...\n", .{ route_buf.items });
+            const route = try route_opt.val.getAs(address.IPv4);
+            try stdout_file.print("Adding new Route '{s}'...\n", .{ route });
+            const gateway = gw: {
+                break :gw if (add_opts.get("gateway")) |gw_opt|
+                    (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
+                else null;
+            };
             nl.route.addRoute(
                 alloc,
                 net_if.route_info.index,
-                route,
-                .{ .cidr = cidr },
+                route.addr,
+                .{ 
+                    .cidr = route.cidr,
+                    .gateway = gateway,
+                },
             ) catch |err| switch (err) {
                 error.EXIST => {
-                    try stdout_file.print("The Route '{s}' is already set.\n", .{ route_buf.items });
+                    try stdout_file.print("The Route '{s}' is already set.\n", .{ route });
+                    break :setRoute;
+                },
+                error.NETUNREACH => {
+                    try stdout_file.print("The Gateway '{?s}' is invalid.\n", .{ gateway });
                     break :setRoute;
                 },
                 else => return err,
             };
-            try stdout_file.print("Added new Route '{s}'.\n", .{ route_buf.items });
+            try stdout_file.print("Added new Route '{s}'.\n", .{ route });
         }
         time.sleep(100 * time.ns_per_ms);
     }
-    if (main_cmd.matchSubCmd("delete")) |add_cmd| {
+    if (main_cmd.matchSubCmd("delete")) |del_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
         const net_if: NetworkInterface = raw_net_if.?;
-        const delete_opts = try add_cmd.getOpts(.{});
-        const cidr = try (delete_opts.get("subnet").?).val.getAs(u8);
-        if (delete_opts.get("ip")) |ip_opt| setIP: {
-            const ip = try ip_opt.val.getAs([4]u8);
-            var ip_buf = std.ArrayListUnmanaged(u8){};
-            defer ip_buf.deinit(alloc);
-            try address.printAddr(ip[0..], ".", "{d}", ip_buf.writer(alloc).any());
-            try stdout_file.print("Deleting the IP Address '{s}'...\n", .{ ip_buf.items });
+        const del_opts = try del_cmd.getOpts(.{});
+        //const cidr = try (del_opts.get("subnet").?).val.getAs(u8);
+        if (del_opts.get("ip")) |ip_opt| setIP: {
+            const ip = try ip_opt.val.getAs(address.IPv4);
+            try stdout_file.print("Deleting the IP Address '{s}'...\n", .{ ip });
             nl.route.deleteIP(
                 alloc,
                 net_if.route_info.index,
-                ip,
-                cidr,
+                ip.addr,
+                ip.cidr,
             ) catch |err| switch (err) {
                 error.ADDRNOTAVAIL => {
-                    try stdout_file.print("The IP Address '{s}' could not be found.\n", .{ ip_buf.items });
+                    try stdout_file.print("The IP Address '{s}' could not be found.\n", .{ ip });
                     break :setIP;
                 },
                 else => return err,
             };
-            try stdout_file.print("Deleted the IP Address '{s}'.\n", .{ ip_buf.items });
+            try stdout_file.print("Deleted the IP Address '{s}'.\n", .{ ip });
         }
-        if (delete_opts.get("route")) |route_opt| delRoute: {
-            const route = try route_opt.val.getAs([4]u8);
-            var route_buf = std.ArrayListUnmanaged(u8){};
-            defer route_buf.deinit(alloc);
-            try address.printAddr(route[0..], ".", "{d}", route_buf.writer(alloc).any());
-            try stdout_file.print("Deleting new Route '{s}'...\n", .{ route_buf.items });
+        if (del_opts.get("route")) |route_opt| delRoute: {
+            const route = try route_opt.val.getAs(address.IPv4);
+            try stdout_file.print("Deleting Route '{s}'...\n", .{ route });
+            const gateway = gw: {
+                break :gw if (del_opts.get("gateway")) |gw_opt|
+                    (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
+                else null;
+            };
             nl.route.deleteRoute(
                 alloc,
                 net_if.route_info.index,
-                route,
-                .{ .cidr = cidr },
+                route.addr,
+                .{ 
+                    .cidr = route.cidr,
+                    .gateway = gateway,
+                },
             ) catch |err| switch (err) {
-                error.ADDRNOTAVAIL, 
+                error.ADDRNOTAVAIL,
                 error.SRCH => {
-                    try stdout_file.print("The Route '{s}' could not be found.\n", .{ route_buf.items });
+                    try stdout_file.print("The Route '{s}' could not be found.\n", .{ route });
                     break :delRoute;
                 },
                 else => return err,
             };
-            try stdout_file.print("Deleted Route '{s}'.\n", .{ route_buf.items });
+            try stdout_file.print("Deleted Route '{s}'.\n", .{ route });
         }
         time.sleep(100 * time.ns_per_ms);
     }
