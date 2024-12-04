@@ -75,6 +75,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = []const u8, .alias = "text" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
             .{ .ChildT = [4]u8, .alias = "ip_address" },
+            .{ .ChildT = address.IPv4, .alias = "ip_address/cidr" },
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
             .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
@@ -84,7 +85,7 @@ pub const CommandT = cova.Command.Custom(.{
 const OptionT = CommandT.OptionT;
 const ValueT = CommandT.ValueT;
 
-/// The Root Setup Command for Coordz
+/// The Root Setup Command for DisCo
 pub const setup_cmd = CommandT{
     .name = "disco",
     .description = "Discreetly Connect to networks.",
@@ -92,9 +93,10 @@ pub const setup_cmd = CommandT{
         "disco wlan0",
         "disco wlan0 set --mac 00:11:22:aa:bb:cc",
         "disco wlan0 add --ip 192.168.10.10",
-        "disco wlan0 del --route 192.168.0.0 -s 16",
+        "disco wlan0 del --route 192.168.0.0/16",
         "disco sys set --hostname 'shaggy'",
     },
+    .cmd_groups = &.{ "ACTIVE", "INTERFACE", "SETTINGS" },
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
     .vals = &.{
@@ -131,6 +133,7 @@ pub const setup_cmd = CommandT{
         .{
             .name = "connect",
             .description = "Connect to a WiFi Network using the specified Interface.",
+            .cmd_group = "ACTIVE",
             .opts = &.{
                 channels_opt,
                 .{
@@ -184,6 +187,7 @@ pub const setup_cmd = CommandT{
             .name = "set",
             .alias_names = &.{ "change" },
             .description = "Set/Change a Connection attribute for the specified Interface.",
+            .cmd_group = "INTERFACE",
             .sub_cmds_mandatory = false,
             .opts = &.{
                 .{
@@ -272,6 +276,7 @@ pub const setup_cmd = CommandT{
         .{
             .name = "add",
             .description = "Add a Connection attribute to the specified Interface.",
+            .cmd_group = "INTERFACE",
             .opts = &.{
                 .{
                     .name = "ip",
@@ -317,6 +322,7 @@ pub const setup_cmd = CommandT{
             .name = "delete",
             .alias_names = &.{ "remove", "rm" },
             .description = "Delete/Remove a Connection attribute from the specified Interface.",
+            .cmd_group = "INTERFACE",
             .opts = &.{
                 .{
                     .name = "ip",
@@ -361,6 +367,7 @@ pub const setup_cmd = CommandT{
         .{
             .name = "system",
             .description = "Manage System attributes.",
+            .cmd_group = "SETTINGS",
             .sub_cmds = &.{
                 .{
                     .name = "set",
@@ -380,6 +387,7 @@ pub const setup_cmd = CommandT{
         CommandT.from(@TypeOf(wpa.genKey), .{
             .cmd_name = "gen-key",
             .cmd_description = "Generate a WPA Key.",
+            .cmd_group = "SETTINGS",
             .sub_descriptions = &.{
                 .{ "protocol", "WiFi Network Security Protocol." },
                 .{ "ssid", "WiFi Network SSID." },
