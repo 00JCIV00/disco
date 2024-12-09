@@ -38,17 +38,43 @@ pub fn printAddrAlloc(
     return try buf.toOwnedSlice(alloc);
 }
 
+/// Address Formatter f/ Inlining Address Printing
+pub fn Formatter(comptime sep: []const u8, comptime byte_fmt: []const u8) type {
+    return struct {
+        bytes: []const u8,
+
+        pub fn format(
+            self: @This(), 
+            _: []const u8, 
+            _: fmt.FormatOptions, 
+            writer: anytype,
+        ) !void {
+            try printAddr(
+                self.bytes,
+                sep,
+                byte_fmt,
+                writer,
+            );
+        }
+    };
+}
+/// MAC Formatter
+pub const MACFormatter = Formatter(":", "{X:0>2}");
+/// IP Formatter
+pub const IPFormatter = Formatter(".", "{d}");
+
 /// IPv4 Address
 pub const IPv4 = struct {
+    pub const default = @This(){
+        .addr = .{ 0, 0, 0, 0 },
+        .cidr = 0,
+    };
     addr: [4]u8,
     cidr: u8 = 24,
 
     /// Get an IPv4 w/ or w/o CIDR from the provided String (`str`);
     pub fn fromStr(str: []const u8) !@This() {
-        if (ascii.eqlIgnoreCase(str, "default")) return .{
-            .addr = .{ 0, 0, 0, 0 },
-            .cidr = 0,
-        };
+        if (ascii.eqlIgnoreCase(str, "default")) return default;
         var ip: @This() = undefined;
         ip.cidr = 24;
         var iter = mem.tokenizeScalar(u8, str, '/');
@@ -140,14 +166,19 @@ pub fn parseCIDR(str: []const u8) !u8 {
         7...15 => subnet: {
             // TODO Rework unneeded allocator
             const bytes = try parseSubnet(str);
-            const num = mem.bytesToValue(u32, bytes[0..]);
-            var cidr: u8 = 0;
-            for (0..32) |i| {
-                if (num >> @intCast(i) & 1 == 1) cidr += 1;
-            }
-            break :subnet cidr;
+            break :subnet cidrFromSubnet(bytes[0..4].*);
         },
         else => return error.InvalidCIDR,
     };
     return if (cidr <= 32) cidr else error.InvalidCIDR;
+}
+
+/// Get a CIDR from the provided `subnet`.
+pub fn cidrFromSubnet(subnet: [4]u8) u8 {
+    const num = mem.bytesToValue(u32, subnet[0..]);
+    var cidr: u8 = 0;
+    for (0..32) |i| {
+        if (num >> @intCast(i) & 1 == 1) cidr += 1;
+    }
+    return cidr;
 }

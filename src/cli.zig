@@ -69,10 +69,11 @@ pub const CommandT = cova.Command.Custom(.{
             },
         },
         .child_type_aliases = &.{
-            .{ .ChildT = fs.File, .alias = "filepath" },
-            .{ .ChildT = net.Address, .alias = "ip_address:port" },
             .{ .ChildT = bool, .alias = "toggle" },
             .{ .ChildT = []const u8, .alias = "text" },
+            .{ .ChildT = usize, .alias = "positive_number" },
+            .{ .ChildT = fs.File, .alias = "filepath" },
+            .{ .ChildT = net.Address, .alias = "ip_address:port" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
             .{ .ChildT = [4]u8, .alias = "ip_address" },
             .{ .ChildT = address.IPv4, .alias = "ip_address/cidr" },
@@ -264,7 +265,7 @@ pub const setup_cmd = CommandT{
                         .parse_fn = struct {
                             pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl._80211.IFTYPE {
                                 var mode_buf: [12]u8 = undefined;
-                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl._80211.IFTYPE, arg) orelse error.Invalidmode;
+                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl._80211.IFTYPE, arg) orelse error.InvalidMode;
                                 const mode = ascii.upperString(mode_buf[0..], arg[0..@min(arg.len, 12)]);
                                 return meta.stringToEnum(nl._80211.IFTYPE, mode) orelse error.InvalidMode;
                             }

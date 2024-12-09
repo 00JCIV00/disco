@@ -9,9 +9,6 @@ const c = utils.toStruct;
 /// Ethernet Frame
 /// Reference: [Wikipedia - Ethernet Frame](https://en.wikipedia.org/wiki/Ethernet_frame#Header)
 pub const Eth = struct {
-    header: Header = .{},
-    len: u16 = 0,
-
     /// Ether Types/Protocols
     /// Reference: [Wikipedia - EtherType Values](https://en.wikipedia.org/wiki/EtherType#Values)
     pub const ETH_P = enum(u16) {
@@ -32,22 +29,6 @@ pub const Eth = struct {
     /// Ethernet Footer
     pub const Footer = packed struct(u32){
         eth_frame_check_seq: u32 = 0,
-        
-        /// Calculate the Cyclic Redundancy Check (CRC) and set it as the Frame Check Sequence (FCS) of this Ethernet Frame Footer.
-        pub fn calcCRC(self: *@This(), _: mem.Allocator, payload: []u8) !void {
-            const poly = 0xEDB88320;
-            var crc: u32 = 0xFFFFFFFF;
-
-            for (payload) |byte| {
-                crc ^= byte;
-                var i: u4 = 0;
-                while (i < 8) : (i += 1) {
-                    const mask: u32 = @bitCast(-(@as(i32, @bitCast(crc)) & 1));
-                    crc = (crc >> 1) ^ (poly & mask);
-                }
-            }
-            self.eth_frame_check_seq = mem.nativeToBig(u32, ~crc);
-        }
     };
 };
 
@@ -115,5 +96,25 @@ pub const EAPOL = struct {
         key_mic: u128,
         /// Length of the Key Data field
         key_data_len: u16,
+    };
+};
+
+/// ARP - [IETF RFC 826](https://datatracker.ietf.org/doc/html/rfc826)
+pub const ARP = struct {
+    pub const Header = extern struct {
+        hw_type: u16 = 1, // ARPHRD_ETHER,
+        proto_type: u16 = 0x0800,
+        hw_addr_len: u8 = 6,
+        proto_addr_len: u8 = 4,
+        op_code: u16 = OpCodes.REQUEST,
+        sender_hw_addr: [6]u8 = .{ 0 } ** 6,
+        sender_proto_addr: u32 = 0,
+        tgt_hw_addr: [6]u8 = .{ 0 } ** 6,
+        tgt_proto_addr: u32 = 0,
+    };
+
+    pub const OpCodes = enum(u16) {
+        REQUEST = 1,
+        REPLY = 2,
     };
 };

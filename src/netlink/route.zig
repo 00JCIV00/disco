@@ -804,6 +804,7 @@ pub const DeviceInfo = struct {
     mac: [6]u8,
     mtu: usize,
     ips: [10]?[4]u8 = .{ null } ** 10,
+    cidrs: [10]?u8 = .{ null } ** 10,
 
     pub fn get(if_index: i32) !@This() {
         var dev: @This() = undefined;
@@ -958,7 +959,7 @@ pub const DeviceInfo = struct {
                 if (nl_resp_hdr.type == c(RTM).NEWADDR) ipAddr: {
                     start = end;
                     end += @sizeOf(InterfaceAddress);
-                    const ifa_msg: *const InterfaceAddress = @alignCast(@ptrCast(resp_buf[start..end]));
+                    const ifa_msg = mem.bytesToValue(InterfaceAddress, resp_buf[start..end]);
                     if (ifa_msg.index != if_index) break :ipAddr;
                     start = end;
                     end += nl.attr_hdr_len;
@@ -968,10 +969,11 @@ pub const DeviceInfo = struct {
                         end += (attr.len -| nl.attr_hdr_len);
                         switch (attr.type) {
                             1 => {
-                                for (dev.ips[0..]) |*ip| {
+                                for (dev.ips[0..], dev.cidrs[0..]) |*ip, *cidr| {
                                     if (ip.*) |_| continue;
                                     ip.* = .{ 0 } ** 4;
-                                    @memcpy(ip.*.?[0..], resp_buf[start..start + 4]);
+                                    @memcpy(ip.*.?[0..], resp_buf[start..(start + 4)]);
+                                    cidr.* = ifa_msg.prefix_len;
                                     set_count += 1;
                                     break;
                                 }

@@ -12,15 +12,23 @@ const nl = @import("nl.zig");
 const AF = os.linux.AF;
 
 name: []const u8,
+index: i32,
 route_info: nl.route.DeviceInfo,
 
 /// Get an Interface using Netlink.
 pub fn get(name: []const u8) !@This() {
     var net_if: @This() = undefined;
+    const idx = try nl.route.getIfIdx(name);
     net_if.name = name;
-    net_if.route_info = try nl.route.DeviceInfo.get(try nl.route.getIfIdx(name));
+    net_if.index = idx;
+    net_if.route_info = try nl.route.DeviceInfo.get(idx);
 
     return net_if;
+}
+
+/// Update this Interface
+pub fn update(self: *@This()) !void {
+    self.* = try get(self.name);
 }
 
 /// Print this Network Interface's Details

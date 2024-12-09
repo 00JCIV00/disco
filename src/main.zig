@@ -13,6 +13,7 @@ const cova = @import("cova");
 const cli = @import("cli.zig");
 
 const art = @import("art.zig");
+const dhcp = @import("dhcp.zig");
 const netdata = @import("netdata.zig");
 const nl = @import("nl.zig");
 const sys = @import("sys.zig");
@@ -20,6 +21,8 @@ const utils = @import("utils.zig");
 const wpa = @import("wpa.zig");
 
 const address = netdata.address;
+const MACF = address.MACFormatter;
+const IPF = address.IPFormatter;
 const c = utils.toStruct;
 const NetworkInterface = @import("NetworkInterface.zig");
 
@@ -105,6 +108,22 @@ pub fn main() !void {
             },
             else => return err,
         };
+    };
+    defer if (raw_net_if) |*net_if| cleanup: {
+        net_if.update() catch break :cleanup;
+        for (net_if.route_info.ips, net_if.route_info.cidrs) |_ip, _cidr| {
+            const ip = _ip orelse continue;
+            const cidr = _cidr orelse 24;
+            defer nl.route.deleteIP(
+                alloc,
+                net_if.route_info.index,
+                ip,
+                cidr,
+            ) catch |err| switch (err) {
+                error.ADDRNOTAVAIL => {},
+                else => log.err("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
+            };
+        }
     };
 
     // Single Use
@@ -422,9 +441,9 @@ pub fn main() !void {
             .wpa2 => {
                 const pmk = try wpa.genKey(.wpa2, ssid, pass);
                 _ = try nl._80211.connectWPA2(
-                    alloc, 
-                    net_if.route_info.index, 
-                    ssid, 
+                    alloc,
+                    net_if.route_info.index,
+                    ssid,
                     pmk,
                     wpa.handle4WHS,
                     .{ .freqs = freqs },
@@ -432,11 +451,47 @@ pub fn main() !void {
                 try stdout_file.print("Connected to {s}.\n", .{ ssid });
             }, 
         }
-        if (connect_cmd.checkFlag("dhcp")) {
+        if (connect_cmd.checkFlag("dhcp")) dhcp: {
             try stdout_file.print("(WIP) Obtaining an IP Address via DHCP...\n", .{});
             const gateway = connect_cmd.checkFlag("gateway");
-            //_ = try nl.route.initDHCP(alloc, net_if.route_info.index, gateway);
-            _ = gateway;
+            const dhcp_ip,
+            const dhcp_subnet,
+            const dhcp_gw = dhcp.handleDHCP(
+                net_if.name,
+                net_if.route_info.index,
+                net_if.route_info.mac,
+                .{},
+            ) catch |err| switch (err) {
+                error.WouldBlock => {
+                    log.warn("The DHCP process timed out.", .{});
+                    break :dhcp;
+                },
+                else => return err,
+            };
+            const dhcp_cidr = address.cidrFromSubnet(dhcp_subnet);
+            nl.route.addIP(
+                alloc,
+                net_if.route_info.index,
+                dhcp_ip,
+                dhcp_cidr,
+            ) catch |err| switch (err) {
+                error.EXIST => {
+                    log.warn("The Interface already has an IP.", .{});
+                    break :dhcp;
+                },
+                else => return err,
+            };
+            if (gateway) {
+                try nl.route.addRoute(
+                    alloc,
+                    net_if.route_info.index,
+                    address.IPv4.default.addr,
+                    .{
+                        .cidr = address.IPv4.default.cidr,
+                        .gateway = dhcp_gw,
+                    }
+                );
+            }
         }
         time.sleep(10 * time.ns_per_s);
     }
