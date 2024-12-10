@@ -63,7 +63,6 @@ pub fn main() !void {
         }
     };
 
-
     //const main_opts = try main_cmd.getOpts(.{});
     const main_vals = try main_cmd.getVals(.{});
 
@@ -97,36 +96,6 @@ pub fn main() !void {
         try stdout_bw.flush();
         return;
     }
-
-    // Interface
-    var raw_net_if = netIF: {
-        const if_name = (main_vals.get("interface").?).getAs([]const u8) catch break :netIF null;
-        break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
-            error.NoInterfaceFound => {
-                log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
-                return;
-            },
-            else => return err,
-        };
-    };
-    defer if (raw_net_if) |*net_if| cleanup: {
-        net_if.update() catch break :cleanup;
-        for (net_if.route_info.ips, net_if.route_info.cidrs) |_ip, _cidr| {
-            const ip = _ip orelse continue;
-            const cidr = _cidr orelse 24;
-            defer nl.route.deleteIP(
-                alloc,
-                net_if.route_info.index,
-                ip,
-                cidr,
-            ) catch |err| switch (err) {
-                error.ADDRNOTAVAIL => {},
-                else => log.err("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
-            };
-        }
-    };
-
-    // Single Use
     // - System
     if (main_cmd.matchSubCmd("system")) |sys_cmd| {
         checkRoot(stdout_file.any());
@@ -139,6 +108,49 @@ pub fn main() !void {
             }
         }
     }
+
+    // DHCP Info
+    var dhcp_info: ?dhcp.Info = null;
+    // Interface
+    var raw_net_if = netIF: {
+        const if_name = (main_vals.get("interface").?).getAs([]const u8) catch break :netIF null;
+        break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
+            error.NoInterfaceFound => {
+                log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
+                return;
+            },
+            else => return err,
+        };
+    };
+    defer if (main_cmd.matchSubCmd("connect")) |connect_cmd| cleanup: {
+        var net_if = raw_net_if orelse break :cleanup;
+        net_if.update() catch break :cleanup;
+        if (connect_cmd.checkFlag("dhcp")) dhcp: {
+            const d_info = dhcp_info orelse break :dhcp;
+            dhcp.releaseDHCP(
+                net_if.name,
+                net_if.index,
+                net_if.route_info.mac,
+                d_info.server_id,
+                d_info.assigned_ip,
+            ) catch log.warn("Could not release DHCP lease for `{s}`!", .{ d_info.assigned_ip });
+        }
+        for (net_if.route_info.ips, net_if.route_info.cidrs) |_ip, _cidr| {
+            const ip = _ip orelse continue;
+            const cidr = _cidr orelse 24;
+            defer nl.route.deleteIP(
+                alloc,
+                net_if.route_info.index,
+                ip,
+                cidr,
+            ) catch |err| switch (err) {
+                error.ADDRNOTAVAIL => {},
+                else => log.warn("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
+            };
+        }
+    };
+
+    // Single Use
     // - Set
     if (main_cmd.matchSubCmd("set")) |set_cmd| {
         checkRoot(stdout_file.any());
@@ -452,11 +464,9 @@ pub fn main() !void {
             }, 
         }
         if (connect_cmd.checkFlag("dhcp")) dhcp: {
-            try stdout_file.print("(WIP) Obtaining an IP Address via DHCP...\n", .{});
+            try stdout_file.print("Obtaining an IP Address via DHCP...\n", .{});
             const gateway = connect_cmd.checkFlag("gateway");
-            const dhcp_ip,
-            const dhcp_subnet,
-            const dhcp_gw = dhcp.handleDHCP(
+            dhcp_info = dhcp.handleDHCP(
                 net_if.name,
                 net_if.route_info.index,
                 net_if.route_info.mac,
@@ -468,11 +478,11 @@ pub fn main() !void {
                 },
                 else => return err,
             };
-            const dhcp_cidr = address.cidrFromSubnet(dhcp_subnet);
+            const dhcp_cidr = address.cidrFromSubnet(dhcp_info.?.subnet_mask);
             nl.route.addIP(
                 alloc,
                 net_if.route_info.index,
-                dhcp_ip,
+                dhcp_info.?.assigned_ip,
                 dhcp_cidr,
             ) catch |err| switch (err) {
                 error.EXIST => {
@@ -488,7 +498,7 @@ pub fn main() !void {
                     address.IPv4.default.addr,
                     .{
                         .cidr = address.IPv4.default.cidr,
-                        .gateway = dhcp_gw,
+                        .gateway = dhcp_info.?.router,
                     }
                 );
             }

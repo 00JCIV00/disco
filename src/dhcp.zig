@@ -185,13 +185,21 @@ pub const LeaseConfig = struct {
     err_on_mismatch: bool = true,
 };
 
+/// DHCP Info. This is returned from `handleDHCP()` and passed to `releasedDHCP()`.
+pub const Info = struct {
+    assigned_ip: [4]u8,
+    subnet_mask: [4]u8,
+    router: [4]u8,
+    server_id: [4]u8,
+};
+
 /// Handle the DHCP process
 pub fn handleDHCP(
     if_name: []const u8,
     if_index: i32,
     mac_addr: [6]u8,
     config: LeaseConfig,
-) !struct { [4]u8, [4]u8, [4]u8 } {
+) !Info { // !struct { [4]u8, [4]u8, [4]u8 } {
     log.debug("Starting DHCP...", .{});
     defer log.debug("Finished DHCP!", .{});
     const dhcp_sock = try posix.socket(posix.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(Eth.ETH_P).IPv4));
@@ -715,9 +723,10 @@ pub fn handleDHCP(
                     },
                 );
                 return .{
-                    assigned_ip,
-                    ack_subnet_mask,
-                    ack_router,
+                    .assigned_ip = assigned_ip,
+                    .subnet_mask = ack_subnet_mask,
+                    .router = ack_router,
+                    .server_id = ack_server_id,
                 };
             },
             c(l5.DHCP.MessageType).NAK => {
@@ -733,4 +742,119 @@ pub fn handleDHCP(
             },
         }
     }
+}
+
+/// Release DHCP lease
+pub fn releaseDHCP(
+    if_name: []const u8,
+    if_index: i32,
+    mac_addr: [6]u8,
+    server_id: [4]u8,
+    client_ip: [4]u8,
+) !void {
+    log.debug("Releasing DHCP lease...", .{});
+    defer log.debug("DHCP lease released!", .{});
+    const dhcp_sock = try posix.socket(posix.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(Eth.ETH_P).IPv4));
+    defer posix.close(dhcp_sock);
+    const sock_addr = posix.sockaddr.ll{
+        .ifindex = if_index,
+        .protocol = mem.nativeToBig(u16, c(Eth.ETH_P).IPv4),
+        .hatype = 0,
+        .pkttype = 0,
+        .halen = 6,
+        .addr = .{ 0 } ** 8,
+    };
+    // Bind to the Interface
+    try posix.setsockopt(
+        dhcp_sock,
+        posix.SOL.SOCKET,
+        posix.SO.BINDTODEVICE,
+        if_name,
+    );
+    try posix.bind(dhcp_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
+    // BOOTP Setup
+    const bootp_hdr_len = @sizeOf(l5.BOOTP.Header);
+    var rel_buf: [1500]u8 = undefined;
+    var start: usize = 0;
+    var end: usize = bootp_hdr_len;
+    // - Create transaction ID
+    const transaction_id: u32 = transactionID: {
+        var bytes: [4]u8 = undefined;
+        crypto.random.bytes(bytes[0..]);
+        break :transactionID mem.bytesToValue(u32, bytes[0..]);
+    };
+    // - Create and write BOOTP header
+    var rel_hdr = l5.BOOTP.Header{
+        .op = c(l5.BOOTP.OP).REQUEST,
+        .tx_id = transaction_id,
+    };
+    @memcpy(rel_hdr.client_hw_addr[0..6], mac_addr[0..]);
+    @memcpy(rel_hdr.client_addr[0..], client_ip[0..]);  
+    @memcpy(rel_buf[start..end], mem.asBytes(&rel_hdr));
+    // - Add DHCP Message Type option
+    start = end;
+    end += 2;
+    const dhcp_msg_type: l5.BOOTP.OptionHeader = .{
+        .code = c(l5.DHCP.OptionCode).MESSAGE_TYPE,
+        .len = 1,
+    };
+    @memcpy(rel_buf[start..end], mem.asBytes(&dhcp_msg_type));
+    start = end;
+    end += 1;
+    rel_buf[start] = c(l5.DHCP.MessageType).RELEASE;
+    // - Add Server ID option
+    start = end;
+    end += 2;
+    const server_id_hdr: l5.BOOTP.OptionHeader = .{
+        .code = c(l5.DHCP.OptionCode).SERVER_ID,
+        .len = 4,
+    };
+    @memcpy(rel_buf[start..end], mem.asBytes(&server_id_hdr));
+    start = end;
+    end += 4;
+    @memcpy(rel_buf[start..end], server_id[0..]);
+    // - Add Client ID Option
+    start = end;
+    end += 2;
+    const client_id: l5.BOOTP.OptionHeader = .{
+        .code = c(l5.DHCP.OptionCode).CLIENT_ID,
+        .len = 7,
+    };
+    @memcpy(rel_buf[start..end], mem.asBytes(&client_id));
+    start = end;
+    end += 1;
+    // - Hardware Type (ethernet)
+    rel_buf[start] = 1;
+    start = end;
+    end += 6;
+    @memcpy(rel_buf[start..end], mac_addr[0..]);
+    // - End Option
+    start = end;
+    end += 1;
+    rel_buf[start] = c(l5.DHCP.OptionCode).END;
+    // Send Release
+    try sendDHCPMsg(
+        dhcp_sock,
+        mac_addr,
+        server_id,
+        rel_buf[0..end],
+    );
+    log.debug(
+        \\
+        \\-------------------------------------
+        \\RELEASE:
+        \\  - Transaction ID: 0x{X:0>8}
+        \\  - Client MAC:     {s}
+        \\  - Client IP:      {s}
+        \\  - Server ID:      {s}
+        \\  - Options Length: {d}B
+        \\
+        , .{
+            transaction_id,
+            MACF{ .bytes = mac_addr[0..] },
+            IPF{ .bytes = client_ip[0..] },
+            IPF{ .bytes = server_id[0..] },
+            end - bootp_hdr_len,
+        },
+    );
 }
