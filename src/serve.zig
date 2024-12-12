@@ -8,6 +8,10 @@ const mem = std.mem;
 const net = std.net;
 const os = std.os;
 const posix = std.posix;
+const time = std.time;
+
+const utils = @import("utils.zig");
+const c = utils.toStruct;
 
 
 pub fn serveDir(port: u16, serve_dir: []const u8, active: *const bool) !void {
@@ -27,10 +31,11 @@ pub fn serveDir(port: u16, serve_dir: []const u8, active: *const bool) !void {
     try posix.bind(udp_sock, &udp_addr.any, udp_addr.getOsSockLen());
     log.info("Serving '{s}' on '0.0.0.0:{d}'...", .{ serve_dir, port });
     // Set up event loop for both protocols
-    const http_thread = try std.Thread.spawn(.{}, listenHTTP, .{ tcp_sock, serve_dir, active });
+    const serve_path = if (mem.endsWith(u8, serve_dir, "/")) serve_dir[0..(serve_dir.len - 1)] else serve_dir;
+    const http_thread = try std.Thread.spawn(.{}, listenHTTP, .{ tcp_sock, serve_path, active });
     http_thread_spawned = true;
     http_thread.detach();
-    const tftp_thread = try std.Thread.spawn(.{}, listenTFTP, .{ udp_sock, serve_dir, active });
+    const tftp_thread = try std.Thread.spawn(.{}, listenTFTP, .{ udp_sock, serve_path, active });
     tftp_thread_spawned = true;
     tftp_thread.detach();
 }
@@ -90,10 +95,11 @@ pub fn handleHTTP(http_sock: posix.socket_t, serve_dir: []const u8, active: *con
     const first_line = lines.first();
     var parts = mem.split(u8, first_line, " ");
     _ = parts.next(); // Skip method
-    const request_path = parts.next() orelse "/";
+    const req_path_raw = parts.next() orelse "";
+    const req_path = if (mem.startsWith(u8, req_path_raw, "/")) req_path_raw[1..] else req_path_raw;
     // Sanitize and build file path
     var path_buf: [fs.MAX_PATH_BYTES]u8 = undefined;
-    const full_path = try fmt.bufPrint(path_buf[0..], "{s}/{s}", .{ serve_dir, request_path });
+    const full_path = try fmt.bufPrint(path_buf[0..], "{s}/{s}", .{ serve_dir, req_path });
     log.info("HTTP: Serving File '{s}'...", .{ full_path });
     // Try to read file
     const file = fs.openFileAbsolute(full_path, .{}) catch {
@@ -115,11 +121,17 @@ pub fn handleHTTP(http_sock: posix.socket_t, serve_dir: []const u8, active: *con
     while (active.*) {
         const bytes = try file.read(read_buf[0..]);
         if (bytes == 0) break;
-        _ = try posix.send(http_sock, read_buf[0..bytes], 0);
+        _ = posix.send(http_sock, read_buf[0..bytes], 0) catch |err| switch (err) {
+            error.ConnectionResetByPeer => {
+                log.warn("HTTP: Connection Reset. The File '{s}' may already exist on the Client.", .{ full_path });
+                break;
+            },
+            else => return err,
+        };
     }
 }
 
-const TftpOpcode = enum(u16) {
+const TFTPOpCode = enum(u16) {
     RRQ = 1,
     WRQ = 2,
     DATA = 3,
@@ -140,7 +152,7 @@ pub fn handleTFTP(
     if (req_len < 4) return;
     const request = req_buf[0..req_len];
     const opcode = mem.bigToNative(u16, mem.bytesToValue(u16, request[0..2]));
-    switch (@as(TftpOpcode, @enumFromInt(opcode))) {
+    switch (@as(TFTPOpCode, @enumFromInt(opcode))) {
         .RRQ => {
             // Parse filename from request
             const filename = mem.sliceTo(request[2..], 0);
@@ -157,11 +169,6 @@ pub fn handleTFTP(
                     0, 1, // Error code: File not found
                     'F', 'i', 'l', 'e', ' ', 'n', 'o', 't', ' ', 'f', 'o', 'u', 'n', 'd', 0,
                 };
-                //const error_packet: []const u8 = 
-                //    &.{ 0, 5 } ++
-                //    &.{ 0, 1 } ++
-                //    "File note found" ++
-                //    &.{ 0 };
                 _ = try posix.sendto(
                     tftp_sock,
                     error_packet[0..],
@@ -177,8 +184,7 @@ pub fn handleTFTP(
             var block_num: u16 = 1;
             var resp_buf: [516]u8 = undefined; // 2 bytes opcode + 2 bytes block + 512 bytes data
             while (active.*) {
-                resp_buf[0] = 0;
-                resp_buf[1] = 3; // DATA opcode
+                mem.writeInt(u16, resp_buf[0..2], c(TFTPOpCode).DATA, .big);
                 mem.writeInt(u16, resp_buf[2..4], block_num, .big);
                 const bytes_read = try file.read(resp_buf[4..]);
                 if (bytes_read == 0) break;
@@ -202,6 +208,7 @@ pub fn handleTFTP(
                 //);
                 //const ack_block = mem.bytesToValue(u16, ack_buf[2..4]);
                 //if (mem.bigToNative(u16, ack_block) != block_num) break;
+                time.sleep(100 * time.ns_per_us);
                 block_num += 1;
                 if (bytes_read < 512) break;
             }
