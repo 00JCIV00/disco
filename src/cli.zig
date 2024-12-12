@@ -19,6 +19,7 @@ const cova = @import("cova");
 const nl = @import("nl.zig");
 const netdata = @import("netdata.zig");
 const address = netdata.address;
+const serve = @import("serve.zig");
 const wpa = @import("wpa.zig");
 
 /// The Cova Command Type for DisCo.
@@ -31,6 +32,7 @@ pub const CommandT = cova.Command.Custom(.{
         .custom_types = &.{
             net.Address,
             fs.File,
+            fs.Dir,
             [6]u8,
             [4]u8,
             address.IPv4,
@@ -67,12 +69,25 @@ pub const CommandT = cova.Command.Custom(.{
                     }
                 }.parseFilePath,
             },
+            .{
+                .ChildT = fs.Dir,
+                .parse_fn = struct{
+                    pub fn parseDirPath(path: []const u8, _: mem.Allocator) !fs.Dir {
+                        var cwd = fs.cwd();
+                        return cwd.openDir(path, .{ .iterate = true }) catch |err| {
+                            log.err("The provided path to the Dir '{s}' is invalid.", .{ path });
+                            return err;
+                        };
+                    }
+                }.parseDirPath,
+            },
         },
         .child_type_aliases = &.{
             .{ .ChildT = bool, .alias = "toggle" },
             .{ .ChildT = []const u8, .alias = "text" },
             .{ .ChildT = usize, .alias = "positive_number" },
             .{ .ChildT = fs.File, .alias = "filepath" },
+            .{ .ChildT = fs.Dir, .alias = "directory" },
             .{ .ChildT = net.Address, .alias = "ip_address:port" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
             .{ .ChildT = [4]u8, .alias = "ip_address" },
@@ -184,6 +199,48 @@ pub const setup_cmd = CommandT{
                 }),
             },
         },
+        //CommandT.from(@TypeOf(serve.serveDir), .{
+        //    .cmd_name = "serve",
+        //    .cmd_alias_names = &.{ "host" },
+        //    .description = "Serve files from the provided `--directory` on the designated `--port`.",
+        //    .cmd_group = &.{ "ACTIVE" },
+        //    .sub_descriptions = &.{
+        //        .{ "port", "Port to serve on." },
+        //        .{ "directory", "Directory to serve." },
+        //    },
+        //}),
+        .{
+            .name = "serve",
+            .alias_names = &.{ "host" },
+            .description = "Serve files from the provided `--directory` on the designated `--port` using HTTP and TFTP.",
+            .cmd_group = "ACTIVE",
+            .opts = &.{
+                .{
+                    .name = "port",
+                    .description = "Port to serve on.",
+                    .long_name = "port",
+                    .short_name = 'p',
+                    .val = ValueT.ofType(u16, .{ .default_val = 12070 }),
+                },
+                .{
+                    .name = "directory",
+                    .description = "Directory to serve.",
+                    .long_name = "directory",
+                    .short_name = 'd',
+                    .val = ValueT.ofType([]const u8, .{
+                        .default_val = ".",
+                        .alias_child_type= "path",
+                        .valid_fn = struct{
+                            pub fn validatePath(path: []const u8, _: mem.Allocator) bool {
+                                var dir = fs.openDirAbsolute(path, .{}) catch return false;
+                                defer dir.close();
+                                return true;
+                            }
+                        }.validatePath,
+                    }),
+                },
+            },
+        },
         .{
             .name = "set",
             .alias_names = &.{ "change" },
@@ -236,7 +293,7 @@ pub const setup_cmd = CommandT{
                         .name = "address",
                         // TODO Add random/vendor support
                         .parse_fn = parseMAC,
-                    })
+                    }),
                 },
                 .{
                     .name = "state",

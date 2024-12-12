@@ -16,6 +16,7 @@ const art = @import("art.zig");
 const dhcp = @import("dhcp.zig");
 const netdata = @import("netdata.zig");
 const nl = @import("nl.zig");
+const serve = @import("serve.zig");
 const sys = @import("sys.zig");
 const utils = @import("utils.zig");
 const wpa = @import("wpa.zig");
@@ -26,7 +27,27 @@ const IPF = address.IPFormatter;
 const c = utils.toStruct;
 const NetworkInterface = @import("NetworkInterface.zig");
 
+// TODO: Pull these into Core context
+// Active
+var active: bool = false;
+// Connect
+var connected: bool = false;
+// DHCP Info
+var dhcp_info: ?dhcp.Info = null;
+// Interface
+var raw_net_if: ?NetworkInterface = null;
+
 pub fn main() !void {
+    try posix.sigaction(
+        posix.SIG.INT,
+        &.{
+            .handler = .{ .handler = cleanUp },
+            .mask = posix.empty_sigset,
+            .flags = 0,
+        },
+        null,
+    );
+
     const stdout_file = io.getStdOut().writer();
     var stdout_bw = io.bufferedWriter(stdout_file);
     defer stdout_bw.flush() catch log.warn("Couldn't flush stdout before exiting!", .{});
@@ -108,11 +129,21 @@ pub fn main() !void {
             }
         }
     }
+    // - File Serve
+    if (main_cmd.matchSubCmd("serve")) |serve_cmd| {
+        const serve_opts = try serve_cmd.getOpts(.{});
+        const port = try serve_opts.get("port").?.val.getAs(u16);
+        const dir = try serve_opts.get("directory").?.val.getAs([]const u8);
+        active = true;
+        try serve.serveDir(port, dir, &active);
+        while (active) {}
+        return;
+    }
 
     // DHCP Info
-    var dhcp_info: ?dhcp.Info = null;
+    //var dhcp_info: ?dhcp.Info = null;
     // Interface
-    var raw_net_if = netIF: {
+    raw_net_if = netIF: {
         const if_name = (main_vals.get("interface").?).getAs([]const u8) catch break :netIF null;
         break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
             error.NoInterfaceFound => {
@@ -122,33 +153,7 @@ pub fn main() !void {
             else => return err,
         };
     };
-    defer if (main_cmd.matchSubCmd("connect")) |connect_cmd| cleanup: {
-        var net_if = raw_net_if orelse break :cleanup;
-        net_if.update() catch break :cleanup;
-        if (connect_cmd.checkFlag("dhcp")) dhcp: {
-            const d_info = dhcp_info orelse break :dhcp;
-            dhcp.releaseDHCP(
-                net_if.name,
-                net_if.index,
-                net_if.route_info.mac,
-                d_info.server_id,
-                d_info.assigned_ip,
-            ) catch log.warn("Could not release DHCP lease for `{s}`!", .{ d_info.assigned_ip });
-        }
-        for (net_if.route_info.ips, net_if.route_info.cidrs) |_ip, _cidr| {
-            const ip = _ip orelse continue;
-            const cidr = _cidr orelse 24;
-            defer nl.route.deleteIP(
-                alloc,
-                net_if.route_info.index,
-                ip,
-                cidr,
-            ) catch |err| switch (err) {
-                error.ADDRNOTAVAIL => {},
-                else => log.warn("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
-            };
-        }
-    };
+    defer cleanUp(0);
 
     // Single Use
     // - Set
@@ -305,6 +310,7 @@ pub fn main() !void {
         }
         raw_net_if = try NetworkInterface.get(net_if.name);
     }
+    // - Add
     if (main_cmd.matchSubCmd("add")) |add_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
@@ -359,6 +365,7 @@ pub fn main() !void {
         }
         time.sleep(100 * time.ns_per_ms);
     }
+    // - Delete
     if (main_cmd.matchSubCmd("delete")) |del_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
@@ -410,6 +417,8 @@ pub fn main() !void {
         }
         time.sleep(100 * time.ns_per_ms);
     }
+    // Active
+    // - Connect
     if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
@@ -503,7 +512,10 @@ pub fn main() !void {
                 );
             }
         }
-        time.sleep(10 * time.ns_per_s);
+        //time.sleep(10 * time.ns_per_s);
+        active = true;
+        connected = true;
+        while (active) {}
     }
 
     // System Details
@@ -551,4 +563,42 @@ fn checkIF(net_if: ?NetworkInterface, stdout: io.AnyWriter) void {
         log.err("DisCo needs to know which interface to use. (Ex: disco wlan0)", .{});
     };
     process.exit(0);
+}
+
+/// Cleanup
+fn cleanUp(_: i32) callconv(.C) void {
+    log.info("Closing gracefully.", .{});
+    if (connected) cleanup: {
+        active = false;
+        var net_if = raw_net_if orelse break :cleanup;
+        net_if.update() catch break :cleanup;
+        //if (connect_cmd.checkFlag("dhcp")) dhcp: {
+        //    const d_info = dhcp_info orelse break :dhcp;
+        if (dhcp_info) |d_info| {
+            dhcp.releaseDHCP(
+                net_if.name,
+                net_if.index,
+                net_if.route_info.mac,
+                d_info.server_id,
+                d_info.assigned_ip,
+            ) catch log.warn("Could not release DHCP lease for `{s}`!", .{ d_info.assigned_ip });
+        }
+        for (net_if.route_info.ips, net_if.route_info.cidrs) |_ip, _cidr| {
+            const ip = _ip orelse continue;
+            const cidr = _cidr orelse 24;
+            var fba_buf: [2048]u8 = undefined;
+            var fba = heap.FixedBufferAllocator.init(fba_buf[0..]);
+            defer nl.route.deleteIP(
+                //alloc,
+                fba.allocator(),
+                net_if.route_info.index,
+                ip,
+                cidr,
+            ) catch |err| switch (err) {
+                error.ADDRNOTAVAIL => {},
+                else => log.warn("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
+            };
+        }
+    }
+    posix.exit(0);
 }

@@ -24,64 +24,6 @@ const utils = @import("utils.zig");
 const c = utils.toStruct;
 
 
-///// Send DHCP message with explicit interface control
-//fn sendDHCPMsg(
-//    sock: posix.socket_t,
-//    if_index: i32,
-//    msg: []u8,
-//    dst_addr: posix.sockaddr,
-//) !void {
-//    /// IP Packet Info
-//    const in_pktinfo = extern struct {
-//        ipi_ifindex: c_int,
-//        ipi_spec_dst: [4]u8,
-//        ipi_addr: [4]u8,
-//    };
-//    /// Control Message Header (cmsghdr)
-//    const cmsghdr = extern struct {
-//       /// Length of data in cmsg_data plus length of cmsghdr
-//       len: posix.socklen_t,
-//       /// Originating protocol
-//       level: c_int,
-//       /// Protocol-specific type
-//       type: c_int,
-//    };
-//
-//    const iov = [_]posix.iovec_const{ .{
-//        .base = msg.ptr,
-//        .len = msg.len,
-//    } };
-//    //const broadcast_addr = net.Address.initIp4(.{ 255, 255, 255, 255 }, 67);
-//    // Control message buffer needs to be aligned
-//    var cmsg_buf: [@sizeOf(cmsghdr) + @sizeOf(in_pktinfo)]u8 align(@alignOf(cmsghdr)) = undefined;
-//    //var cmsg_buf: [@sizeOf(cmsghdr) + @sizeOf(in_pktinfo)]u8 = undefined;
-//    // Setup CMSG header directly
-//    //const cmsg: *cmsghdr = @ptrCast(@alignCast(msg_hdr.control));
-//    const cmsg: cmsghdr = .{
-//        .level = posix.IPPROTO.IP,
-//        .type = os.linux.IP.PKTINFO,
-//        .len = @sizeOf(cmsghdr) + @sizeOf(in_pktinfo),
-//    };
-//    // Setup pktinfo right after cmsghdr
-//    const pktinfo: in_pktinfo = .{
-//        .ipi_ifindex = if_index,
-//        .ipi_spec_dst = .{ 0, 0, 0, 0 },
-//        .ipi_addr = .{ 0, 0, 0, 0 },
-//    };
-//    @memcpy(cmsg_buf[0..@sizeOf(cmsghdr)], mem.asBytes(&cmsg));
-//    @memcpy(cmsg_buf[@sizeOf(cmsghdr)..(@sizeOf(cmsghdr) + @sizeOf(in_pktinfo))], mem.asBytes(&pktinfo));
-//    var msg_hdr = posix.msghdr_const{
-//        .name = @ptrCast(&dst_addr),
-//        .namelen = @sizeOf(posix.sockaddr.in),
-//        .iov = iov[0..],
-//        .iovlen = 1,
-//        .control = cmsg_buf[0..],
-//        .controllen = cmsg_buf.len,
-//        .flags = 0,
-//    };
-//    _ = try posix.sendmsg(sock, &msg_hdr, 0);
-//}
-
 /// Send DHCP message with Raw Socket
 fn sendDHCPMsg(
     msg_sock: posix.socket_t,
@@ -325,9 +267,9 @@ pub fn handleDHCP(
             \\
             \\-------------------------------------
             \\DISCOVER:
-            \\  - Transaction ID: 0x{X:0>8}
-            \\  - Client MAC:     {s}
-            \\  - Options Length: {d}B
+            \\ - Transaction ID: 0x{X:0>8}
+            \\ - Client MAC:     {s}
+            \\ - Options Length: {d}B
             \\
             , .{
                 transaction_id,
@@ -354,8 +296,8 @@ pub fn handleDHCP(
         if (offer_hdr.tx_id != transaction_id) {
             log.warn(
                 \\Transaction ID Mismatch:
-                \\  - Expected: 0x{X:0>8}
-                \\  - Received: 0x{X:0>8}
+                \\ - Expected: 0x{X:0>8}
+                \\ - Received: 0x{X:0>8}
                 , .{
                     transaction_id,
                     offer_hdr.tx_id,
@@ -439,11 +381,11 @@ pub fn handleDHCP(
             \\
             \\-------------------------------------
             \\OFFER:
-            \\  - Server ID:   {s}
-            \\  - Offered IP:  {s}
-            \\  - Subnet Mask: {s}
-            \\  - Router:      {s}
-            \\  - Lease Time:  {d}s
+            \\ - Server ID:   {s}
+            \\ - Offered IP:  {s}
+            \\ - Subnet Mask: {s}
+            \\ - Router:      {s}
+            \\ - Lease Time:  {d}s
             \\
             , .{
                 IPF{ .bytes = offer_server_id[0..] },
@@ -590,11 +532,11 @@ pub fn handleDHCP(
             \\
             \\-------------------------------------
             \\REQUEST:
-            \\  - Transaction ID:  0x{X:0>8}
-            \\  - Client MAC:      {s}
-            \\  - Server ID:       {s}
-            \\  - Requested IP:    {s}
-            \\  - Options Length:  {d}B
+            \\ - Transaction ID:  0x{X:0>8}
+            \\ - Client MAC:      {s}
+            \\ - Server ID:       {s}
+            \\ - Requested IP:    {s}
+            \\ - Options Length:  {d}B
             \\
             , .{
                 transaction_id,
@@ -619,8 +561,8 @@ pub fn handleDHCP(
         if (ack_header.tx_id != transaction_id) {
             log.warn(
                 \\Transaction ID Mismatch:
-                \\  - Expected: 0x{X:0>8}
-                \\  - Received: 0x{X:0>8}
+                \\ - Expected: 0x{X:0>8}
+                \\ - Received: 0x{X:0>8}
                 , .{
                     transaction_id,
                     ack_header.tx_id,
@@ -706,12 +648,12 @@ pub fn handleDHCP(
                     \\
                     \\-------------------------------------
                     \\ACK:
-                    \\  - Server ID:   {s}
-                    \\  - Assigned IP: {s}
-                    \\  - Subnet Mask: {s}
-                    \\  - Router:      {s}
-                    \\  - DNS:         {s}
-                    \\  - Lease Time:  {?d}s
+                    \\ - Server ID:   {s}
+                    \\ - Assigned IP: {s}
+                    \\ - Subnet Mask: {s}
+                    \\ - Router:      {s}
+                    \\ - DNS:         {s}
+                    \\ - Lease Time:  {?d}s
                     \\
                     , .{
                         IPF{ .bytes = ack_server_id[0..] },
@@ -843,11 +785,11 @@ pub fn releaseDHCP(
         \\
         \\-------------------------------------
         \\RELEASE:
-        \\  - Transaction ID: 0x{X:0>8}
-        \\  - Client MAC:     {s}
-        \\  - Client IP:      {s}
-        \\  - Server ID:      {s}
-        \\  - Options Length: {d}B
+        \\ - Transaction ID: 0x{X:0>8}
+        \\ - Client MAC:     {s}
+        \\ - Client IP:      {s}
+        \\ - Server ID:      {s}
+        \\ - Options Length: {d}B
         \\
         , .{
             transaction_id,

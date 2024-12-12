@@ -3043,7 +3043,7 @@ pub fn connectWPA2(
     time.sleep(config.delay * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).UP);
     time.sleep(config.delay * time.ns_per_ms);
-    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 10, .tv_usec = 0 });
+    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 3, .tv_usec = 0 });
     try registerFrames(
         alloc,
         nl_sock,
