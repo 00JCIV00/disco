@@ -2,9 +2,13 @@
 
 const std = @import("std");
 const ascii = std.ascii;
+const crypto = std.crypto;
 const io = std.io;
 const fmt = std.fmt;
 const mem = std.mem;
+
+const oui = @import("oui.zig");
+
 
 /// Print a Network Address (IPv4, IPv6, MAC) using the provided `writer`.
 pub fn printAddr(
@@ -106,8 +110,10 @@ pub const IPv4 = struct {
 };
 
 /// Parse a MAC Address from the provided String (`str`).
-pub fn parseMAC(str: []const u8) ![6]u8 {
-    if (str.len < 12 or str.len > 17)
+/// Note, this supports OUIs by filling the last 3 Bytes w/ 0.
+pub fn parseMAC(mac_str: []const u8) ![6]u8 {
+    const str = mem.trim(u8, mac_str, ascii.whitespace[0..]);
+    if (str.len < 6 or str.len > 17)
         return error.AddressNotValid;
     var text_buf: [12]u8 = undefined;
     var idx: usize = 0;
@@ -119,8 +125,8 @@ pub fn parseMAC(str: []const u8) ![6]u8 {
         text_buf[idx] = if (c >= 'A' or c < 'a') c else c + 32;
         idx += 1;
     }
-    var addr_buf: [6]u8 = undefined;
-    for (addr_buf[0..], 0..) |*byte, addr_idx| {
+    var addr_buf: [6]u8 = .{ 0 } ** 6;
+    for (addr_buf[0..(idx / 2)], 0..) |*byte, addr_idx| {
         const start = addr_idx * 2;
         const end = start + 2;
         byte.* = try fmt.parseInt(u8, text_buf[start..end], 16);
@@ -128,8 +134,34 @@ pub fn parseMAC(str: []const u8) ![6]u8 {
     return addr_buf;
 }
 
+/// Random MAC Kind
+pub const RandomMACKind = enum {
+    /// Fully Random MAC
+    full,
+    /// Link Local MAC (Like a mobile phone)
+    ll,
+    /// Random OUI w/ Random Bytes
+    oui
+};
+
+/// Get a Random MAC
+pub fn getRandomMAC(kind: RandomMACKind) [6]u8 {
+    var mac: [6]u8 = undefined;
+    crypto.random.bytes(mac[0..]);
+    switch (kind) {
+        .full => {},
+        .ll => {
+            const nib_idx: u2 = crypto.random.int(u2);
+            mac[0] = crypto.random.int(u8) << 4 | oui.ll_rand_mac_nibbles[nib_idx];
+        },
+        .oui => mac[0..3].* = oui.getRandomOUI(),
+    }
+    return mac;
+}
+
 /// Parse an IP Address from the provided String (`str`).
-pub fn parseIP(str: []const u8) ![4]u8 {
+pub fn parseIP(ip_str: []const u8) ![4]u8 {
+    const str = mem.trim(u8, ip_str, ascii.whitespace[0..]);
     const trimmed = mem.trim(u8, str[0..], ascii.whitespace[0..]);
     var iter = mem.splitScalar(u8, trimmed, '.');
     var bytes: [4]u8 = undefined;

@@ -19,6 +19,7 @@ const cova = @import("cova");
 const nl = @import("nl.zig");
 const netdata = @import("netdata.zig");
 const address = netdata.address;
+const oui = netdata.oui;
 const serve = @import("serve.zig");
 const wpa = @import("wpa.zig");
 
@@ -35,7 +36,9 @@ pub const CommandT = cova.Command.Custom(.{
             fs.Dir,
             [6]u8,
             [4]u8,
+            [3]u8,
             address.IPv4,
+            address.RandomMACKind,
             nl.route.IFF,
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
@@ -91,6 +94,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = net.Address, .alias = "ip_address:port" },
             .{ .ChildT = [6]u8, .alias = "mac_address" },
             .{ .ChildT = [4]u8, .alias = "ip_address" },
+            .{ .ChildT = [3]u8, .alias = "oui" },
             .{ .ChildT = address.IPv4, .alias = "ip_address/cidr" },
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
@@ -111,6 +115,7 @@ pub const setup_cmd = CommandT{
         "disco wlan0 add --ip 192.168.10.10",
         "disco wlan0 del --route 192.168.0.0/16",
         "disco sys set --hostname 'shaggy'",
+        "disco host --dir '/tmp'",
     },
     .cmd_groups = &.{ "ACTIVE", "INTERFACE", "SETTINGS" },
     .sub_cmds_mandatory = false,
@@ -150,6 +155,17 @@ pub const setup_cmd = CommandT{
             .name = "connect",
             .description = "Connect to a WiFi Network using the specified Interface.",
             .cmd_group = "ACTIVE",
+            .vals = &.{
+                ValueT.ofType([]const u8, .{
+                    .name = "ssid",
+                    .description = "Set the SSID of the Network. (Up to 32 characters)",
+                    .valid_fn = struct {
+                        pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
+                            return arg.len > 0 and arg.len <= 32;
+                        }
+                    }.validPass,
+                }),
+            },
             .opts = &.{
                 channels_opt,
                 .{
@@ -187,28 +203,7 @@ pub const setup_cmd = CommandT{
                     .short_name = 'g',
                 },
             },
-            .vals = &.{
-                ValueT.ofType([]const u8, .{
-                    .name = "ssid",
-                    .description = "Set the SSID of the Network. (Up to 32 characters)",
-                    .valid_fn = struct {
-                        pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
-                            return arg.len > 0 and arg.len <= 32;
-                        }
-                    }.validPass,
-                }),
-            },
         },
-        //CommandT.from(@TypeOf(serve.serveDir), .{
-        //    .cmd_name = "serve",
-        //    .cmd_alias_names = &.{ "host" },
-        //    .description = "Serve files from the provided `--directory` on the designated `--port`.",
-        //    .cmd_group = &.{ "ACTIVE" },
-        //    .sub_descriptions = &.{
-        //        .{ "port", "Port to serve on." },
-        //        .{ "directory", "Directory to serve." },
-        //    },
-        //}),
         .{
             .name = "serve",
             .alias_names = &.{ "host" },
@@ -217,14 +212,14 @@ pub const setup_cmd = CommandT{
             .opts = &.{
                 .{
                     .name = "port",
-                    .description = "Port to serve on.",
+                    .description = "Port to serve on. (Default: 12070)",
                     .long_name = "port",
                     .short_name = 'p',
                     .val = ValueT.ofType(u16, .{ .default_val = 12070 }),
                 },
                 .{
                     .name = "directory",
-                    .description = "Directory to serve.",
+                    .description = "Directory to serve. (Default: Current Directory '.')",
                     .long_name = "directory",
                     .short_name = 'd',
                     .val = ValueT.ofType([]const u8, .{
@@ -246,11 +241,13 @@ pub const setup_cmd = CommandT{
             .alias_names = &.{ "change" },
             .description = "Set/Change a Connection attribute for the specified Interface.",
             .cmd_group = "INTERFACE",
+            .opt_groups = &.{ "CHANNEL", "MAC", "INTERFACE" },
             .sub_cmds_mandatory = false,
             .opts = &.{
                 .{
                     .name = "channel",
                     .description = "Set the Channel of the given Interface. (Note, this will set the card to Up in Monitor mode)",
+                    .opt_group = "CHANNEL",
                     .long_name = "channel",
                     .short_name = 'c',
                     .val = ValueT.ofType(usize, .{
@@ -264,7 +261,8 @@ pub const setup_cmd = CommandT{
                 },
                 .{
                     .name = "channel-width",
-                    .description = "Set the Channel/Frequency Width (in MHZ & Throughput) of the given Interface. (Note, this only works in conjunction with --channel or --freq)",
+                    .description = "Set the Channel/Frequency Width (in MHz & Throughput) of the given Interface. (Note, this only works in conjunction with `--channel` or `--freq`)",
+                    .opt_group = "CHANNEL",
                     .long_name = "channel-width",
                     .alias_long_names = &.{ "ch-width", "frequency-width", "freq-width" },
                     .short_name = 'C',
@@ -273,6 +271,7 @@ pub const setup_cmd = CommandT{
                 .{
                     .name = "frequency",
                     .description = "Set the frequency (in MHz) of the given Interface. (Note, this will set the card to Up in Monitor mode)",
+                    .opt_group = "CHANNEL",
                     .long_name = "frequency",
                     .short_name = 'f',
                     .val = ValueT.ofType(usize, .{
@@ -287,17 +286,39 @@ pub const setup_cmd = CommandT{
                 .{
                     .name = "mac",
                     .description = "Set the MAC Address of the given Interface.",
+                    .opt_group = "MAC",
                     .long_name = "mac",
                     .short_name = 'm',
+                    .allow_empty = true,
                     .val = ValueT.ofType([6]u8, .{
                         .name = "address",
-                        // TODO Add random/vendor support
                         .parse_fn = parseMAC,
+                    }),
+                },
+                .{
+                    .name = "random_mac",
+                    .description = "Set a Random MAC Address type for `--mac`. (Settings: `ll` = Link Local [default], `full` = Full Random, `oui` = Random Real OUI)",
+                    .opt_group = "MAC",
+                    .long_name = "random",
+                    .short_name = 'r',
+                    .allow_empty = true,
+                    .val = ValueT.ofType(address.RandomMACKind, .{ .default_val = .ll }),
+                },
+                .{
+                    .name = "oui",
+                    .description = "Set an OUI Manufacturer type for `--mac`. (This based on the Manufacturer Column of the Wireshark MAC list. Default 'Intel')",
+                    .opt_group = "MAC",
+                    .long_name = "oui",
+                    .short_name = 'o',
+                    .val = ValueT.ofType([3]u8, .{
+                        .default_val = .{ 0xF8, 0x63, 0xD9 },
+                        .parse_fn = getOUI,
                     }),
                 },
                 .{
                     .name = "state",
                     .description = "Set the State of the given Interface. (UP, DOWN, BROADCAST, etc). (Note, multiple flags can be set simultaneously)",
+                    .opt_group = "INTERFACE",
                     .long_name = "state",
                     .short_name = 's',
                     .val = ValueT.ofType(nl.route.IFF, .{
@@ -316,6 +337,7 @@ pub const setup_cmd = CommandT{
                 .{
                     .name = "mode",
                     .description = "Set the Mode of the given Interface. (MONITOR, STATION, AP, etc)",
+                    .opt_group = "INTERFACE",
                     .long_name = "mode",
                     .short_name = 'M',
                     .val = ValueT.ofType(nl._80211.IFTYPE, .{
@@ -481,4 +503,8 @@ fn parseIPv4(arg: []const u8, _: mem.Allocator) !address.IPv4 {
 
 fn parseMAC(arg: []const u8, _: mem.Allocator) ![6]u8 {
     return try address.parseMAC(arg);
+}
+
+fn getOUI(arg: []const u8, _: mem.Allocator) ![3]u8 {
+    return try oui.getOUI(arg);
 }

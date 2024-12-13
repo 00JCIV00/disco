@@ -9,6 +9,7 @@ pub const l2 = @import("netdata/l2.zig");
 pub const l3 = @import("netdata/l3.zig");
 pub const l4 = @import("netdata/l4.zig");
 pub const l5 = @import("netdata/l5.zig");
+pub const oui = @import("netdata/oui.zig");
 
 
 /// Calculate the Cyclic Redundancy Check (CRC) using the provided `payload` for the Frame Check Sequence (FCS) of Ethernet-like Frame Footers.

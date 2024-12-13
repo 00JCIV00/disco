@@ -163,8 +163,22 @@ pub fn main() !void {
         const net_if: NetworkInterface = raw_net_if.?;
         const set_if_opts = try set_cmd.getOpts(.{});
         if (set_if_opts.get("mac")) |mac_opt| setMAC: {
-            const new_mac = mac_opt.val.getAs([6]u8) catch break :setMAC;
             try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
+            const new_mac: [6]u8 = newMAC: {
+                var new_mac: [6]u8 = 
+                    if (mac_opt.val.isEmpty()) .{ 0 } ** 6
+                    else mac_opt.val.getAs([6]u8) catch break :setMAC;
+                if (set_if_opts.get("random_mac")) |rand_mac_opt| randMAC: {
+                    if (!rand_mac_opt.val.isSet() and rand_mac_opt.val.isEmpty()) break :randMAC;
+                    const rand_kind = try rand_mac_opt.val.getAs(address.RandomMACKind);
+                    break :newMAC address.getRandomMAC(rand_kind);
+                }
+                if (set_if_opts.get("oui")) |oui_opt| {
+                    const oui: [3]u8 = try oui_opt.val.getAs([3]u8);
+                    new_mac[0..3].* = oui;
+                }
+                break :newMAC new_mac;
+            };
             nl.route.setMAC(net_if.route_info.index, new_mac) catch |err| switch (err) {
                 error.OutOfMemory => {
                     log.err("Out of Memory!", .{});
@@ -179,13 +193,13 @@ pub fn main() !void {
                     return;
                 },
             };
-            var mac_buf: [17]u8 = .{ ':' } ** 17;
-            for (new_mac, 0..6) |byte, idx| {
-                const start = if (idx == 0) 0 else idx * 3;
-                const end = start + 2;
-                _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
-            }
-            try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, mac_buf });
+            //var mac_buf: [17]u8 = .{ ':' } ** 17;
+            //for (new_mac, 0..6) |byte, idx| {
+            //    const start = if (idx == 0) 0 else idx * 3;
+            //    const end = start + 2;
+            //    _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
+            //}
+            try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, MACF{ .bytes = new_mac[0..] } });
         }
         if (set_if_opts.get("state")) |state_opt| setState: {
             const new_state, const flag_name = newState: {
