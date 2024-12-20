@@ -13,6 +13,7 @@ const cova = @import("cova");
 const cli = @import("cli.zig");
 
 const art = @import("art.zig");
+const core = @import("core.zig");
 const dhcp = @import("dhcp.zig");
 const netdata = @import("netdata.zig");
 const nl = @import("nl.zig");
@@ -27,6 +28,8 @@ const IPF = address.IPFormatter;
 const c = utils.toStruct;
 const NetworkInterface = @import("NetworkInterface.zig");
 
+// Core Context
+var _core_ctx: ?core.Core = null;
 // TODO: Pull these into Core context
 // Active
 var active: bool = false;
@@ -83,6 +86,17 @@ pub fn main() !void {
             else => |parse_err| return parse_err,
         }
     };
+
+    // Run Core Context
+    if (main_cmd.sub_cmd == null) {
+        _core_ctx = try core.Core.init(alloc);
+        var core_ctx = _core_ctx.?;
+        try core_ctx.start();
+        defer core_ctx.stop();
+        while (core_ctx.active) {}
+
+        return;
+    }
 
     //const main_opts = try main_cmd.getOpts(.{});
     const main_vals = try main_cmd.getVals(.{});
@@ -179,7 +193,7 @@ pub fn main() !void {
                 }
                 break :newMAC new_mac;
             };
-            nl.route.setMAC(net_if.route_info.index, new_mac) catch |err| switch (err) {
+            nl.route.setMAC(net_if.index, new_mac) catch |err| switch (err) {
                 error.OutOfMemory => {
                     log.err("Out of Memory!", .{});
                     return err;
@@ -212,7 +226,7 @@ pub fn main() !void {
                 };
             };
             try stdout_file.print("Setting the State for {s}...\n", .{ net_if.name });
-            nl.route.setState(net_if.route_info.index, new_state) catch |err| switch (err) {
+            nl.route.setState(net_if.index, new_state) catch |err| switch (err) {
                 error.OutOfMemory => {
                     log.err("Out of Memory!", .{});
                     return err;
@@ -231,14 +245,14 @@ pub fn main() !void {
         if (set_if_opts.get("mode")) |mode_opt| setMode: {
             const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
             try stdout_file.print("Setting the Mode for {s}...\n", .{ net_if.name });
-            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).DOWN) catch { 
+            nl.route.setState(net_if.index, c(nl.route.IFF).DOWN) catch { 
                 log.warn("Unable to set the interface down.", .{});
             };
-            defer nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+            defer nl.route.setState(net_if.index, c(nl.route.IFF).UP) catch {
                 log.warn("Unable to set the interface up.", .{});
             };
             time.sleep(100 * time.ns_per_ms);
-            nl._80211.setMode(net_if.route_info.index, @intFromEnum(new_mode)) catch |err| switch (err) {
+            nl._80211.setMode(net_if.index, @intFromEnum(new_mode)) catch |err| switch (err) {
                 error.OutOfMemory => {
                     log.err("Out of Memory!", .{});
                     return err;
@@ -261,16 +275,16 @@ pub fn main() !void {
                 break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
             };
             try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
-            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).DOWN) catch { 
+            nl.route.setState(net_if.index, c(nl.route.IFF).DOWN) catch { 
                 log.warn("Unable to set the interface down.", .{});
             };
             time.sleep(100 * time.ns_per_ms);
-            try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
-            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+            try nl._80211.setMode(net_if.index, c(nl._80211.IFTYPE).MONITOR);
+            nl.route.setState(net_if.index, c(nl.route.IFF).UP) catch {
                 log.warn("Unable to set the interface up.", .{});
             };
             time.sleep(100 * time.ns_per_ms);
-            nl._80211.setChannel(net_if.route_info.index, new_ch, new_ch_width) catch |err| switch (err) {
+            nl._80211.setChannel(net_if.index, new_ch, new_ch_width) catch |err| switch (err) {
                 error.OutOfMemory => {
                     log.err("Out of Memory!", .{});
                     return err;
@@ -297,12 +311,12 @@ pub fn main() !void {
                 break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
             };
             try stdout_file.print("Setting the Channel for {s}...\n", .{ net_if.name });
-            try nl._80211.setMode(net_if.route_info.index, c(nl._80211.IFTYPE).MONITOR);
-            nl.route.setState(net_if.route_info.index, c(nl.route.IFF).UP) catch {
+            try nl._80211.setMode(net_if.index, c(nl._80211.IFTYPE).MONITOR);
+            nl.route.setState(net_if.index, c(nl.route.IFF).UP) catch {
                 log.warn("Unable to set the interface up.", .{});
             };
             time.sleep(100 * time.ns_per_ms);
-            nl._80211.setFreq(net_if.route_info.index, new_freq, new_ch_width) catch |err| switch (err) {
+            nl._80211.setFreq(net_if.index, new_freq, new_ch_width) catch |err| switch (err) {
                 error.OutOfMemory => {
                     log.err("Out of Memory!", .{});
                     return err;
@@ -336,7 +350,7 @@ pub fn main() !void {
             try stdout_file.print("Adding new IP Address '{s}'...\n", .{ ip });
             nl.route.addIP(
                 alloc,
-                net_if.route_info.index,
+                net_if.index,
                 ip.addr,
                 ip.cidr,
             ) catch |err| switch (err) {
@@ -358,7 +372,7 @@ pub fn main() !void {
             };
             nl.route.addRoute(
                 alloc,
-                net_if.route_info.index,
+                net_if.index,
                 route.addr,
                 .{ 
                     .cidr = route.cidr,
@@ -391,7 +405,7 @@ pub fn main() !void {
             try stdout_file.print("Deleting the IP Address '{s}'...\n", .{ ip });
             nl.route.deleteIP(
                 alloc,
-                net_if.route_info.index,
+                net_if.index,
                 ip.addr,
                 ip.cidr,
             ) catch |err| switch (err) {
@@ -413,7 +427,7 @@ pub fn main() !void {
             };
             nl.route.deleteRoute(
                 alloc,
-                net_if.route_info.index,
+                net_if.index,
                 route.addr,
                 .{ 
                     .cidr = route.cidr,
@@ -477,7 +491,7 @@ pub fn main() !void {
                 const pmk = try wpa.genKey(.wpa2, ssid, pass);
                 _ = try nl._80211.connectWPA2(
                     alloc,
-                    net_if.route_info.index,
+                    net_if.index,
                     ssid,
                     pmk,
                     wpa.handle4WHS,
@@ -491,7 +505,7 @@ pub fn main() !void {
             const gateway = connect_cmd.checkFlag("gateway");
             dhcp_info = dhcp.handleDHCP(
                 net_if.name,
-                net_if.route_info.index,
+                net_if.index,
                 net_if.route_info.mac,
                 .{},
             ) catch |err| switch (err) {
@@ -504,7 +518,7 @@ pub fn main() !void {
             const dhcp_cidr = address.cidrFromSubnet(dhcp_info.?.subnet_mask);
             nl.route.addIP(
                 alloc,
-                net_if.route_info.index,
+                net_if.index,
                 dhcp_info.?.assigned_ip,
                 dhcp_cidr,
             ) catch |err| switch (err) {
@@ -517,7 +531,7 @@ pub fn main() !void {
             if (gateway) {
                 try nl.route.addRoute(
                     alloc,
-                    net_if.route_info.index,
+                    net_if.index,
                     address.IPv4.default.addr,
                     .{
                         .cidr = address.IPv4.default.cidr,
@@ -605,7 +619,7 @@ fn cleanUp(_: i32) callconv(.C) void {
             defer nl.route.deleteIP(
                 //alloc,
                 fba.allocator(),
-                net_if.route_info.index,
+                net_if.index,
                 ip,
                 cidr,
             ) catch |err| switch (err) {
@@ -614,5 +628,9 @@ fn cleanUp(_: i32) callconv(.C) void {
             };
         }
     }
+    if (_core_ctx) |*core_ctx| {
+        core_ctx.stop();
+    }
+    log.info("Exit!", .{});
     posix.exit(0);
 }

@@ -569,19 +569,19 @@ pub const IFTYPE = enum(u32) {
 };
 /// Network Interface Info
 /// Result of `CMD_NEW_INTERFACE` which can be called w/ `getInterface()`.
-const NetworkInterface = struct {
+pub const Interface = struct {
     pub const AttrE = ATTR;
 
     /// Interface index (IFINDEX) if modifying an existing interface
-    IFINDEX: ?u32 = null,
+    IFINDEX: u32,
     /// Name of the interface (e.g., "wlan0")
-    IFNAME: ?[]const u8 = null,
+    IFNAME: []const u8,
     /// Type of interface (e.g., station, AP, monitor)
     IFTYPE: ?u32 = null,
     /// WIPHY index to associate the interface with a physical wireless device
-    WIPHY: ?u32 = null,
+    WIPHY: u32,
     /// MAC address for the interface
-    MAC: ?[]const u8 = null,
+    MAC: [6]u8,
     /// Interface flags (up, down, etc.)
     FLAGS: ?u32 = null,
     /// MAC address mask, used in virtual MAC configurations
@@ -2111,7 +2111,7 @@ pub fn getStation(alloc: mem.Allocator, if_index: i32, bssid: [6]u8) !StationInf
 }
 
 /// Get the details for a Wireless Interface.
-pub fn getInterface(alloc: mem.Allocator, if_index: i32) !NetworkInterface {
+pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const nl_sock = try nl.request(
         alloc,
@@ -2129,7 +2129,7 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !NetworkInterface {
                 .cmd = c(CMD).GET_INTERFACE,
                 .version = 0,
             },
-            },
+        },
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
         },
@@ -2178,13 +2178,59 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !NetworkInterface {
         // WIPHY 
         start = end;
         end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
-        const net_if = try nl.parse.fromBytes(alloc, NetworkInterface, resp_buf[start..end]);
-        errdefer nl.parse.freeBytes(alloc, NetworkInterface, net_if);
-        if (net_if.IFINDEX) |idx| {
-            if (idx == if_index) return net_if;
-        }
+        const net_if = try nl.parse.fromBytes(alloc, Interface, resp_buf[start..end]);
+        errdefer nl.parse.freeBytes(alloc, Interface, net_if);
+        //if (net_if.IFINDEX) |idx| {
+        //    if (idx == if_index) return net_if;
+        //}
+        if (net_if.IFINDEX == if_index) return net_if;
     }
     return error.NoResultForInterface;
+}
+/// Get the details for all Wireless Interfaces.
+pub fn getAllInterfaces(alloc: mem.Allocator) ![]const Interface {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                //.flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 12321,
+            },
+            .msg = .{
+                .cmd = c(CMD).GET_INTERFACE,
+                .version = 0,
+            },
+        },
+        &.{},
+    );
+    defer posix.close(nl_sock);
+    return try handleInterface(alloc, nl_sock);
+}
+/// Parse the provided `bytes` to an Interface instance.
+pub fn parseInterface(alloc: mem.Allocator, bytes: []const u8) !Interface {
+    return try nl.parse.fromBytes(alloc, Interface, bytes[@sizeOf(nl.generic.Header)..]);
+}
+/// Handle a NEW_INTERFACE response.
+pub fn handleInterface(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Interface {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleType(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        Interface,
+        parseInterface,
+        .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_INTERFACE,
+        },
+    );
 }
 
 /// Get details for a Wireless Physical Device (WIPHY).
@@ -2231,14 +2277,14 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
                 // Netlink Header
                 var start: usize = offset;
                 var end: usize = offset + @sizeOf(nl.MessageHeader);
-                const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                const nl_resp_hdr = mem.bytesToValue(nl.MessageHeader, resp_buf[start..end]);
                 //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
                 if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
                     return error.InvalidMessage;
                 if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
                     start = end;
                     end += @sizeOf(nl.ErrorHeader);
-                    const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                    const nl_err = mem.bytesToValue(nl.ErrorHeader, resp_buf[start..end]);
                     switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
                         .SUCCESS => {},
                         .BUSY => return error.BUSY,
@@ -2257,7 +2303,7 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
                 // General Header
                 start = end;
                 end += @sizeOf(nl.generic.Header);
-                const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
+                const gen_hdr = mem.bytesToValue(nl.generic.Header, resp_buf[start..end]);
                 if (gen_hdr.cmd != c(CMD).NEW_WIPHY) {
                     //log.debug("Not a WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
                     continue :respLoop;
@@ -2276,6 +2322,52 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
     }
     return error.NoResultForWIPHY;
 }
+
+/// Get details for all Wireless Physical Devices (WIPHYs).
+pub fn getAllWIPHY(alloc: mem.Allocator) ![]const Wiphy {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 12321,
+            },
+            .msg = .{
+                .cmd = c(CMD).GET_WIPHY,
+                .version = 0,
+            },
+        },
+        &.{},
+    );
+    defer posix.close(nl_sock);
+    return try handleWIPHY(alloc, nl_sock);
+}
+/// Parse the provided `bytes` to a Wiphy instance.
+pub fn parseWIPHY(alloc: mem.Allocator, bytes: []const u8) !Wiphy {
+    return try nl.parse.fromBytes(alloc, Wiphy, bytes[@sizeOf(nl.generic.Header)..]);
+}
+/// Handle a NEW_WIPHY response.
+pub fn handleWIPHY(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Wiphy {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleType(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        Wiphy,
+        parseWIPHY,
+        .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_WIPHY,
+        },
+    );
+}
+
 
 /// Config f/ `scanSSID()`.
 pub const ScanConfig = struct {
@@ -2377,8 +2469,18 @@ pub fn scanSSID(
             16,
         );
         var timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
-        try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
-        try posix.setsockopt(res_sock, posix.SOL.SOCKET, nl.NETLINK_OPT.RX_RING, mem.toBytes(buf_size)[0..]);
+        try posix.setsockopt(
+            res_sock, 
+            posix.SOL.SOCKET, 
+            posix.SO.RCVTIMEO, 
+            timeout_opt[0..],
+        );
+        try posix.setsockopt(
+            res_sock, 
+            posix.SOL.SOCKET, 
+            nl.NETLINK_OPT.RX_RING, 
+            mem.toBytes(buf_size)[0..],
+        );
         try posix.setsockopt(
             res_sock,
             posix.SOL.NETLINK,
@@ -2735,8 +2837,8 @@ pub fn assocWPA2(
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const net_if = try getInterface(alloc, if_index);
-    defer nl.parse.freeBytes(alloc, NetworkInterface, net_if);
-    const phy_index = net_if.WIPHY orelse return error.MissingWIPHYIndex;
+    defer nl.parse.freeBytes(alloc, Interface, net_if);
+    const phy_index = net_if.WIPHY; //orelse return error.MissingWIPHYIndex;
     const wiphy = try getWIPHY(alloc, if_index, phy_index);
     defer nl.parse.freeBytes(alloc, Wiphy, wiphy);
     const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy) orelse return error.MissingOperatingClasses;

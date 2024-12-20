@@ -17,13 +17,13 @@ const nl = @import("../nl.zig");
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 
-/// Netlink General Request
+/// Netlink Generic Request
 pub const Request = nl.Request(Header);
-/// General Netlink Message Header
+/// Generic Netlink Message Header
 pub const Header = extern struct {
-    /// General Netlink Command
+    /// Generic Netlink Command
     cmd: u8,
-    /// General Netlink Version
+    /// Generic Netlink Version
     version: u8 = 1,
     /// Reserved for future use.
     __reserved: u16 = 0,

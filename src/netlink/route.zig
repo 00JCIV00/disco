@@ -27,7 +27,7 @@ pub const InterfaceInfoMessage = extern struct {
     change: u32,
 };
 /// Interface Address Message (ifaddrmsg)
-pub const InterfaceAddress = extern struct {
+pub const InterfaceAddressMessage = extern struct {
     family: u8,
     prefix_len: u8,
     flags: u8,
@@ -58,7 +58,7 @@ pub const RouteMessage = extern struct {
 /// Netlink Route Interface Info (ifi) Request
 pub const RequestIFI = nl.Request(InterfaceInfoMessage);
 /// Netlink Route Interface Address (ifa) Request
-pub const RequestIFA = nl.Request(InterfaceAddress);
+pub const RequestIFA = nl.Request(InterfaceAddressMessage);
 /// Netlink Route Route Message (rtmsg) Request
 pub const RequestRTM = nl.Request(RouteMessage);
 
@@ -298,7 +298,9 @@ pub const IFA = enum(u16) {
     TARGET_NETNSID = 10,
     /// Address protocol
     PROTO = 11,
-   _,
+
+    /// Unknown Tag f/ Netlink Parsing
+    __UNKNOWN__ = 64_000,
 };
 
 /// Interface Address Flags (IFA_F)
@@ -330,6 +332,320 @@ pub const IFA_F = enum(u32) {
     /// Stable privacy address
     STABLE_PRIVACY = 0x800,
 };
+
+/// Interface Address Attributes
+pub const InterfaceAddress = struct {
+    pub const AttrE = IFA;
+
+    /// Unspecified attribute.
+    UNSPEC: ?[]const u8 = null,
+    /// Interface address.
+    ADDRESS: ?[4]u8 = null,
+    /// Local (logical) address.
+    LOCAL: ?[4]u8 = null,
+    /// Interface name.
+    LABEL: ?[]const u8 = null,
+    /// Broadcast address.
+    BROADCAST: ?[4]u8 = null,
+    /// Anycast address.
+    ANYCAST: ?[4]u8 = null,
+    /// Cache information structure.
+    CACHEINFO: ?[]const u8 = null,
+    /// Multicast information.
+    MULTICAST: ?[]const u8 = null,
+    /// Flags for the interface address.
+    FLAGS: ?u32 = null,
+    /// Route priority/metric for prefix route.
+    RT_PRIORITY: ?[]const u8 = null,
+    /// Target network namespace ID.
+    TARGET_NETNSID: ?[]const u8 = null,
+    /// Address protocol.
+    PROTO: ?[]const u8 = null,
+};
+
+/// Interface Link Attributes (IFLA)
+pub const IFLA = enum(u16) {
+    /// Unspecified attribute
+    UNSPEC,
+    /// Interface MAC address
+    ADDRESS,
+    /// Interface broadcast address
+    BROADCAST,
+    /// Interface name
+    IFNAME,
+    /// MTU size
+    MTU,
+    /// Link type
+    LINK,
+    /// Queueing discipline
+    QDISC,
+    /// Interface statistics
+    STATS,
+    /// Cost
+    COST,
+    /// Priority
+    PRIORITY,
+    /// Master interface
+    MASTER,
+    /// Wireless extensions (from wireless.h)
+    WIRELESS,
+    /// Protocol-specific information for a link
+    PROTINFO,
+    /// Transmit queue length
+    TXQLEN,
+    /// Device map
+    MAP,
+    /// Device weight
+    WEIGHT,
+    /// Operational state
+    OPERSTATE,
+    /// Link mode
+    LINKMODE,
+    /// Link information
+    LINKINFO,
+    /// Network namespace PID
+    NET_NS_PID,
+    /// Interface alias
+    IFALIAS,
+    /// Number of VFs if the device is SR-IOV PF
+    NUM_VF,
+    /// VF information list
+    VFINFO_LIST,
+    /// 64-bit interface statistics
+    STATS64,
+    /// VF ports
+    VF_PORTS,
+    /// Self port
+    PORT_SELF,
+    /// Address family-specific info
+    AF_SPEC,
+    /// Group the device belongs to
+    GROUP,
+    /// Network namespace file descriptor
+    NET_NS_FD,
+    /// Extended info mask, VFs, etc.
+    EXT_MASK,
+    /// Promiscuity count (>0 means acts PROMISC)
+    PROMISCUITY,
+    /// Number of TX queues
+    NUM_TX_QUEUES,
+    /// Number of RX queues
+    NUM_RX_QUEUES,
+    /// Carrier state
+    CARRIER,
+    /// Physical port ID
+    PHYS_PORT_ID,
+    /// Carrier changes
+    CARRIER_CHANGES,
+    /// Physical switch ID
+    PHYS_SWITCH_ID,
+    /// Link network namespace ID
+    LINK_NETNSID,
+    /// Physical port name
+    PHYS_PORT_NAME,
+    /// Protocol down state
+    PROTO_DOWN,
+    /// Maximum GSO segments
+    GSO_MAX_SEGS,
+    /// Maximum GSO size
+    GSO_MAX_SIZE,
+    /// Padding
+    PAD,
+    /// XDP (eXpress Data Path) info
+    XDP,
+    /// Event
+    EVENT,
+    /// New network namespace ID
+    NEW_NETNSID,
+    /// Interface network namespace ID
+    /// Alias for TARGET_NETNSID
+    IF_NETNSID,
+    /// Carrier up count
+    CARRIER_UP_COUNT,
+    /// Carrier down count
+    CARRIER_DOWN_COUNT,
+    /// New interface index
+    NEW_IFINDEX,
+    /// Minimum MTU
+    MIN_MTU,
+    /// Maximum MTU
+    MAX_MTU,
+    /// Property list
+    PROP_LIST,
+    /// Alternative interface name
+    ALT_IFNAME,
+    /// Permanent address
+    PERM_ADDRESS,
+    /// Protocol down reason
+    PROTO_DOWN_REASON,
+    /// Parent device name
+    PARENT_DEV_NAME,
+    /// Parent device bus name
+    PARENT_DEV_BUS_NAME,
+    /// Maximum GRO size
+    GRO_MAX_SIZE,
+    /// Maximum TSO size
+    TSO_MAX_SIZE,
+    /// Maximum TSO segments
+    TSO_MAX_SEGS,
+    /// Allmulti count (>0 means acts ALLMULTI)
+    ALLMULTI,
+    /// Devlink port
+    DEVLINK_PORT,
+    /// Maximum GSO IPv4 size
+    GSO_IPV4_MAX_SIZE,
+    /// Maximum GRO IPv4 size
+    GRO_IPV4_MAX_SIZE,
+    /// DPLL pin
+    DPLL_PIN,
+    /// Maximum pacing offload horizon
+    MAX_PACING_OFFLOAD_HORIZON,
+
+    /// Unknown f/ Netlink Parsing
+    __UNKNOWN__ = 64_000,
+};
+
+
+/// Interface Link 
+pub const InterfaceLink = struct {
+    pub const AttrE = IFLA;
+
+    /// Unspecified attribute.
+    UNSPEC: ?[]const u8 = null,
+    /// Interface MAC address.
+    ADDRESS: ?[6]u8 = null,
+    /// Interface broadcast address.
+    BROADCAST: ?[6]u8 = null,
+    /// Interface name.
+    IFNAME: ?[]const u8 = null,
+    /// MTU size.
+    MTU: u32,
+    /// Link type
+    LINK: ?u32 = null,
+    /// Queueing discipline
+    QDISC: ?[]const u8 = null,
+    /// Interface statistics
+    STATS: ?[]const u8 = null,
+    /// Cost
+    COST: ?u32 = null,
+    /// Priority
+    PRIORITY: ?u32 = null,
+    /// Master interface
+    MASTER: ?u32 = null,
+    /// Wireless extensions (from wireless.h)
+    WIRELESS: ?[]const u8 = null,
+    /// Protocol-specific information for a link
+    PROTINFO: ?[]const u8 = null,
+    /// Transmit queue length
+    TXQLEN: ?u32 = null,
+    /// Device map
+    MAP: ?[]const u8 = null,
+    /// Device weight
+    WEIGHT: ?u32 = null,
+    /// Operational state
+    OPERSTATE: ?u8 = null,
+    /// Link mode
+    LINKMODE: ?u8 = null,
+    /// Link information
+    LINKINFO: ?[]const u8 = null,
+    /// Network namespace PID
+    NET_NS_PID: ?u32 = null,
+    /// Interface alias
+    IFALIAS: ?[]const u8 = null,
+    /// Number of VFs if the device is SR-IOV PF
+    NUM_VF: ?u32 = null,
+    /// VF information list
+    VFINFO_LIST: ?[]const u8 = null,
+    /// 64-bit interface statistics
+    STATS64: ?[]const u8 = null,
+    /// VF ports
+    VF_PORTS: ?[]const u8 = null,
+    /// Self port
+    PORT_SELF: ?[]const u8 = null,
+    /// Address family-specific info
+    AF_SPEC: ?[]const u8 = null,
+    /// Group the device belongs to
+    GROUP: ?u32 = null,
+    /// Network namespace file descriptor
+    NET_NS_FD: ?u32 = null,
+    /// Extended info mask, VFs, etc.
+    EXT_MASK: ?u32 = null,
+    /// Promiscuity count (>0 means acts PROMISC)
+    PROMISCUITY: ?u32 = null,
+    /// Number of TX queues
+    NUM_TX_QUEUES: ?u32 = null,
+    /// Number of RX queues
+    NUM_RX_QUEUES: ?u32 = null,
+    /// Carrier state
+    CARRIER: ?u8 = null,
+    /// Physical port ID
+    PHYS_PORT_ID: ?[]const u8 = null,
+    /// Carrier changes
+    CARRIER_CHANGES: ?u32 = null,
+    /// Physical switch ID
+    PHYS_SWITCH_ID: ?[]const u8 = null,
+    /// Link network namespace ID
+    LINK_NETNSID: ?u32 = null,
+    /// Physical port name
+    PHYS_PORT_NAME: ?[]const u8 = null,
+    /// Protocol down state
+    PROTO_DOWN: ?u8 = null,
+    /// Maximum GSO segments
+    GSO_MAX_SEGS: ?u32 = null,
+    /// Maximum GSO size
+    GSO_MAX_SIZE: ?u32 = null,
+    /// Padding
+    PAD: ?[]const u8 = null,
+    /// XDP (eXpress Data Path) info
+    XDP: ?[]const u8 = null,
+    /// Event
+    EVENT: ?u32 = null,
+    /// New network namespace ID
+    NEW_NETNSID: ?u32 = null,
+    /// Interface network namespace ID
+    IF_NETNSID: ?u32 = null,
+    /// Carrier up count
+    CARRIER_UP_COUNT: ?u32 = null,
+    /// Carrier down count
+    CARRIER_DOWN_COUNT: ?u32 = null,
+    /// New interface index
+    NEW_IFINDEX: ?u32 = null,
+    /// Minimum MTU
+    MIN_MTU: ?u32 = null,
+    /// Maximum MTU
+    MAX_MTU: ?u32 = null,
+    /// Property list
+    PROP_LIST: ?[]const u8 = null,
+    /// Alternative interface name
+    ALT_IFNAME: ?[]const u8 = null,
+    /// Permanent address
+    PERM_ADDRESS: ?[6]u8 = null,
+    /// Protocol down reason
+    PROTO_DOWN_REASON: ?[]const u8 = null,
+    /// Parent device name
+    PARENT_DEV_NAME: ?[]const u8 = null,
+    /// Parent device bus name
+    PARENT_DEV_BUS_NAME: ?[]const u8 = null,
+    /// Maximum GRO size
+    GRO_MAX_SIZE: ?u32 = null,
+    /// Maximum TSO size
+    TSO_MAX_SIZE: ?u32 = null,
+    /// Maximum TSO segments
+    TSO_MAX_SEGS: ?u32 = null,
+    /// Allmulti count (>0 means acts ALLMULTI)
+    ALLMULTI: ?u32 = null,
+    /// Devlink port
+    DEVLINK_PORT: ?[]const u8 = null,
+    /// Maximum GSO IPv4 size
+    GSO_IPV4_MAX_SIZE: ?u32 = null,
+    /// Maximum GRO IPv4 size
+    GRO_IPV4_MAX_SIZE: ?u32 = null,
+    /// DPLL pin
+    DPLL_PIN: ?[]const u8 = null,
+    /// Maximum pacing offload horizon
+    MAX_PACING_OFFLOAD_HORIZON: ?u32 = null,
+};
+
 
 /// Scope of the Route
 pub const RT_SCOPE = enum(u8) {
@@ -450,6 +766,9 @@ pub const RTPROT = enum(u8) {
     _,
 };
 
+/// New Address
+
+
 const IFNAMESIZE = posix.IFNAMESIZE;
 
 
@@ -533,6 +852,229 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
         }
     }
     return error.NoInterfaceIndexFound;
+}
+
+/// Get an Interface Link from the provided Interface (`if_index`).
+pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
+    // Request
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        RequestIFI,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = c(RTM).GETLINK,
+                .flags = c(nl.NLM_F).REQUEST,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .family = nl.AF.UNSPEC,
+                .index = if_index,
+                .type = 0,
+                .change = 0,
+                .flags = 0,
+            },
+        },
+        &.{},
+    );
+    defer posix.close(nl_sock);
+    // Response
+    var resp_buf: [4096]u8 = .{ 0 } ** 4096;
+    const resp_len = posix.recv(
+        nl_sock,
+        resp_buf[0..],
+        0,
+    ) catch |err| switch (err) {
+        error.WouldBlock => return error.NoInterfaceFound,
+        else => return err,
+    };
+    // Parse Message Header
+    var start: usize = 0;
+    var end: usize = @sizeOf(nl.MessageHeader);
+    const nl_resp_hdr = mem.bytesAsValue(nl.MessageHeader, resp_buf[start..end]);
+    if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+        return error.InvalidMessage;
+    if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
+        start = end;
+        end += @sizeOf(nl.ErrorHeader);
+        const nl_err = mem.bytesAsValue(nl.ErrorHeader, resp_buf[start..end]);
+        switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+            .SUCCESS => {},
+            .BUSY => return error.BUSY,
+            else => |err| {
+                log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                return error.OSError;
+            },
+        }
+    }
+    // Parse Interface Link
+    if (nl_resp_hdr.type != c(RTM).NEWLINK) return error.NonIFLinkResponse;
+    start = end + @sizeOf(InterfaceInfoMessage);
+    end = resp_len;
+    return try nl.parse.fromBytes(alloc, InterfaceLink, resp_buf[start..end]);
+}
+
+/// Interface Link w/ Interface Info
+pub const IFInfoAndLink = struct {
+    info: InterfaceInfoMessage,
+    link: InterfaceLink,
+};
+/// Parse the given `data` into an `IFInfoAndLink`.
+pub fn parseIFInfoAndLink(alloc: mem.Allocator, data: []const u8) !IFInfoAndLink {
+    const info = try nl.parse.fromBytes(alloc, InterfaceInfoMessage, data[0..@sizeOf(InterfaceInfoMessage)]);
+    const link = try nl.parse.fromBytes(alloc, InterfaceLink, data[@sizeOf(InterfaceInfoMessage)..]);
+    return .{ .info = info, .link = link };
+}
+/// Get All Interface Links w/ their Interface Info
+pub fn getAllIFLinks(alloc: mem.Allocator) ![]const IFInfoAndLink {
+    // Request
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        nl.RequestRaw,
+        .{
+            .nlh = .{
+                .len = 20,
+                .type = c(RTM).GETLINK,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = 0,
+        },
+        &.{},
+    );
+    defer posix.close(nl_sock);
+    // Response
+    const buf_size: u32 = 64_000;
+    try posix.setsockopt(
+        nl_sock, 
+        posix.SOL.SOCKET, 
+        nl.NETLINK_OPT.RX_RING, 
+        mem.toBytes(buf_size)[0..],
+    );
+    return try nl.handleType(
+        alloc,
+        nl_sock,
+        RequestIFI,
+        IFInfoAndLink,
+        parseIFInfoAndLink,
+        .{ .nl_type = c(RTM).NEWLINK },
+    );
+}
+
+/// Interface Address w/ Interface Info
+pub const IFInfoAndAddr = struct {
+    info: InterfaceAddressMessage,
+    addr: InterfaceAddress,
+};
+/// Parse the given `data` into an `IFInfoAndAddr`.
+pub fn parseIFInfoAndAddr(alloc: mem.Allocator, data: []const u8) !IFInfoAndAddr {
+    const info = try nl.parse.fromBytes(alloc, InterfaceAddressMessage, data[0..@sizeOf(InterfaceAddressMessage)]);
+    const addr = try nl.parse.fromBytes(alloc, InterfaceAddress, data[@sizeOf(InterfaceAddressMessage)..]);
+    return .{ .info = info, .addr = addr };
+}
+/// Get the Interface IP Addresses for the provided Interface (`if_index`).
+pub fn getIFAddr(alloc: mem.Allocator, if_index: i32) ![]const IFInfoAndAddr {
+    // Request
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        RequestIFI,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = c(RTM).GETADDR,
+                .flags = c(nl.NLM_F).REQUEST,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .family = nl.AF.UNSPEC,
+                .index = if_index,
+                .type = 0,
+                .change = 0,
+                .flags = 0,
+            },
+        },
+        &.{},
+    );
+    defer posix.close(nl_sock);
+    return try handleIFAddrs(alloc, nl_sock);
+}
+
+/// Get All Interface Addresses w/ their Interface Info
+pub fn getAllIFAddrs(alloc: mem.Allocator) ![]const IFInfoAndAddr {
+    // Request
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.ROUTE,
+        nl.RequestRaw,
+        .{
+            .nlh = .{
+                .len = 20,
+                .type = c(RTM).GETADDR,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = 0,
+        },
+        &.{},
+    );
+    defer posix.close(nl_sock);
+    return try handleIFAddrs(alloc, nl_sock);
+}
+
+/// Handle Interface Address Responses
+pub fn handleIFAddrs(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const IFInfoAndAddr {
+    return try nl.handleType(
+        alloc,
+        nl_sock,
+        RequestIFA,
+        IFInfoAndAddr,
+        parseIFInfoAndAddr,
+        .{ .nl_type = c(RTM).NEWADDR },
+    );
+    //// Response
+    //const buf_size: u32 = 64_000;
+    //try posix.setsockopt(
+    //    nl_sock, 
+    //    posix.SOL.SOCKET, 
+    //    nl.NETLINK_OPT.RX_RING, 
+    //    mem.toBytes(buf_size)[0..],
+    //);
+    //// Parse Addresses 
+    //var addr_buf = try std.ArrayListUnmanaged(IFInfoAndAddress).initCapacity(alloc, 0);
+    //errdefer addr_buf.deinit(alloc);
+    //// - Handle Multi-part
+    //multiPart: while (true) {
+    //    var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
+    //    const resp_len = posix.recv(
+    //        nl_sock,
+    //        resp_buf[0..],
+    //        0,
+    //    ) catch |err| switch (err) {
+    //        error.WouldBlock => return error.NoAddressesFound,
+    //        else => return err,
+    //    };
+    //    // Handle Dump
+    //    var msg_iter: nl.parse.Iterator(nl.MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
+    //    while (msg_iter.next()) |msg| {
+    //        switch (msg.hdr.type) {
+    //            c(nl.NLMSG).DONE => break :multiPart,
+    //            c(RTM).NEWADDR => {
+    //                const info = try nl.parse.fromBytes(alloc, InterfaceAddressMessage, msg.data[0..@sizeOf(InterfaceAddressMessage)]);
+    //                const addr = try nl.parse.fromBytes(alloc, InterfaceAddress, msg.data[@sizeOf(InterfaceAddressMessage)..]);
+    //                try addr_buf.append(alloc, .{ .info = info, .addr = addr });
+    //            },
+    //            else => return error.NonIFAddrResponse,
+    //        }
+    //    }
+    //}
+    //return try addr_buf.toOwnedSlice(alloc);
 }
 
 /// Set the provided Interface (`if_index`) to the Up or Down State (`state`).
@@ -958,8 +1500,8 @@ pub const DeviceInfo = struct {
                 if (nl_resp_hdr.type == c(nl.NLMSG).DONE) break :respL3;
                 if (nl_resp_hdr.type == c(RTM).NEWADDR) ipAddr: {
                     start = end;
-                    end += @sizeOf(InterfaceAddress);
-                    const ifa_msg = mem.bytesToValue(InterfaceAddress, resp_buf[start..end]);
+                    end += @sizeOf(InterfaceAddressMessage);
+                    const ifa_msg = mem.bytesToValue(InterfaceAddressMessage, resp_buf[start..end]);
                     if (ifa_msg.index != if_index) break :ipAddr;
                     start = end;
                     end += nl.attr_hdr_len;

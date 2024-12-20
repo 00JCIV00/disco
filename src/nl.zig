@@ -21,6 +21,9 @@ pub const _80211 = @import("netlink/_80211.zig");
 pub const generic = @import("netlink/generic.zig");
 pub const route = @import("netlink/route.zig");
 
+pub const utils = @import("utils.zig");
+const c = utils.toStruct;
+
 /// Netlink Socket Options
 pub const NETLINK_OPT = struct {
     pub const ADD_MEMBERSHIP: u32 = 1;
@@ -60,6 +63,9 @@ pub fn Request(MsgT: type) type {
         msg: MsgT,
     };
 }
+
+/// Raw Request w/ no Family Message Header
+pub const RequestRaw = Request(u32);
 
 /// Netlink Attribute Header
 pub const AttributeHeader = extern struct {
@@ -223,7 +229,6 @@ pub fn reqOnSock(
     );
 }
 
-
 /// Handle a Netlink ACK Response.
 pub fn handleAck(nl_sock: posix.socket_t) !void {
     var resp_idx: usize = 0;
@@ -267,5 +272,79 @@ pub fn handleAck(nl_sock: posix.socket_t) !void {
     return error.NetlinkAckError;
 }
 
+/// Config for Handling Responses
+pub const HandleConfig = struct {
+    /// Netlink Header Type / Family ID
+    nl_type: u16,
+    /// Family Command Value (only applies for Generic Netlink Headers)
+    fam_cmd: ?u8 = null,
+};
+
+/// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`).
+pub fn handleType(
+    alloc: mem.Allocator, 
+    nl_sock: posix.socket_t, 
+    /// This must be a derivative of the `Request()` Type.
+    ResponseHdrT: type,
+    ResponseT: type,
+    /// Function to Parse data. (Typically, this will be `nl.parse.fromBytes`.)
+    parseFn: *const fn(mem.Allocator, []const u8) anyerror!ResponseT,
+    config: HandleConfig,
+) ![]const ResponseT {
+    const buf_size: u32 = 16_000;
+    try posix.setsockopt(
+        nl_sock, 
+        posix.SOL.SOCKET, 
+        NETLINK_OPT.RX_RING, 
+        mem.toBytes(buf_size)[0..],
+    );
+    const FamHdrT = comptime famHdrT: {
+        for (meta.fields(ResponseHdrT)) |field| {
+            if (mem.eql(u8, field.name, "msg")) break :famHdrT field.type;
+        } else @compileError(fmt.comptimePrint("The Type `{s}` is not a `Request` Type.", .{ @typeName(ResponseHdrT) }));
+    };
+    const fam_hdr_len = @sizeOf(FamHdrT);
+    // Parse Links
+    var resp_list = try std.ArrayListUnmanaged(ResponseT).initCapacity(alloc, 0);
+    errdefer resp_list.deinit(alloc);
+    // - Handle Multi-part
+    multiPart: while (true) {
+        var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
+        const resp_len = posix.recv(
+            nl_sock,
+            resp_buf[0..],
+            0,
+        ) catch |err| switch (err) {
+            error.WouldBlock => return error.NoInterfacesFound,
+            else => return err,
+        };
+        if (resp_len == 0) break :multiPart;
+        // Handle Dump
+        var msg_iter: parse.Iterator(MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
+        while (msg_iter.next()) |msg| {
+            if (msg.hdr.type == c(NLMSG).DONE) break :multiPart;
+            const match_hdr = msg.hdr.type == config.nl_type;
+            const match_cmd = matchCmd: {
+                const cmd = config.fam_cmd orelse break :matchCmd true;
+                inline for (meta.fields(FamHdrT)) |field| {
+                    if (mem.eql(u8, field.name, "cmd")) {
+                        const fam_hdr = mem.bytesToValue(FamHdrT, msg.data[0..fam_hdr_len]);
+                        break :matchCmd @field(fam_hdr, field.name) == cmd; // Wtf Zig? This is convoluted!
+                   }
+                }
+                log.err("The Generic Family Command '{d}' was provided for the non-Generic Header '{s}'", .{ cmd, @typeName(FamHdrT) });
+                return error.GenericHeaderRequired;
+            };
+            if (!(match_hdr and match_cmd)) continue;
+            const instance = parseFn(alloc, msg.data) catch |err| {
+                log.warn("Parsing Error: {s}", .{ @errorName(err) });
+                continue;
+            };
+            try resp_list.append(alloc, instance);
+        }
+    }
+
+    return try resp_list.toOwnedSlice(alloc);
+}
 
 

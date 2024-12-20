@@ -238,6 +238,7 @@ pub fn baseFromBytes(
             HdrT orelse nl.AttributeHeader,
         };
     };
+    //log.debug("T: {s}, E: {s}", .{ @typeName(T), @typeName(E) });
     const hdr_len = @sizeOf(HdrT);
     //log.debug("---\nConverting to '{s}'. Hdr Len: {d}. Align: '{}'", .{ @typeName(T), hdr_len, HdrT.nl_align });
 
@@ -245,10 +246,13 @@ pub fn baseFromBytes(
     var start: usize = 0;
     var end: usize = hdr_len;
     while (end < bytes.len) {
-        const hdr: *const HdrT = @alignCast(@ptrCast(bytes[start..end]));
-        const tag: E = meta.intToEnum(E, hdr.type) catch meta.stringToEnum(E, "__UNKNOWN__") orelse return error.UnknownTag;
+        const hdr = mem.bytesToValue(HdrT, bytes[start..end]);
+        const tag: E = meta.intToEnum(E, hdr.type) catch meta.stringToEnum(E, "__UNKNOWN__") orelse {
+            log.err("The Tag # '{d}' does not match a field in the '{s}' Enum.", .{ hdr.type, @typeName(E) });
+            return error.UnknownTag;
+        };
         const diff = if (HdrT.full_len) hdr.len -| hdr_len else hdr.len;
-        //log.debug("Len: {d}, Type: {s}", .{ hdr.len, @tagName(tag) });
+        //log.debug("Len: {d: <5} Num: {d: <5} Type: {s}", .{ hdr.len, hdr.type, @tagName(tag) });
         //log.debug(" - Start: {d}B, End: {d}B", .{ start, end + diff });
         start = end;
         end += diff;
@@ -508,7 +512,8 @@ pub const IteratorConfig = struct {
 /// Iterator
 pub fn Iterator(
     HdrT: type,
-    comptime iter_config: IteratorConfig) type {
+    comptime iter_config: IteratorConfig
+) type {
     return struct {
         const config = iter_config;
         const hdr_len = @sizeOf(HdrT);
@@ -526,7 +531,7 @@ pub fn Iterator(
             const iter_len = @field(hdr, config.len_field);
             start = end;
             end = self.index + iter_len;
-            if (self.bytes.len -| end == 0) return null;
+            //if (self.bytes.len -| end == 0) return null;
             if (!is_peek) self.index = end;
             return .{ .hdr = hdr, .data = self.bytes[start..end] };
         }
