@@ -10,6 +10,9 @@ pub fn build(b: *std.Build) void {
     // Vaxis
     const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
     const vaxis_mod = vaxis_dep.module("vaxis");
+    // Zeit
+    const zeit_dep = b.dependency("zeit", .{ .target = target, .optimize = optimize });
+    const zeit_mod = zeit_dep.module("zeit");
     // OUI Table
     const oui_mod = b.createModule(.{ .root_source_file = b.path("resources/oui_lookup") });
 
@@ -21,6 +24,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("cova", cova_mod);
     exe.root_module.addImport("vaxis", vaxis_mod);
+    exe.root_module.addImport("zeit", zeit_mod);
     exe.root_module.addImport("oui_table", oui_mod);
     b.installArtifact(exe);
 

@@ -22,12 +22,12 @@ pub const Core = struct {
     /// Timer
     _timer: time.Timer,
     /// Interval
-    interval: usize = 250 * time.ns_per_ms,
+    interval: usize = 2500 * time.ns_per_ms,
     /// Active Status of the overall program.
     active: bool = false,
     /// Interface Maps
     if_maps: interface.InterfaceMaps,
-    /// Interface Threads
+    /// Interface Thread
     if_thread: ?std.Thread = null,
 
 
@@ -172,7 +172,7 @@ pub fn ThreadHashMap(K: type, V: type) type {
         /// Hash Map
         _map: MapT = .{},
 
-        /// Deinitialize
+        /// Deinitialize this ThreadHashMap
         pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
             self._mutex.lock();
             defer self._mutex.unlock();
@@ -239,6 +239,16 @@ pub fn ThreadHashMap(K: type, V: type) type {
             self._mutex.lock();
             defer self._mutex.unlock();
             return try self._map.fetchPut(alloc, key, val);
+        }
+
+        /// Remove
+        pub fn remove(
+            self: *@This(),
+            key: K,
+        ) bool {
+            self._mutex.lock();
+            defer self._mutex.unlock();
+            return self._map.remove(key);
         }
 
         /// Sort

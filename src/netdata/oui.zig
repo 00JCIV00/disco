@@ -29,7 +29,7 @@ pub fn findOUI(
     oui_kind: OUI_Kind,
     device_kind: DeviceKind,
     mac: [6]u8,
-) []const u8 {
+) ![]const u8 {
     const rand_nib: u4 = @truncate(mac[0]);
     if (mem.indexOfScalar(u8, ll_rand_mac_nibbles, rand_nib) != null and device_kind == .station)
         return "[Random MAC]";

@@ -11,6 +11,10 @@
             .url = "https://github.com/00JCIV00/libvaxis/archive/main.tar.gz",
             .hash = "1220b9cf102d73e0dbf7de594dcd7847fec09732fd4470736d060c40531b799ea643",
         },
+        .zeit = .{
+            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.4.4.tar.gz",
+            .hash = "12204b653c90b503f89e2f1a73c4754b83fb7275c100c81872deaca12c9f17e334ec",
+        },
     },
 
     .paths = .{
