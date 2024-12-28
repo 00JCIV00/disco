@@ -2,7 +2,6 @@
 
 const std = @import("std");
 
-const l5 = @import("netdata/l5.zig");
 const crypto = std.crypto;
 const log = std.log;
 const mem = std.mem;
@@ -10,7 +9,8 @@ const net = std.net;
 const posix = std.posix;
 const os = std.os;
 
-const netdata = @import("netdata.zig");
+const netdata = @import("../netdata.zig");
+const l5 = netdata.l5;
 const address = netdata.address;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
@@ -20,7 +20,7 @@ const UDP = netdata.l4.UDP;
 const eth_len = @sizeOf(Eth.Header);
 const ip_len = @sizeOf(IP.NetHeader);
 const udp_len = @sizeOf(UDP.Header);
-const utils = @import("utils.zig");
+const utils = @import("../utils.zig");
 const c = utils.toStruct;
 
 

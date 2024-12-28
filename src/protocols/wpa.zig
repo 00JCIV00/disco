@@ -12,9 +12,9 @@ const posix = std.posix;
 const Md5 = crypto.hash.Md5;
 const Sha1 = crypto.hash.Sha1;
 
-const nl = @import("nl.zig");
-const netdata = @import("netdata.zig");
-const utils = @import("utils.zig");
+const nl = @import("../netlink.zig");
+const netdata = @import("../netdata.zig");
+const utils = @import("../utils.zig");
 
 const c = utils.toStruct;
 const l2 = netdata.l2;
@@ -23,6 +23,7 @@ pub const Protocol = enum {
     open,
     wep,
     wpa2,
+    wpa3,
 };
 
 /// Calculate a WEP Key or WPA Pre-Shared Key (PSK) using MD5 or PBKDF2 with HMAC-SHA1.
