@@ -9,7 +9,7 @@ const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
 
-const nl = @import("../nl.zig");
+const nl = @import("../netlink.zig");
 
 /// Get an Instance of a Primitive Type (`T`) from the given `bytes`.
 pub fn primFromBytes(T: type, bytes: []const u8) !T {
@@ -494,6 +494,20 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
             return error.UnsupportedType;
         }
     }
+}
+
+/// Create a "Type, Length, Value" (TLV) Type (`OutT`) instance from an `instance` of the provided Type (`InT`).
+/// Note, the OutT must possess `.type`, `.len`, and `.data` fields.
+/// User must free the `.data` bytes of the resulting `OutT` instance.
+pub fn toTLV(alloc: mem.Allocator, InT: type, instance: InT, OutT: type) !OutT {
+    const HdrT = meta.FieldType(OutT, .hdr);
+    const hdr_len = @sizeOf(HdrT);
+    const tlv_bytes = try toBytes(alloc, InT, instance);
+    defer alloc.free(tlv_bytes);
+    return .{
+        .hdr = mem.bytesToValue(HdrT, tlv_bytes[0..hdr_len]),
+        .data = try alloc.dupe(u8, tlv_bytes[hdr_len..]),
+    };
 }
 
 ///// Write the provided Instance to Netlink Bytes using the provided `writer`.

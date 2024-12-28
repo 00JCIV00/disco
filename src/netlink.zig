@@ -21,7 +21,7 @@ pub const _80211 = @import("netlink/_80211.zig");
 pub const generic = @import("netlink/generic.zig");
 pub const route = @import("netlink/route.zig");
 
-pub const utils = @import("utils.zig");
+const utils = @import("utils.zig");
 const c = utils.toStruct;
 
 /// Netlink Socket Options
@@ -152,7 +152,18 @@ pub const NLMSG = enum(u32) {
 pub fn initSock(nl_sock_kind: comptime_int, timeout: posix.timeval) !posix.socket_t {
     const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_kind);
     errdefer posix.close(nl_sock);
-    try posix.setsockopt(nl_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, mem.toBytes(timeout)[0..]);
+    try posix.setsockopt(
+        nl_sock,
+        posix.SOL.SOCKET,
+        posix.SO.RCVTIMEO,
+        mem.toBytes(timeout)[0..],
+    );
+    try posix.setsockopt(
+        nl_sock,
+        posix.SOL.NETLINK,
+        NETLINK_OPT.NO_ENOBUFS,
+        mem.toBytes(@as(u32, 1))[0..],
+    );
     return nl_sock;
 }
 
@@ -260,6 +271,7 @@ pub fn handleAck(nl_sock: posix.socket_t) !void {
                     .ADDRNOTAVAIL => return error.ADDRNOTAVAIL,
                     .SRCH => return error.SRCH,
                     .NETUNREACH => return error.NETUNREACH,
+                    .INPROGRESS => return error.INPROGRESS,
                     else => |err| {
                         log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
                         return error.OSError;
@@ -291,7 +303,7 @@ pub fn handleType(
     parseFn: *const fn(mem.Allocator, []const u8) anyerror!ResponseT,
     config: HandleConfig,
 ) ![]const ResponseT {
-    const buf_size: u32 = 16_000;
+    const buf_size: u32 = 64_000;
     try posix.setsockopt(
         nl_sock, 
         posix.SOL.SOCKET, 
@@ -310,14 +322,11 @@ pub fn handleType(
     // - Handle Multi-part
     multiPart: while (true) {
         var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
-        const resp_len = posix.recv(
+        const resp_len = try posix.recv(
             nl_sock,
             resp_buf[0..],
             0,
-        ) catch |err| switch (err) {
-            error.WouldBlock => return error.NoInterfacesFound,
-            else => return err,
-        };
+        );
         if (resp_len == 0) break :multiPart;
         // Handle Dump
         var msg_iter: parse.Iterator(MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
@@ -341,6 +350,7 @@ pub fn handleType(
                 continue;
             };
             try resp_list.append(alloc, instance);
+            //log.debug("Parsed {d} '{s}'", .{ resp_list.items.len, @typeName(ResponseT) });
         }
     }
 

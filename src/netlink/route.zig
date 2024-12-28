@@ -10,7 +10,7 @@ const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
 
-const nl = @import("../nl.zig");
+const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
 const netdata = @import("../netdata.zig");
 const address = netdata.address;

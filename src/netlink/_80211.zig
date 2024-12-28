@@ -13,19 +13,19 @@ const os = std.os;
 const posix = std.posix;
 const time = std.time;
 
-const nl = @import("../nl.zig");
+const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 
 /// Control Info Map
-var ctrl_info: ?nl.generic.CtrlInfo = null;
+/// Note, this should be treated as immutable!
+pub var ctrl_info: ?nl.generic.CtrlInfo = null;
 /// Get Netlink 80211 Control Info
 /// This will be stored in a Global Variable that should be deinialized with `deinitCtrlInfo()`.
 pub fn initCtrlInfo(alloc: mem.Allocator) !void {
     log.debug("Collecting NL80211 Control Info...", .{});
-    defer log.debug("NL80211 Control Info Collected!", .{});
-
     ctrl_info = nl.generic.CtrlInfo.init(alloc, "nl80211") catch return error.NetlinkFamilyNotFound;
+    log.debug("NL80211 Control Info Collected!", .{});
 }
 /// Deinitialize Control Info
 pub fn deinitCtrlInfo(alloc: mem.Allocator) void {
@@ -33,9 +33,26 @@ pub fn deinitCtrlInfo(alloc: mem.Allocator) void {
     info.deinit(alloc);
 }
 
+/// Multicast groups for nl80211 events.
+pub const MCGRP = enum(u16) {
+    /// Configuration events
+    CONFIG = 0,
+    /// Scan-related events
+    SCAN = 1,
+    /// Regulatory changes
+    REG = 2,
+    /// MLME events
+    MLME = 3,
+    /// Vendor events
+    VENDOR = 4,
+    /// NAN events
+    NAN = 5,
+    /// Statistics updates
+    STATS = 6,
+};
 
 
-// Constants
+// CONSTANTS
 /// Command
 pub const CMD = enum(u8) {
     UNSPEC = 0,
@@ -894,13 +911,62 @@ pub const ScanResults = struct {
 
     GENERATION: ?u32 = null,
     WIPHY: ?u32 = null,
-    IFINDEX: u32,
+    IFINDEX: i32,
     WDEV: u64,
 
     BSS: ?BasicServiceSet = null,
     SCAN_SSIDS: ?[]const u8 = null,
     SCAN_FREQUENCIES: ?[]const u8 = null,
     SCAN_FLAGS: ?[]const u8 = null,
+};
+
+/// Scheduled Scan Match
+pub const SCHED_SCAN_MATCH = enum(u16) {
+    /// Matches networks with the specified SSID
+    SSID,
+    /// Matches a specific BSSID
+    BSSID,
+    /// Limits the matching to specific frequencies (in MHz)
+    FREQUENCIES,
+    /// Matches only networks with a signal strength above this threshold (in dBm)
+    RSSI,
+    /// Filters networks based on security type (e.g., Open, WPA2, WPA3)
+    SECURITY_TYPE,
+};
+
+/// Scheduled Scan Match Info
+pub const SchedScanMatch = struct {
+    pub const AttrE = SCHED_SCAN_MATCH;
+
+    /// Matches networks with the specified SSID
+    SSID: ?[]const u8 = null,
+    /// Matches a specific BSSID
+    BSSID: ?[6]u8 = null,
+    /// Limits the matching to specific frequencies (in MHz)
+    FREQUENCIES: ?[]u32 = null,
+    /// Matches only networks with a signal strength above this threshold (in dBm)
+    RSSI: ?i32 = null,
+    /// Filters networks based on security type (e.g., Open, WPA2, WPA3)
+    /// Use an enum for specific security values if needed.
+    SECURITY_TYPE: ?u32 = null, 
+};
+
+/// Attributes for configuring a scheduled scan plan.
+pub const SCHED_SCAN_PLAN = enum(u16) {
+    /// Scan interval in seconds.
+    INTERVAL,
+    /// Duration of the scan plan in seconds.
+    DURATION,
+};
+
+/// Configuration for a single scheduled scan plan.
+pub const SchedScanPlan = struct {
+    pub const AttrE = SCHED_SCAN_PLAN;
+
+    /// Scan interval in seconds.
+    INTERVAL: ?u16 = null,
+    /// Duration of the scan plan in seconds.
+    DURATION: ?u16 = null,
 };
 
 /// Basic Service Set (BSS)
@@ -963,10 +1029,10 @@ pub const BSS = enum(u32) {
 pub const BasicServiceSet = struct {
     pub const AttrE = BSS;
 
-    /// Optional BSSID (MAC address)
-    BSSID: ?[6]u8 = null,
-    /// Optional frequency in MHz
-    FREQUENCY: ?u32 = null,
+    /// BSSID (MAC address)
+    BSSID: [6]u8,
+    /// Frequency in MHz
+    FREQUENCY: u32,
     /// Optional TSF timestamp
     TSF: ?u64 = null,
     /// Optional beacon interval in time units
@@ -976,9 +1042,9 @@ pub const BasicServiceSet = struct {
     /// Optional information elements (raw data)
     INFORMATION_ELEMENTS: ?InformationElements = null,
     /// Optional signal strength in milliBel milliwatts (mBm)
-    SIGNAL_MBM: ?u32 = null,
+    SIGNAL_MBM: ?i32 = null,
     /// Optional signal strength in unspecified units
-    SIGNAL_UNSPEC: ?u32 = null,
+    SIGNAL_UNSPEC: ?i32 = null,
     /// Optional BSS status (e.g., associated, authenticated)
     STATUS: ?u32 = null,
     /// Optional time since BSS was last seen (in milliseconds)
@@ -1871,7 +1937,7 @@ pub const Frequencies = struct {
 };
 
 
-
+// FUNCTIONS
 /// Get the corresponding Channel of the provided Frequency (`freq_mhz`).
 pub fn channelFromFreq(freq_mhz: usize) !usize {
     const channel = switch (freq_mhz) {
@@ -2393,26 +2459,24 @@ pub fn scanSSID(
         17...32 => 32,
         else => return error.SSIDTooLong,
     });
+    defer alloc.free(ssid_data);
     @memset(ssid_data[0..], 0);
     ssid_data[0] = @intCast(ssid.len + 4);
     ssid_data[2] = @intCast(ssid_data.len / 8 -| 1);
     @memcpy(ssid_data[(ssid_data.len - ssid.len)..], ssid);
     var attrs_buf = try std.ArrayListUnmanaged(nl.Attribute).initCapacity(alloc, 3);
+    defer attrs_buf.deinit(alloc);
     try attrs_buf.appendSlice(
         alloc,
         &.{
-            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = try alloc.dupe(u8, mem.toBytes(if_index)[0..]) },
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
             .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
             .{
                 .hdr = .{ .type = c(ATTR).SCAN_FLAGS },
-                .data = try alloc.dupe(u8, mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH | c(SCAN_FLAG).RANDOM_SN)[0..]),
+                .data = mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH)[0..], //| c(SCAN_FLAG).RANDOM_SN)[0..],
             },
         },
     );
-    defer {
-        for (attrs_buf.items) |attr| alloc.free(attr.data);
-        attrs_buf.deinit(alloc);
-    }
     if (config.freqs) |_freqs| addFreqs: {
         if (_freqs.len == 0) break :addFreqs;
         log.debug("Adding Scan Freqs:", .{});
@@ -2481,12 +2545,12 @@ pub fn scanSSID(
             nl.NETLINK_OPT.RX_RING, 
             mem.toBytes(buf_size)[0..],
         );
-        try posix.setsockopt(
-            res_sock,
-            posix.SOL.NETLINK,
-            nl.NETLINK_OPT.ADD_MEMBERSHIP,
-            mem.toBytes(info.MCAST_GROUPS.get("scan").?)[0..],
-        );
+        //try posix.setsockopt(
+        //    res_sock,
+        //    posix.SOL.NETLINK,
+        //    nl.NETLINK_OPT.ADD_MEMBERSHIP,
+        //    mem.toBytes(info.MCAST_GROUPS.get("scan").?)[0..],
+        //);
         var resp_timer = try time.Timer.start();
         var tried_get = false;
         var resp_count: usize = 1;
@@ -2573,7 +2637,7 @@ pub fn scanSSID(
                 if (results.BSS) |bss| {
                     if (bss.INFORMATION_ELEMENTS) |ies| {
                         if (ies.SSID) |scan_ssid| {
-                            log.debug("Scan Result SSID: {s} | Ch: {d}", .{ scan_ssid, try channelFromFreq(bss.FREQUENCY.?) });
+                            log.debug("Scan Result SSID: {s} | Ch: {d}", .{ scan_ssid, try channelFromFreq(bss.FREQUENCY) });
                             if (mem.eql(u8, scan_ssid, ssid)) return results;
                         }
                     }
@@ -2584,6 +2648,244 @@ pub fn scanSSID(
     }
     return error.NoScanResults;
 }
+
+/// Trigger Scan Config
+pub const TriggerScanConfig = struct {
+    /// Flags
+    flags: u32 = c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH, // | c(SCAN_FLAG).RANDOM_SN,
+    /// Frequencies (in MHz) to scan.
+    freqs: ?[]const u32 = null,
+    /// SSIDs to scan for.
+    ssids: ?[]const []const u8 = null,
+};
+
+/// Trigger a Scan on the provided Interface (`if_index`) using the provided Trigger Scan Config (`config`).
+pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfig) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    var attrs_buf = try std.ArrayListUnmanaged(nl.Attribute).initCapacity(alloc, 2);
+    defer attrs_buf.deinit(alloc);
+    try attrs_buf.appendSlice(
+        alloc,
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).SCAN_FLAGS }, .data = mem.toBytes(config.flags)[0..], },
+        },
+    );
+    var freq_attrs_bytes: ?[]const u8 = null;
+    defer if (freq_attrs_bytes) |fab| alloc.free(fab);
+    if (config.freqs) |freqs| addFreqs: {
+        if (freqs.len == 0) break :addFreqs;
+        var freq_attrs_buf: std.ArrayListUnmanaged(u8) = .{};
+        errdefer freq_attrs_buf.deinit(alloc);
+        for (freqs) |freq| {
+            const freq_attr_hdr: nl.AttributeHeader = .{ .type = c(ATTR).WIPHY_FREQ, .len = 8 };
+            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq_attr_hdr)[0..]);
+            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq)[0..]);
+        }
+        freq_attrs_bytes = try freq_attrs_buf.toOwnedSlice(alloc);
+        try attrs_buf.append(alloc, .{
+            .hdr = .{
+                .type = c(ATTR).SCAN_FREQUENCIES,
+                .len = @intCast(nl.attr_hdr_len + freq_attrs_bytes.?.len),
+            },
+            .data = freq_attrs_bytes.?,
+        });
+    }
+    var ssid_attrs_bytes: ?[]const u8 = null;
+    defer if (ssid_attrs_bytes) |sab| alloc.free(sab);
+    if (config.ssids) |ssids| addSSIDs: {
+        if (ssids.len == 0) break :addSSIDs;
+        var ssid_attrs_buf: std.ArrayListUnmanaged(u8) = .{};
+        errdefer ssid_attrs_buf.deinit(alloc);
+        for (ssids) |ssid| {
+            const attr_len = mem.alignForward(u16, @intCast(nl.attr_hdr_len + ssid.len), 4);
+            try ssid_attrs_buf.appendSlice(alloc, mem.toBytes(@as(u16, 0))[0..]);
+            try ssid_attrs_buf.appendSlice(alloc, mem.toBytes(attr_len)[0..]);
+            try ssid_attrs_buf.appendSlice(alloc, ssid);
+            const align_len = mem.alignForward(usize, attr_len, 4) - attr_len;
+            try ssid_attrs_buf.appendNTimes(alloc, 0, align_len);
+        }
+        ssid_attrs_bytes = try ssid_attrs_buf.toOwnedSlice(alloc);
+        try attrs_buf.append(alloc, .{
+            .hdr = .{
+                .type = c(ATTR).SCAN_SSIDS,
+                .len = @intCast(nl.attr_hdr_len + ssid_attrs_bytes.?.len),
+            },
+            .data = ssid_attrs_bytes.?,
+        });
+    }
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).TRIGGER_SCAN,
+                .version = 0,
+            },
+        },
+        attrs_buf.items,
+    );
+    defer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
+/// Scheduled Scan Config
+pub const SchedScanConfig = struct {
+    /// Interval (in milliseconds) to start each scan.
+    interval: u32 = 2500,
+    /// Duration (in milliseconds) of each scan cycle.
+    duration: u32 = 5000,
+    /// Flags
+    flags: u32 = 0, //c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH | c(SCAN_FLAG).RANDOM_SN,
+    /// Frequencies (in MHz) to scan.
+    freqs: ?[]const u32 = null,
+    /// Match Filters
+    schedule: ?SchedScanMatch = null,
+    /// Plans (TODO)
+    plans: ?[]const SchedScanPlan = null,
+};
+
+/// Start a Scheduled Scan for the provided Interface (`if_index`) using the provided Scheduled Scan Config (`config`).
+pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConfig) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    var attrs_buf = try std.ArrayListUnmanaged(nl.Attribute).initCapacity(alloc, 3);
+    defer attrs_buf.deinit(alloc);
+    try attrs_buf.appendSlice(
+        alloc,
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).SCHED_SCAN_INTERVAL }, .data = mem.toBytes(config.interval)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).SCAN_FLAGS }, .data = mem.toBytes(config.flags)[0..] },
+        },
+    );
+    const scan_freqs: ?[]const u8 = scanFreqs: {
+        if (config.freqs) |freqs| {
+            var freqs_buf = std.ArrayListUnmanaged(u8){};
+            errdefer freqs_buf.deinit(alloc);
+            for (freqs) |freq| try freqs_buf.appendSlice(alloc, mem.toBytes(freq)[0..]);
+            const scan_freqs = try freqs_buf.toOwnedSlice(alloc);
+            try attrs_buf.append(alloc, .{ .hdr = .{ .type = c(ATTR).SCAN_FREQUENCIES }, .data = scan_freqs });
+            break :scanFreqs scan_freqs;
+        }
+        break :scanFreqs null;
+    };
+    defer if (scan_freqs) |freqs| alloc.free(freqs);
+    const scan_sched_attr: ?nl.Attribute = scanSched: {
+        if (config.schedule) |sched| {
+            const scan_sched_attr = try nl.parse.toTLV(alloc, SchedScanMatch, sched, nl.Attribute);
+            try attrs_buf.append(alloc, scan_sched_attr);
+            break :scanSched scan_sched_attr;
+        }
+        break :scanSched null;
+    };
+    defer if (scan_sched_attr) |sched_attr| alloc.free(sched_attr.data);
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK, // | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).START_SCHED_SCAN,
+                .version = 0,
+            },
+        },
+        attrs_buf.items,
+    );
+    defer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
+/// Stop a Scheduled Scan for the provided Interface (`if_index`).
+pub fn stopSchedScan(alloc: mem.Allocator, if_index: i32) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const nl_sock = try nl.request(
+        alloc,
+        nl.NETLINK.GENERIC,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).STOP_SCHED_SCAN,
+                .version = 0,
+            },
+        },
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+        }
+    );
+    try nl.handleAck(nl_sock);
+}
+
+/// Request Scan Results from Netlink.
+pub fn getScan(alloc: mem.Allocator, if_index: ?i32, nl_sock: ?posix.socket_t) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const req_sock = nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 3, .tv_usec = 0 });
+    try nl.reqOnSock(
+        alloc,
+        req_sock,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
+                .seq = 12321,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).GET_SCAN,
+                .version = 0,
+            },
+        },
+        if (if_index) |idx| &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(idx)[0..] },
+        }
+        else &.{},
+    );
+    try nl.handleAck(req_sock);
+    if (nl_sock == null) posix.close(req_sock);
+}
+/// Parse the provided `bytes` to a ScanResults instance.
+pub fn parseScanResults(alloc: mem.Allocator, bytes: []const u8) !ScanResults {
+    return try nl.parse.fromBytes(alloc, ScanResults, bytes[@sizeOf(nl.generic.Header)..]);
+}
+/// Handle WiFi Scan Results.
+pub fn handleScanResults(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const ScanResults {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleType(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        ScanResults,
+        parseScanResults,
+        .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_SCAN_RESULTS,
+        },
+    );
+}
+
 
 /// Determine Authentication Algorithm from the provided `scan_results`.
 pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
@@ -2736,7 +3038,7 @@ pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
 
 /// Derive HT and VHT Capability Info from the provided `bss` and `wiphy`
 pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, ?[12]u8 } {
-    const ie_freq = bss.FREQUENCY orelse return error.MissingFreq;
+    const ie_freq = bss.FREQUENCY; // orelse return error.MissingFreq;
     const bands = wiphy.WIPHY_BANDS orelse return error.MissingBands;
     //const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
     for (bands) |band| {
@@ -2781,8 +3083,8 @@ pub fn authWPA2(
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const auth_type = determineAuthAlg(scan_results);
     const bss = scan_results.BSS orelse return error.MissingBSS;
-    const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
-    const bssid = bss.BSSID orelse return error.MissingBSSID;
+    const wiphy_freq = bss.FREQUENCY; // orelse return error.MissingFreq;
+    const bssid = bss.BSSID; // orelse return error.MissingBSSID;
     try nl.reqOnSock(
         alloc, 
         nl_sock,
@@ -2844,9 +3146,9 @@ pub fn assocWPA2(
     const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy) orelse return error.MissingOperatingClasses;
     defer alloc.free(op_classes);
     const bss = scan_results.BSS orelse return error.MissingBSS;
-    const wiphy_freq = bss.FREQUENCY orelse return error.MissingFreq;
+    const wiphy_freq = bss.FREQUENCY; // orelse return error.MissingFreq;
     log.debug("Ch: {d}, Freq: {d}MHz", .{ try channelFromFreq(wiphy_freq), wiphy_freq });
-    const bssid = bss.BSSID orelse return error.MissingBSSID;
+    const bssid = bss.BSSID; // orelse return error.MissingBSSID;
     const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
     const rsn = ies.RSN orelse return error.MissingRSN;
     const ext_capa = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10);
@@ -3125,6 +3427,8 @@ pub const ConnectConfig = struct {
     retries: usize = 3,
     /// Base delay (in milliseconds) following asynchronous Netlink function calls.
     delay: usize = 30,
+    /// Scan Results if done separately.
+    scan_results: ?ScanResults = null,
 };
 /// Connect to a WPA2 Network
 pub fn connectWPA2(
@@ -3132,10 +3436,10 @@ pub fn connectWPA2(
     if_index: i32, 
     ssid: []const u8, 
     pmk: [32]u8,
-    handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!struct{ [48]u8, [16]u8 },
+    /// A function to handle the 4-way Handshake and return both the PTK (`[48]u8`) and GTK (`[16]u8`).
+    handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!struct { [48]u8, [16]u8 },
     config: ConnectConfig,
 ) !posix.socket_t {
-    var attempts: usize = 0;
     //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     try takeOwnership(if_index);
     time.sleep(config.delay * time.ns_per_ms);
@@ -3154,23 +3458,24 @@ pub fn connectWPA2(
         &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
     );
     time.sleep(config.delay * time.ns_per_ms);
-    const scan_results = try scanSSID(
+    const scan_results = config.scan_results orelse try scanSSID(
         alloc,
         if_index,
         ssid,
         .{ .nl_sock = nl_sock, .freqs = config.freqs, .retries = config.retries },
     );
-    defer nl.parse.freeBytes(alloc, ScanResults, scan_results);
+    defer if (config.scan_results == null) nl.parse.freeBytes(alloc, ScanResults, scan_results);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
     const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
     defer alloc.free(ie_bytes);
     time.sleep(config.delay * time.ns_per_ms);
-    const bssid = bss.BSSID orelse return error.MissingBSSID;
+    const bssid = bss.BSSID; // orelse return error.MissingBSSID;
     try resetKeyState(alloc, if_index, bssid);
     //const auth_type = determineAuthAlg(scan_results);
     var aa_err: anyerror!void = {};
     errdefer posix.close(nl_sock);
+    var attempts: usize = 0;
     while (attempts < config.retries) : (attempts += 1) {
         time.sleep(config.delay * time.ns_per_ms);
         authWPA2(alloc, nl_sock, if_index, ssid, scan_results) catch |err| {

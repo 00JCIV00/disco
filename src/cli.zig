@@ -16,12 +16,13 @@ const testing = std.testing;
 const time = std.time;
 
 const cova = @import("cova");
-const nl = @import("nl.zig");
+const nl = @import("netlink.zig");
 const netdata = @import("netdata.zig");
 const address = netdata.address;
 const oui = netdata.oui;
-const serve = @import("serve.zig");
-const wpa = @import("wpa.zig");
+const proto = @import("protocols.zig");
+const serve = proto.serve;
+const wpa = proto.wpa;
 
 /// The Cova Command Type for DisCo.
 pub const CommandT = cova.Command.Custom(.{
@@ -121,13 +122,24 @@ pub const setup_cmd = CommandT{
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
     .vals = &.{
+        // TODO replace this w/ the `--interface` Option?
         ValueT.ofType([]const u8, .{
             .name = "interface",
             .description = "The Network Interface to use. (This is mandatory)"
         }),
     },
-    // TODO Implement these Base Options
     .opts = &.{
+        .{
+            .name = "interfaces",
+            .description = "The WiFi Interface(s) available for DisCo to use. (Multiple Interfaces can be provided.)",
+            .short_name = 'i',
+            .long_name = "interfaces",
+            .val = ValueT.ofType([]const u8, .{
+                .set_behavior = .Multi,
+                .max_entries = 32,
+            }),
+        },
+        // TODO Implement these Base Options
         .{
             .name = "log-path",
             .description = "Save the JSON output to the specified Log Path.",

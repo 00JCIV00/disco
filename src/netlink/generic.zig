@@ -13,7 +13,7 @@ const os = std.os;
 const posix = std.posix;
 const time = std.time;
 
-const nl = @import("../nl.zig");
+const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 

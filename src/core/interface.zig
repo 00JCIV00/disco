@@ -1,9 +1,11 @@
 //! Interface Management
 
 const std = @import("std");
+const enums = std.enums;
 const fmt = std.fmt;
 const log = std.log;
 const mem = std.mem;
+const meta = std.meta;
 const time = std.time;
 
 const zeit = @import("zeit");
@@ -13,17 +15,55 @@ const address = netdata.address;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const core = @import("../core.zig");
-const nl = @import("../nl.zig");
+const nl = @import("../netlink.zig");
+const utils = @import("../utils.zig");
+const c = utils.toStruct;
 
+/// DisCo Usage State of an Interface
+pub const UsageState = enum {
+    unavailable,
+    available,
+    scanning,
+    connected,
+};
+
+/// Interface State Formatter
+const IFStateF = struct {
+    flags: u32,
+
+    pub fn format(
+        self: @This(),
+        _: []const u8,
+        _: fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        for (meta.tags(nl.route.IFF)) |tag| {
+            const flag: u32 = @intFromEnum(tag);
+            if (flag == 0) continue;
+            if (flag == 1) {
+                const state = if (self.flags & 1 == 1) "UP" else "DOWN";
+                try writer.print("{s}", .{ state });
+                continue;
+            }
+            if (self.flags & flag == flag)
+                try writer.print(", {s}", .{ @tagName(tag) });
+        }
+    }
+};
 
 /// Interface Info
 pub const Interface = struct {
-    index: i32,
+    // Meta
+    usage: UsageState = .unavailable,
     last_upd: zeit.Instant,
+    // Details
+    index: i32,
     name: []const u8,
     phy_index: u32,
     phy_name: []const u8,
     mac: [6]u8,
+    mode: u32,
+    state: u32,
     mtu: usize,
     ips: [10]?[4]u8 = .{ null } ** 10,
     cidrs: [10]?u8 = .{ null } ** 10,
@@ -37,20 +77,25 @@ pub const Interface = struct {
         var last_ts_buf: [50]u8 = .{ 0 } ** 50;
         const last_ts = try self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339);
         try writer.print(
+            \\({d}) {s} | {s}
             \\{s}
-            \\({d}) {s}
-            \\- Phy: ({d}) {s}
-            \\- MAC: {s} ({s})
-            \\- MTU: {d}
+            \\- Phy:   ({d}) {s}
+            \\- MAC:   {s} ({s})
+            \\- Mode:  {s}
+            \\- State: {s}
+            \\- MTU:   {d}
             \\
             , .{
-                last_ts,
                 self.index,
                 self.name,
+                @tagName(self.usage),
+                last_ts,
                 self.phy_index,
                 self.phy_name,
                 MACF{ .bytes = self.mac[0..] },
                 try netdata.oui.findOUI(.short, .station, self.mac),
+                @tagName(@as(nl._80211.IFTYPE, @enumFromInt(self.mode))),
+                IFStateF{ .flags = self.state },
                 self.mtu,
             }
         );
@@ -82,6 +127,26 @@ pub const InterfaceMaps = struct {
     links: *core.ThreadHashMap(i32, nl.route.IFInfoAndLink),
     /// Addresses
     addresses: *core.ThreadHashMap([4]u8, nl.route.IFInfoAndAddr),
+
+    pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+        var if_iter = self.interfaces.iterator();
+        while (if_iter.next()) |if_entry| if_entry.value_ptr.deinit(alloc);
+        if_iter.unlock();
+        self.interfaces.deinit(alloc);
+        alloc.destroy(self.interfaces);
+        core.resetNLMap(alloc, u32, nl._80211.Wiphy, self.wiphys);
+        self.wiphys.deinit(alloc);
+        alloc.destroy(self.wiphys);
+        core.resetNLMap(alloc, i32, nl._80211.Interface, self.wifi_ifs);
+        self.wifi_ifs.deinit(alloc);
+        alloc.destroy(self.wifi_ifs);
+        core.resetNLMap(alloc, i32, nl.route.IFInfoAndLink, self.links);
+        self.links.deinit(alloc);
+        alloc.destroy(self.links);
+        core.resetNLMap(alloc, [4]u8, nl.route.IFInfoAndAddr, self.addresses);
+        self.addresses.deinit(alloc);
+        alloc.destroy(self.addresses);
+    }
 };
 
 /// Track Interfaces
@@ -107,7 +172,7 @@ pub fn updInterfaces(
 ) !void {
     trackWiFiIFs: {
         // Reset
-        resetIFMap(
+        core.resetNLMap(
             alloc,
             i32,
             nl._80211.Interface,
@@ -124,14 +189,14 @@ pub fn updInterfaces(
             break :trackWiFiIFs;
         }
         for (nl_wifi_ifs) |wifi_if| {
-            log.debug("WiFi IF: {d}", .{ wifi_if.IFINDEX });
+            //log.debug("WiFi IF: {d}", .{ wifi_if.IFINDEX });
             const _old = try if_maps.wifi_ifs.fetchPut(alloc, @intCast(wifi_if.IFINDEX), wifi_if);
             if (_old) |old| nl.parse.freeBytes(alloc, nl._80211.Interface, old.value);
         }
     }
     trackWiphys: {
         // Reset
-        resetIFMap(
+        core.resetNLMap(
             alloc,
             u32,
             nl._80211.Wiphy,
@@ -148,14 +213,14 @@ pub fn updInterfaces(
             break :trackWiphys;
         }
         for (nl_wiphys) |wiphy| {
-            log.debug("WIPHY: ({d}) {s}", .{ wiphy.WIPHY, wiphy.WIPHY_NAME });
+            //log.debug("WIPHY: ({d}) {s}", .{ wiphy.WIPHY, wiphy.WIPHY_NAME });
             const _old = try if_maps.wiphys.fetchPut(alloc, wiphy.WIPHY, wiphy);
             if (_old) |old| nl.parse.freeBytes(alloc, nl._80211.Wiphy, old.value);
         }
     }
     trackLinks: {
         // Reset
-        resetIFMap(
+        core.resetNLMap(
             alloc,
             i32,
             nl.route.IFInfoAndLink,
@@ -172,14 +237,14 @@ pub fn updInterfaces(
             break :trackLinks;
         }
         for (nl_links) |link| {
-            log.debug("Link: {d}", .{ link.info.index });
+            //log.debug("Link: {d}", .{ link.info.index });
             const _old = try if_maps.links.fetchPut(alloc, link.info.index, link);
             if (_old) |old| nl.parse.freeBytes(alloc, nl.route.IFInfoAndLink, old.value);
         }
     }
     trackAddrs: {
         // Reset
-        resetIFMap(
+        core.resetNLMap(
             alloc,
             [4]u8,
             nl.route.IFInfoAndAddr,
@@ -198,7 +263,7 @@ pub fn updInterfaces(
         var links_iter = if_maps.links.iterator();
         defer links_iter.unlock();
         while (links_iter.next()) |link| {
-            log.debug("IF: {d}", .{ link.key_ptr.* });
+            //log.debug("IF: {d}", .{ link.key_ptr.* });
             for (nl_addrs) |addr| {
                 if (
                     addr.info.index != link.key_ptr.* or
@@ -214,13 +279,15 @@ pub fn updInterfaces(
     }
     var wifi_ifs_iter = if_maps.wifi_ifs.iterator();
     defer wifi_ifs_iter.unlock();
-    log.debug("Interfaces:", .{});
+    //log.debug("Interfaces:", .{});
     while (wifi_ifs_iter.next()) |wifi_if| {
-        var add_if: Interface = undefined;
+        const _last_if = if_maps.interfaces.getEntry(wifi_if.key_ptr.*);
+        var add_if: Interface = if (_last_if) |last_if| last_if.value_ptr.* else undefined;
         add_if.index = wifi_if.key_ptr.*;
         add_if.last_upd = try zeit.instant(.{});
         add_if.name = alloc.dupe(u8, wifi_if.value_ptr.IFNAME) catch @panic("OOM");
         add_if.mac = wifi_if.value_ptr.MAC;
+        add_if.mode = wifi_if.value_ptr.IFTYPE orelse continue;
         add_if.phy_index = wifi_if.value_ptr.WIPHY;
         wiphy: {
             const wiphy = if_maps.wiphys.get(wifi_if.value_ptr.WIPHY) orelse continue;
@@ -229,6 +296,7 @@ pub fn updInterfaces(
         }
         link: {
             const link = if_maps.links.get(add_if.index) orelse continue;
+            add_if.state = link.info.flags;
             add_if.mtu = link.link.MTU;
             break :link;
         }
@@ -242,7 +310,7 @@ pub fn updInterfaces(
                 if (addr.value_ptr.info.index != wifi_if.key_ptr.*) continue;
                 for (add_if.ips[0..]) |*_ip| {
                     if (_ip.*) |ip| {
-                        log.debug("Existing IP: {s}. New IP: {s}", .{ IPF{ .bytes = ip[0..] }, IPF{ .bytes = new_ip[0..] } });
+                        //log.debug("Existing IP: {s}. New IP: {s}", .{ IPF{ .bytes = ip[0..] }, IPF{ .bytes = new_ip[0..] } });
                         if (mem.eql(u8, ip[0..], new_ip[0..])) continue :newIP;
                         continue;
                     }
@@ -258,8 +326,17 @@ pub fn updInterfaces(
             }
             break :addr;
         }
+        if (_last_if) |last_if| last_if.value_ptr.deinit(alloc);
+        if_maps.interfaces.mutex.unlock();
         try if_maps.interfaces.put(alloc, add_if.index, add_if);
-        log.debug("\n{s}", .{ add_if });
+        if (
+            add_if.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN and
+            add_if.usage != .unavailable
+        ) {
+            log.info("Found Available Interface '{d}' set to Down. Setting Up.", .{ add_if.index });
+            try nl.route.setState(add_if.index, c(nl.route.IFF).UP);
+        }
+        //log.debug("\n{s}", .{ add_if });
     }
     const now = try zeit.instant(.{});
     var rm_idxs: [50]?i32 = .{ null } ** 50;
@@ -279,25 +356,3 @@ pub fn updInterfaces(
     }
 }
 
-/// Reset an Interface Map
-pub fn resetIFMap(
-    alloc: mem.Allocator,
-    K: type,
-    V: type,
-    map: *core.ThreadHashMap(K, V),
-) void {
-    // Clean
-    var map_iter = map.iterator();
-    var rm_idxs: [50]?K = .{ null } ** 50;
-    var rm_count: u8 = 0;
-    while (map_iter.next()) |val| {
-        nl.parse.freeBytes(alloc, V, val.value_ptr.*);
-        rm_idxs[rm_count] = val.key_ptr.*;
-        rm_count +|= 1;
-    }
-    map_iter.unlock();
-    for (rm_idxs[0..rm_count]) |_idx| {
-        const idx = _idx orelse break;
-        _ = map.remove(idx);
-    }
-}

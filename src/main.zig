@@ -14,20 +14,23 @@ const cli = @import("cli.zig");
 
 const art = @import("art.zig");
 const core = @import("core.zig");
-const dhcp = @import("dhcp.zig");
 const netdata = @import("netdata.zig");
-const nl = @import("nl.zig");
-const serve = @import("serve.zig");
+const nl = @import("netlink.zig");
+const proto = @import("protocols.zig");
 const sys = @import("sys.zig");
 const utils = @import("utils.zig");
-const wpa = @import("wpa.zig");
 
+const dhcp = proto.dhcp;
+const serve = proto.serve;
+const wpa = proto.wpa;
 const address = netdata.address;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const c = utils.toStruct;
 const NetworkInterface = @import("NetworkInterface.zig");
 
+// Cleaning Hang Protection
+var cleaning: bool = false;
 // Core Context
 var _core_ctx: ?core.Core = null;
 // TODO: Pull these into Core context
@@ -38,7 +41,7 @@ var connected: bool = false;
 // DHCP Info
 var dhcp_info: ?dhcp.Info = null;
 // Interface
-var raw_net_if: ?NetworkInterface = null;
+var raw_net_if: ?core.interface.Interface = null;
 
 pub fn main() !void {
     try posix.sigaction(
@@ -55,6 +58,7 @@ pub fn main() !void {
     var stdout_bw = io.bufferedWriter(stdout_file);
     defer stdout_bw.flush() catch log.warn("Couldn't flush stdout before exiting!", .{});
     const stdout = stdout_bw.writer().any();
+    try stdout_file.print("{s}\n", .{ art.logo });
 
     var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer if (gpa.detectLeaks()) log.err("Memory leak detected!", .{});
@@ -87,19 +91,49 @@ pub fn main() !void {
         }
     };
 
+    const main_opts = try main_cmd.getOpts(.{});
+    var core_ifs: std.ArrayListUnmanaged(i32) = .{};
+    var core_scan_confs: std.ArrayListUnmanaged(core.InitConfig.ScanConfEntry) = .{};
+    if (main_opts.get("interfaces")) |if_opt| ifOpt: {
+        errdefer core_ifs.deinit(alloc);
+        errdefer core_scan_confs.deinit(alloc);
+        const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt;
+        for (if_names) |if_name| {
+            const if_index = nl.route.getIfIdx(if_name) catch {
+                log.warn("Could not find Interface '{s}'.", .{ if_name });
+                continue;
+            };
+            try core_ifs.append(alloc, if_index);
+            // TODO Add a way to customize the scan
+            try core_scan_confs.append(alloc, .{ 
+                .if_index = if_index, 
+                .conf = .{ 
+                    .ssids = &.{ 
+                        "",
+                        //"AMP_Testing",
+                        //&[_]u8{ 0xFF } ** 32,
+                    } 
+                } 
+            });
+        }
+    }
+    const main_vals = try main_cmd.getVals(.{});
+
+    // Initialize Core Context
+    const init_config: core.InitConfig = .{
+        .available_ifs = if (core_ifs.items.len > 0) try core_ifs.toOwnedSlice(alloc) else null,
+        .scan_configs = if (core_scan_confs.items.len > 0) try core_scan_confs.toOwnedSlice(alloc) else null,
+    };
+    _core_ctx = try core.Core.init(alloc, init_config);
+    var core_ctx = _core_ctx orelse return error.CoreNotInitialized;
     // Run Core Context
     if (main_cmd.sub_cmd == null) {
-        _core_ctx = try core.Core.init(alloc);
-        var core_ctx = _core_ctx.?;
         try core_ctx.start();
         defer core_ctx.stop();
         while (core_ctx.active) {}
 
         return;
     }
-
-    //const main_opts = try main_cmd.getOpts(.{});
-    const main_vals = try main_cmd.getVals(.{});
 
     // No Interface Needed
     // - Generate Key
@@ -108,7 +142,7 @@ pub fn main() !void {
         const key = try gen_key_cmd.callAs(wpa.genKey, null, [32]u8);
         var key_buf: [64]u8 = undefined;
         const end: usize = switch (try (gen_key_vals.get("protocol").?).getAs(wpa.Protocol)) {
-            .wpa2 => 32,
+            .wpa2, .wpa3 => 32,
             .wep => 13,
             else => 0,
         };
@@ -154,18 +188,22 @@ pub fn main() !void {
         return;
     }
 
-    // DHCP Info
-    //var dhcp_info: ?dhcp.Info = null;
     // Interface
     raw_net_if = netIF: {
         const if_name = (main_vals.get("interface").?).getAs([]const u8) catch break :netIF null;
-        break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
-            error.NoInterfaceFound => {
-                log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
-                return;
-            },
-            else => return err,
+        const if_index = nl.route.getIfIdx(if_name) catch {
+            log.err("Could not find Interface '{s}'.", .{ if_name });
+            cleanUp(0);
+            break :netIF null;
         };
+        break :netIF core_ctx.if_maps.interfaces.get(if_index);
+        //break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
+        //    error.NoInterfaceFound => {
+        //        log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
+        //        return;
+        //    },
+        //    else => return err,
+        //};
     };
     defer cleanUp(0);
 
@@ -174,7 +212,7 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("set")) |set_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: NetworkInterface = raw_net_if.?;
+        const net_if: core.interface.Interface = raw_net_if.?;
         const set_if_opts = try set_cmd.getOpts(.{});
         if (set_if_opts.get("mac")) |mac_opt| setMAC: {
             try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
@@ -207,12 +245,6 @@ pub fn main() !void {
                     return;
                 },
             };
-            //var mac_buf: [17]u8 = .{ ':' } ** 17;
-            //for (new_mac, 0..6) |byte, idx| {
-            //    const start = if (idx == 0) 0 else idx * 3;
-            //    const end = start + 2;
-            //    _ = try fmt.bufPrint(mac_buf[start..end], "{X:0>2}", .{ byte });
-            //}
             try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ net_if.name, MACF{ .bytes = new_mac[0..] } });
         }
         if (set_if_opts.get("state")) |state_opt| setState: {
@@ -336,13 +368,13 @@ pub fn main() !void {
             };
             try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ net_if.name, new_freq });
         }
-        raw_net_if = try NetworkInterface.get(net_if.name);
+        raw_net_if = core_ctx.if_maps.interfaces.get(net_if.index);
     }
     // - Add
     if (main_cmd.matchSubCmd("add")) |add_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: NetworkInterface = raw_net_if.?;
+        const net_if: core.interface.Interface = raw_net_if.?;
         const add_opts = try add_cmd.getOpts(.{});
         //const cidr = try (add_opts.get("subnet").?).val.getAs(u8);
         if (add_opts.get("ip")) |ip_opt| setIP: {
@@ -397,7 +429,7 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("delete")) |del_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: NetworkInterface = raw_net_if.?;
+        const net_if: core.interface.Interface = raw_net_if.?;
         const del_opts = try del_cmd.getOpts(.{});
         //const cidr = try (del_opts.get("subnet").?).val.getAs(u8);
         if (del_opts.get("ip")) |ip_opt| setIP: {
@@ -450,7 +482,7 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: NetworkInterface = raw_net_if.?;
+        const net_if: core.interface.Interface = raw_net_if.?;
         const connect_vals = try connect_cmd.getVals(.{});
         const connect_opts = try connect_cmd.getOpts(.{});
         const ssid = (connect_vals.get("ssid").?).getAs([]const u8) catch {
@@ -462,7 +494,7 @@ pub fn main() !void {
             const security = try (connect_opts.get("security").?).val.getAs(wpa.Protocol);
             break :security switch (security) {
                 .open => .{ security, "" },
-                .wep, .wpa2 => .{
+                .wep, .wpa2, .wpa3 => .{
                     security,
                     (connect_opts.get("passphrase").?).val.getAs([]const u8) catch {
                         log.err("The {s} protocol requires a passhprase.", .{ @tagName(security) });
@@ -483,7 +515,7 @@ pub fn main() !void {
         defer if (freqs) |_freqs| alloc.free(_freqs);
         try stdout_file.print("Connecting to {s}...\n", .{ ssid });
         switch (security) {
-            .open, .wep => {
+            .open, .wep, .wpa3 => {
                 log.info("WIP!", .{});
                 return;
             },
@@ -506,7 +538,7 @@ pub fn main() !void {
             dhcp_info = dhcp.handleDHCP(
                 net_if.name,
                 net_if.index,
-                net_if.route_info.mac,
+                net_if.mac,
                 .{},
             ) catch |err| switch (err) {
                 error.WouldBlock => {
@@ -585,33 +617,40 @@ fn checkRoot(stdout: io.AnyWriter) void {
 }
 
 /// Check that there's an Interface
-fn checkIF(net_if: ?NetworkInterface, stdout: io.AnyWriter) void {
+fn checkIF(net_if: ?core.interface.Interface, stdout: io.AnyWriter) void {
     if (net_if) |_| return;
     stdout.print("{s}\n\n   DisCo needs to know which interface to use. (Ex: disco wlan0)\n", .{ art.wifi_card }) catch {
         log.err("DisCo needs to know which interface to use. (Ex: disco wlan0)", .{});
     };
-    process.exit(0);
+    cleanUp(0);
 }
 
 /// Cleanup
 fn cleanUp(_: i32) callconv(.C) void {
-    log.info("Closing gracefully.", .{});
+    if (cleaning) {
+        log.warn("Forced close. Couldn't finish cleaning up.", .{});
+        posix.exit(1);
+    }
+    cleaning = true;
+    log.info("Closing gracefully...\n(Force close w/ `ctrl + c` again.)", .{});
     if (connected) cleanup: {
         active = false;
-        var net_if = raw_net_if orelse break :cleanup;
-        net_if.update() catch break :cleanup;
+        //const core_ctx = _core_ctx orelse break :cleanup;
+        //raw_net_if = core_ctx.if_maps.interfaces.get(net_if.index);
+        const net_if = raw_net_if orelse break :cleanup;
+        //net_if.update() catch break :cleanup;
         //if (connect_cmd.checkFlag("dhcp")) dhcp: {
         //    const d_info = dhcp_info orelse break :dhcp;
         if (dhcp_info) |d_info| {
             dhcp.releaseDHCP(
                 net_if.name,
                 net_if.index,
-                net_if.route_info.mac,
+                net_if.mac,
                 d_info.server_id,
                 d_info.assigned_ip,
             ) catch log.warn("Could not release DHCP lease for `{s}`!", .{ d_info.assigned_ip });
         }
-        for (net_if.route_info.ips, net_if.route_info.cidrs) |_ip, _cidr| {
+        for (net_if.ips, net_if.cidrs) |_ip, _cidr| {
             const ip = _ip orelse continue;
             const cidr = _cidr orelse 24;
             var fba_buf: [2048]u8 = undefined;
