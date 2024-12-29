@@ -31,6 +31,7 @@ pub const CommandT = cova.Command.Custom(.{
     .allow_abbreviated_cmds = true,
     .abbreviated_min_len = 1,
     .val_config = .{
+        .max_children = 50,
         .custom_types = &.{
             net.Address,
             fs.File,
@@ -139,6 +140,14 @@ pub const setup_cmd = CommandT{
                 .max_entries = 32,
             }),
         },
+        .{
+            .name = "ssids",
+            .description = "Provide SSIDs to focus on. (Up to 10 SSIDs.)",
+            .short_name = 's',
+            .long_name = "ssids",
+            .val = ssids_val,
+        },
+        channels_opt,
         // TODO Implement these Base Options
         .{
             .name = "log-path",
@@ -168,15 +177,7 @@ pub const setup_cmd = CommandT{
             .description = "Connect to a WiFi Network using the specified Interface.",
             .cmd_group = "ACTIVE",
             .vals = &.{
-                ValueT.ofType([]const u8, .{
-                    .name = "ssid",
-                    .description = "Set the SSID of the Network. (Up to 32 characters)",
-                    .valid_fn = struct {
-                        pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
-                            return arg.len > 0 and arg.len <= 32;
-                        }
-                    }.validPass,
-                }),
+                ssids_val,
             },
             .opts = &.{
                 channels_opt,
@@ -507,6 +508,19 @@ const channels_opt: OptionT = .{
         }.valCh,
     }),
 };
+/// SSIDs
+const ssids_val = ValueT.ofType([]const u8, .{
+    .name = "ssid",
+    .description = "Set the SSID of the Network. (Up to 32 characters)",
+    .set_behavior = .Multi,
+    .max_entries = 10,
+    .default_val = "",
+    .valid_fn = struct {
+        pub fn validSSID(arg: []const u8, _: mem.Allocator) bool {
+            return arg.len > 0 and arg.len <= 32;
+        }
+    }.validSSID,
+});
 
 // Function Wrappers
 fn parseIPv4(arg: []const u8, _: mem.Allocator) !address.IPv4 {

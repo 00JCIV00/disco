@@ -27,7 +27,6 @@ const address = netdata.address;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const c = utils.toStruct;
-const NetworkInterface = @import("NetworkInterface.zig");
 
 // Cleaning Hang Protection
 var cleaning: bool = false;
@@ -41,7 +40,7 @@ var connected: bool = false;
 // DHCP Info
 var dhcp_info: ?dhcp.Info = null;
 // Interface
-var raw_net_if: ?core.interface.Interface = null;
+var raw_net_if: ?core.interfaces.Interface = null;
 
 pub fn main() !void {
     try posix.sigaction(
@@ -94,9 +93,21 @@ pub fn main() !void {
     const main_opts = try main_cmd.getOpts(.{});
     var core_ifs: std.ArrayListUnmanaged(i32) = .{};
     var core_scan_confs: std.ArrayListUnmanaged(core.InitConfig.ScanConfEntry) = .{};
+    var freqs_list: std.ArrayListUnmanaged(u32) = .{};
+    defer freqs_list.deinit(alloc);
     if (main_opts.get("interfaces")) |if_opt| ifOpt: {
         errdefer core_ifs.deinit(alloc);
         errdefer core_scan_confs.deinit(alloc);
+        const ssids = ssids: {
+            const ssids_opt = main_opts.get("ssids").?;
+            break :ssids try ssids_opt.val.getAllAs([]const u8);
+        };
+        const freqs = freqs: {
+            const ch_opts = main_opts.get("channels") orelse break :freqs null;
+            const channels = try ch_opts.val.getAllAs(usize);
+            for (channels) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+            break :freqs freqs_list.items;
+        };
         const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt;
         for (if_names) |if_name| {
             const if_index = nl.route.getIfIdx(if_name) catch {
@@ -104,16 +115,12 @@ pub fn main() !void {
                 continue;
             };
             try core_ifs.append(alloc, if_index);
-            // TODO Add a way to customize the scan
             try core_scan_confs.append(alloc, .{ 
                 .if_index = if_index, 
                 .conf = .{ 
-                    .ssids = &.{ 
-                        "",
-                        //"AMP_Testing",
-                        //&[_]u8{ 0xFF } ** 32,
-                    } 
-                } 
+                    .ssids = ssids,
+                    .freqs = freqs,
+                },
             });
         }
     }
@@ -212,7 +219,7 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("set")) |set_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: core.interface.Interface = raw_net_if.?;
+        const net_if: core.interfaces.Interface = raw_net_if.?;
         const set_if_opts = try set_cmd.getOpts(.{});
         if (set_if_opts.get("mac")) |mac_opt| setMAC: {
             try stdout_file.print("Setting the MAC for {s}...\n", .{ net_if.name });
@@ -374,7 +381,7 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("add")) |add_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: core.interface.Interface = raw_net_if.?;
+        const net_if: core.interfaces.Interface = raw_net_if.?;
         const add_opts = try add_cmd.getOpts(.{});
         //const cidr = try (add_opts.get("subnet").?).val.getAs(u8);
         if (add_opts.get("ip")) |ip_opt| setIP: {
@@ -429,7 +436,7 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("delete")) |del_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: core.interface.Interface = raw_net_if.?;
+        const net_if: core.interfaces.Interface = raw_net_if.?;
         const del_opts = try del_cmd.getOpts(.{});
         //const cidr = try (del_opts.get("subnet").?).val.getAs(u8);
         if (del_opts.get("ip")) |ip_opt| setIP: {
@@ -482,7 +489,7 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
         checkRoot(stdout_file.any());
         checkIF(raw_net_if, stdout_file.any());
-        const net_if: core.interface.Interface = raw_net_if.?;
+        const net_if: core.interfaces.Interface = raw_net_if.?;
         const connect_vals = try connect_cmd.getVals(.{});
         const connect_opts = try connect_cmd.getOpts(.{});
         const ssid = (connect_vals.get("ssid").?).getAs([]const u8) catch {
@@ -617,7 +624,7 @@ fn checkRoot(stdout: io.AnyWriter) void {
 }
 
 /// Check that there's an Interface
-fn checkIF(net_if: ?core.interface.Interface, stdout: io.AnyWriter) void {
+fn checkIF(net_if: ?core.interfaces.Interface, stdout: io.AnyWriter) void {
     if (net_if) |_| return;
     stdout.print("{s}\n\n   DisCo needs to know which interface to use. (Ex: disco wlan0)\n", .{ art.wifi_card }) catch {
         log.err("DisCo needs to know which interface to use. (Ex: disco wlan0)", .{});

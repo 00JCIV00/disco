@@ -9,8 +9,8 @@ const time = std.time;
 const netdata = @import("netdata.zig");
 const nl = @import("netlink.zig");
 
-pub const interface = @import("core/interface.zig");
-pub const network = @import("core/network.zig");
+pub const interfaces = @import("core/interfaces.zig");
+pub const networks = @import("core/networks.zig");
 const utils = @import("utils.zig");
 const c = utils.toStruct;
 
@@ -38,15 +38,15 @@ pub const Core = struct {
     /// Timer
     _timer: time.Timer,
     /// Interval for Thread Checks in milliseconds.
-    interval: usize = 1000 * time.ns_per_ms,
+    interval: usize = 500 * time.ns_per_ms,
     /// Active Status of the overall program.
     active: bool = false,
     /// Interface Maps
-    if_maps: interface.InterfaceMaps,
+    if_maps: interfaces.InterfaceMaps,
     /// Interface Thread
     if_thread: ?std.Thread = null,
     /// Network Maps
-    network_maps: network.NetworkMaps,
+    network_maps: networks.NetworkMaps,
     /// Scan Config Thread
     scan_conf_thread: ?std.Thread = null,
     /// Network Thread
@@ -57,8 +57,8 @@ pub const Core = struct {
     pub fn init(alloc: mem.Allocator, config: InitConfig) !@This() {
         log.info("Initializing DisCo Core...", .{});
         const if_maps = ifMaps: {
-            var if_maps: interface.InterfaceMaps = undefined;
-            inline for (meta.fields(interface.InterfaceMaps)) |field| {
+            var if_maps: interfaces.InterfaceMaps = undefined;
+            inline for (meta.fields(interfaces.InterfaceMaps)) |field| {
                 switch (field.type) {
                     inline else => |f_ptr_type| {
                         const f_type = @typeInfo(f_ptr_type).Pointer.child;
@@ -71,8 +71,8 @@ pub const Core = struct {
             break :ifMaps if_maps;
         };
         const network_maps = nwMaps: {
-            var network_maps: network.NetworkMaps = undefined;
-            inline for (meta.fields(network.NetworkMaps)) |field| {
+            var network_maps: networks.NetworkMaps = undefined;
+            inline for (meta.fields(networks.NetworkMaps)) |field| {
                 switch (field.type) {
                     inline else => |f_ptr_type| {
                         const f_type = @typeInfo(f_ptr_type).Pointer.child;
@@ -90,7 +90,7 @@ pub const Core = struct {
             .if_maps = if_maps,
             .network_maps = network_maps,
         };
-        try interface.updInterfaces(
+        try interfaces.updInterfaces(
             alloc,
             &self.if_maps,
         );
@@ -132,7 +132,7 @@ pub const Core = struct {
         // Interface Tracking
         self.if_thread = try std.Thread.spawn(
             .{},
-            interface.trackInterfaces,
+            interfaces.trackInterfaces,
             .{
                 self._alloc,
                 &self.active,
@@ -144,7 +144,7 @@ pub const Core = struct {
         // WiFi Network Scanning
         self.scan_conf_thread = try std.Thread.spawn(
             .{},
-            network.trackScans,
+            networks.trackScans,
             .{
                 self._alloc,
                 &self.active,
@@ -155,7 +155,7 @@ pub const Core = struct {
         );
         self.network_thread = try std.Thread.spawn(
             .{},
-            network.trackNetworks,
+            networks.trackNetworks,
             .{
                 self._alloc,
                 &self.active,
