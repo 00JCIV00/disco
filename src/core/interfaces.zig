@@ -155,11 +155,14 @@ pub fn trackInterfaces(
     active: *const bool,
     interval: *const usize,
     if_maps: *InterfaceMaps,
+    config: *core.InitConfig,
 ) !void {
+    log.debug("Available IFs: {?d}", .{ config.available_ifs });
     while (active.*) {
         try updInterfaces(
             alloc,
             if_maps,
+            config,
         );
         time.sleep(interval.*);
     }
@@ -169,6 +172,7 @@ pub fn trackInterfaces(
 pub fn updInterfaces(
     alloc: mem.Allocator,
     if_maps: *InterfaceMaps,
+    config: *core.InitConfig,
 ) !void {
     trackWiFiIFs: {
         // Reset
@@ -281,8 +285,22 @@ pub fn updInterfaces(
     defer wifi_ifs_iter.unlock();
     //log.debug("Interfaces:", .{});
     while (wifi_ifs_iter.next()) |wifi_if| {
-        const _last_if = if_maps.interfaces.getEntry(wifi_if.key_ptr.*);
-        var add_if: Interface = if (_last_if) |last_if| last_if.value_ptr.* else undefined;
+        const _last_if = if_maps.interfaces.get(wifi_if.key_ptr.*);
+        var add_if: Interface = if (_last_if) |last_if| last_if else undefined;
+        add_if.usage = usage: {
+            if (_last_if) |last_if| break :usage last_if.usage;
+            const avail_ifs = config.available_ifs orelse break :usage .unavailable;
+            const avail_if_names = config.avail_if_names orelse break :usage .unavailable;
+            for (avail_ifs, avail_if_names) |avail_idx, avail_name| {
+                if (
+                    wifi_if.key_ptr.* != avail_idx and
+                    wifi_if.key_ptr.* != nl.route.getIfIdx(avail_name) catch continue
+                ) continue;
+                log.debug("Available Interface Found: {s}", .{ avail_name });
+                break :usage .available;
+            }
+            break :usage .unavailable;
+        };
         add_if.index = wifi_if.key_ptr.*;
         add_if.last_upd = try zeit.instant(.{});
         add_if.name = alloc.dupe(u8, wifi_if.value_ptr.IFNAME) catch @panic("OOM");
@@ -326,8 +344,9 @@ pub fn updInterfaces(
             }
             break :addr;
         }
-        if (_last_if) |last_if| last_if.value_ptr.deinit(alloc);
-        if_maps.interfaces.mutex.unlock();
+        if (_last_if) |last_if| last_if.deinit(alloc);
+        if (if_maps.interfaces.get(add_if.index) == null)
+            log.debug("AVAILABLE INTERFACE\n{s}", .{ add_if });
         try if_maps.interfaces.put(alloc, add_if.index, add_if);
         if (
             add_if.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN and
@@ -336,12 +355,12 @@ pub fn updInterfaces(
             log.info("Found Available Interface '{d}' set to Down. Setting Up.", .{ add_if.index });
             try nl.route.setState(add_if.index, c(nl.route.IFF).UP);
         }
-        //log.debug("\n{s}", .{ add_if });
     }
     const now = try zeit.instant(.{});
     var rm_idxs: [50]?i32 = .{ null } ** 50;
     var rm_count: u8 = 0;
     var if_iter = if_maps.interfaces.iterator();
+    errdefer if_iter.unlock();
     while (if_iter.next()) |net_if| {
         const since_upd = @divFloor((now.timestamp -| net_if.value_ptr.last_upd.timestamp), @as(i128, time.ns_per_ms));
         if (since_upd < 5000) continue;

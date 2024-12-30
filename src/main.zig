@@ -95,40 +95,46 @@ pub fn main() !void {
     var core_scan_confs: std.ArrayListUnmanaged(core.InitConfig.ScanConfEntry) = .{};
     var freqs_list: std.ArrayListUnmanaged(u32) = .{};
     defer freqs_list.deinit(alloc);
-    if (main_opts.get("interfaces")) |if_opt| ifOpt: {
-        errdefer core_ifs.deinit(alloc);
-        errdefer core_scan_confs.deinit(alloc);
-        const ssids = ssids: {
-            const ssids_opt = main_opts.get("ssids").?;
-            break :ssids try ssids_opt.val.getAllAs([]const u8);
-        };
-        const freqs = freqs: {
-            const ch_opts = main_opts.get("channels") orelse break :freqs null;
-            const channels = try ch_opts.val.getAllAs(usize);
-            for (channels) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
-            break :freqs freqs_list.items;
-        };
-        const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt;
-        for (if_names) |if_name| {
-            const if_index = nl.route.getIfIdx(if_name) catch {
-                log.warn("Could not find Interface '{s}'.", .{ if_name });
-                continue;
+    const if_names = 
+        if (main_opts.get("interfaces")) |if_opt| ifOpt: {
+            errdefer core_ifs.deinit(alloc);
+            errdefer core_scan_confs.deinit(alloc);
+            const ssids = ssids: {
+                const ssids_opt = main_opts.get("ssids").?;
+                break :ssids try ssids_opt.val.getAllAs([]const u8);
             };
-            try core_ifs.append(alloc, if_index);
-            try core_scan_confs.append(alloc, .{ 
-                .if_index = if_index, 
-                .conf = .{ 
-                    .ssids = ssids,
-                    .freqs = freqs,
-                },
-            });
+            const freqs = freqs: {
+                const ch_opts = main_opts.get("channels") orelse break :freqs null;
+                const channels = try ch_opts.val.getAllAs(usize);
+                for (channels) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+                break :freqs freqs_list.items;
+            };
+            const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt null;
+            if (if_names.len == 0) break :ifOpt null;
+            for (if_names) |if_name| {
+                const if_index = nl.route.getIfIdx(if_name) catch {
+                    log.warn("Could not find Interface '{s}'.", .{ if_name });
+                    continue;
+                };
+                try core_ifs.append(alloc, if_index);
+                try core_scan_confs.append(alloc, .{ 
+                    //.if_index = if_index, 
+                    .if_name = if_name,
+                    .conf = .{ 
+                        .ssids = ssids,
+                        .freqs = freqs,
+                    },
+                });
+            }
+            break :ifOpt if_names;
         }
-    }
+        else null;
     const main_vals = try main_cmd.getVals(.{});
 
     // Initialize Core Context
     const init_config: core.InitConfig = .{
         .available_ifs = if (core_ifs.items.len > 0) try core_ifs.toOwnedSlice(alloc) else null,
+        .avail_if_names = if_names,
         .scan_configs = if (core_scan_confs.items.len > 0) try core_scan_confs.toOwnedSlice(alloc) else null,
     };
     _core_ctx = try core.Core.init(alloc, init_config);

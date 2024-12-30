@@ -161,7 +161,8 @@ pub fn updScan(
                 break :triggerScan;
             };
             nl._80211.triggerScan(alloc, scan_if.index, config) catch |err| switch (err) {
-                error.BUSY => {},
+                error.BUSY,
+                error.NODEV => {},
                 else => return err,
             };
             scan_if.usage = .scanning;
@@ -177,9 +178,23 @@ pub fn trackScans(
     interval: *const usize,
     interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
     network_maps: *NetworkMaps,
+    config: *core.InitConfig,
 ) !void {
     while (active.*) {
+        if (config.scan_configs) |scan_conf_entries| {
+            for (scan_conf_entries) |scan_conf_entry| {
+                const if_index = nl.route.getIfIdx(scan_conf_entry.if_name) catch continue;
+                if (network_maps.scan_configs.get(if_index)) |_| continue;
+                try network_maps.scan_configs.put(
+                    alloc,
+                    if_index,
+                    scan_conf_entry.conf,
+                );
+                log.debug("Updated Interface Index f/ Scan Config: {s} ({d})", .{ scan_conf_entry.if_name, if_index });
+            }
+        }
         var if_iter = interfaces.iterator();
+        errdefer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const scan_if = if_entry.value_ptr;
             try updScan(alloc, scan_if, network_maps, null);
@@ -197,6 +212,7 @@ pub fn stopScans(
     network_maps: *NetworkMaps,
 ) void {
     var if_iter = interfaces.iterator();
+    errdefer if_iter.unlock();
     while (if_iter.next()) |if_entry| {
         const scan_if = if_entry.value_ptr;
         updScan(alloc, scan_if, network_maps, null) catch |err| {
@@ -212,16 +228,17 @@ pub fn trackNetworks(
     active: *const bool,
     interval: *const usize,
     interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
-    network_maps: *NetworkMaps
+    network_maps: *NetworkMaps,
+    scan_group: *std.Thread.WaitGroup,
 ) !void {
     log.debug("Tracking Networks!", .{});
     while (active.*) {
         defer time.sleep(interval.*);
         //log.debug("Getting Scan Results...", .{});
-        var scan_group: std.Thread.WaitGroup = .{};
         var scan_pool: std.Thread.Pool = .{ .threads = &[_]std.Thread{}, .allocator = alloc };
         var job_count: u32 = 0;
         var if_iter = interfaces.iterator();
+        errdefer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const scan_if = if_entry.value_ptr;
             if (scan_if.usage == .scanning) job_count += 1;
@@ -230,11 +247,12 @@ pub fn trackNetworks(
         if_iter.unlock();
         if_iter = interfaces.iterator();
         defer if_iter.unlock();
+        errdefer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const scan_if = if_entry.value_ptr;
             if (scan_if.usage != .scanning) continue;
             scan_pool.spawnWg(
-                &scan_group,
+                scan_group,
                 trackNetworksIFNoErr,
                 .{
                     alloc,
@@ -338,6 +356,7 @@ fn trackNetworksIF(
         const _old_result = try network_maps.scan_results.fetchPut(alloc, bssid, result);
         if (_old_result) |old| nl.parse.freeBytes(alloc, nl._80211.ScanResults, old.value);
         const _old_network = network_maps.networks.getEntry(bssid);
+        errdefer network_maps.networks.mutex.unlock();
         if (_old_network) |old_nw_entry| {
             {
                 const old_network = old_nw_entry.value_ptr;

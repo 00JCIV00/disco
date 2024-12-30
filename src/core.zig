@@ -18,12 +18,14 @@ const c = utils.toStruct;
 /// Core Initialization Config
 pub const InitConfig = struct {
     pub const ScanConfEntry = struct { 
-        if_index: i32,
+        if_name: []const u8,
         conf: nl._80211.TriggerScanConfig,
     };
 
     /// Available Interfaces
     available_ifs: ?[]const i32 = null,
+    /// Available Interface Names
+    avail_if_names: ?[]const []const u8 = null,
     /// Scan Configs
     scan_configs: ?[]const ScanConfEntry = null,
 };
@@ -37,8 +39,10 @@ pub const Core = struct {
     _mutex: std.Thread.Mutex = .{},
     /// Timer
     _timer: time.Timer,
+    /// Config
+    config: InitConfig,
     /// Interval for Thread Checks in milliseconds.
-    interval: usize = 500 * time.ns_per_ms,
+    interval: usize = 250 * time.ns_per_ms,
     /// Active Status of the overall program.
     active: bool = false,
     /// Interface Maps
@@ -49,6 +53,8 @@ pub const Core = struct {
     network_maps: networks.NetworkMaps,
     /// Scan Config Thread
     scan_conf_thread: ?std.Thread = null,
+    /// Scan Wait Group
+    scan_group: std.Thread.WaitGroup = .{},
     /// Network Thread
     network_thread: ?std.Thread = null,
 
@@ -87,12 +93,14 @@ pub const Core = struct {
         var self: @This() = .{
             ._alloc = alloc,
             ._timer = try std.time.Timer.start(),
+            .config = config,
             .if_maps = if_maps,
             .network_maps = network_maps,
         };
         try interfaces.updInterfaces(
             alloc,
             &self.if_maps,
+            &self.config,
         );
         if (config.available_ifs) |available_ifs| {
             for (available_ifs) |if_index| {
@@ -113,11 +121,11 @@ pub const Core = struct {
             for (scan_conf_entries) |scan_conf_entry| {
                 try self.network_maps.scan_configs.put(
                     alloc,
-                    scan_conf_entry.if_index,
+                    //scan_conf_entry.if_index,
+                    try nl.route.getIfIdx(scan_conf_entry.if_name),
                     scan_conf_entry.conf,
                 );
             }
-            alloc.free(scan_conf_entries);
         }
         log.info("- Initialized Network Tracking Data.", .{});
         log.info("Initialized DisCo Core.", .{});
@@ -138,6 +146,7 @@ pub const Core = struct {
                 &self.active,
                 &self.interval,
                 &self.if_maps,
+                &self.config,
             }
         );
         self.if_thread.?.detach();
@@ -151,6 +160,7 @@ pub const Core = struct {
                 &self.interval,
                 self.if_maps.interfaces,
                 &self.network_maps,
+                &self.config,
             }
         );
         self.network_thread = try std.Thread.spawn(
@@ -162,6 +172,7 @@ pub const Core = struct {
                 &self.interval,
                 self.if_maps.interfaces,
                 &self.network_maps,
+                &self.scan_group,
             }
         );
         log.info("Started DisCo Core.", .{});
@@ -182,6 +193,7 @@ pub const Core = struct {
         self.if_maps.deinit(self._alloc);
         if (self.if_thread) |ift| ift.join();
         log.info("- Deinitialized & Stopped Interface Tracking.", .{});
+        while (!self.scan_group.isDone()) {}
         self.network_maps.deinit(self._alloc);
         if (self.scan_conf_thread) |sct| sct.join();
         if (self.network_thread) |nwt| nwt.join();

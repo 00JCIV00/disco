@@ -272,6 +272,7 @@ pub fn handleAck(nl_sock: posix.socket_t) !void {
                     .SRCH => return error.SRCH,
                     .NETUNREACH => return error.NETUNREACH,
                     .INPROGRESS => return error.INPROGRESS,
+                    .NODEV => return error.NODEV,
                     else => |err| {
                         log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
                         return error.OSError;
