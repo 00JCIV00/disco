@@ -45,7 +45,7 @@ pub fn findOUI(
             .long => mem.trim(u8, long, ascii.whitespace[0..]),
         };
     }
-    return "[No match found]";
+    return "[No OUI match]";
 }
 
 /// Get an OUI from the provided `manufacturer`.

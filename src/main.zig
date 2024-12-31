@@ -1,4 +1,5 @@
 const std = @import("std");
+const crypto = std.crypto;
 const fmt = std.fmt;
 const heap = std.heap;
 const io = std.io;
@@ -26,6 +27,7 @@ const wpa = proto.wpa;
 const address = netdata.address;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
+const masks_map = core.profiles.Mask.map;
 const c = utils.toStruct;
 
 // Cleaning Hang Protection
@@ -92,7 +94,7 @@ pub fn main() !void {
 
     const main_opts = try main_cmd.getOpts(.{});
     var core_ifs: std.ArrayListUnmanaged(i32) = .{};
-    var core_scan_confs: std.ArrayListUnmanaged(core.InitConfig.ScanConfEntry) = .{};
+    var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfEntry) = .{};
     var freqs_list: std.ArrayListUnmanaged(u32) = .{};
     defer freqs_list.deinit(alloc);
     const if_names = 
@@ -129,24 +131,17 @@ pub fn main() !void {
             break :ifOpt if_names;
         }
         else null;
-    const main_vals = try main_cmd.getVals(.{});
-
-    // Initialize Core Context
-    const init_config: core.InitConfig = .{
-        .available_ifs = if (core_ifs.items.len > 0) try core_ifs.toOwnedSlice(alloc) else null,
-        .avail_if_names = if_names,
-        .scan_configs = if (core_scan_confs.items.len > 0) try core_scan_confs.toOwnedSlice(alloc) else null,
+    const profile_mask = getMask: {
+        if (main_opts.get("mask")) |mask_opt|
+            break :getMask try mask_opt.val.getAs(core.profiles.Mask);
+        const mask_idx = crypto.random.int(u16) % masks_map.keys().len;
+        for (masks_map.keys(), 0..) |key, idx| {
+            if (idx != mask_idx) continue;
+            break :getMask masks_map.get(key).?;
+        }
+        break :getMask masks_map.get("google pixel 6 pro").?;
     };
-    _core_ctx = try core.Core.init(alloc, init_config);
-    var core_ctx = _core_ctx orelse return error.CoreNotInitialized;
-    // Run Core Context
-    if (main_cmd.sub_cmd == null) {
-        try core_ctx.start();
-        defer core_ctx.stop();
-        while (core_ctx.active) {}
-
-        return;
-    }
+    const main_vals = try main_cmd.getVals(.{});
 
     // No Interface Needed
     // - Generate Key
@@ -190,6 +185,25 @@ pub fn main() !void {
             }
         }
     }
+    if (main_cmd.matchSubCmd("list")) |list_cmd| {
+        const list_opts = try list_cmd.getOpts(.{});
+        if (list_opts.get("masks")) |_| {
+            log.debug("Listing Masks...", .{});
+            for (masks_map.keys()) |key| {
+                try stdout.print(
+                    \\{s}
+                    \\{s}
+                    \\
+                    , .{
+                        key,
+                        masks_map.get(key).?,
+                    },
+                );
+            }
+            try stdout_bw.flush();
+        }
+        posix.exit(0);
+    }
     // - File Serve
     if (main_cmd.matchSubCmd("serve")) |serve_cmd| {
         const serve_opts = try serve_cmd.getOpts(.{});
@@ -201,6 +215,23 @@ pub fn main() !void {
         return;
     }
 
+    // Initialize Core Context
+    const init_config: core.Core.Config = .{
+        .available_ifs = if (core_ifs.items.len > 0) try core_ifs.toOwnedSlice(alloc) else null,
+        .avail_if_names = if_names,
+        .scan_configs = if (core_scan_confs.items.len > 0) try core_scan_confs.toOwnedSlice(alloc) else null,
+        .profile_mask = profile_mask,
+    };
+    _core_ctx = try core.Core.init(alloc, init_config);
+    var core_ctx = _core_ctx orelse return error.CoreNotInitialized;
+    // Run Core Context
+    if (main_cmd.sub_cmd == null) {
+        try core_ctx.start();
+        defer core_ctx.stop();
+        while (core_ctx.active) {}
+        return;
+    }
+
     // Interface
     raw_net_if = netIF: {
         const if_name = (main_vals.get("interface").?).getAs([]const u8) catch break :netIF null;
@@ -209,7 +240,7 @@ pub fn main() !void {
             cleanUp(0);
             break :netIF null;
         };
-        break :netIF core_ctx.if_maps.interfaces.get(if_index);
+        break :netIF core_ctx.if_ctx.interfaces.get(if_index);
         //break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
         //    error.NoInterfaceFound => {
         //        log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
@@ -381,7 +412,7 @@ pub fn main() !void {
             };
             try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ net_if.name, new_freq });
         }
-        raw_net_if = core_ctx.if_maps.interfaces.get(net_if.index);
+        raw_net_if = core_ctx.if_ctx.interfaces.get(net_if.index);
     }
     // - Add
     if (main_cmd.matchSubCmd("add")) |add_cmd| {

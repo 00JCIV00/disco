@@ -16,6 +16,7 @@ const testing = std.testing;
 const time = std.time;
 
 const cova = @import("cova");
+const core = @import("core.zig");
 const nl = @import("netlink.zig");
 const netdata = @import("netdata.zig");
 const address = netdata.address;
@@ -41,6 +42,7 @@ pub const CommandT = cova.Command.Custom(.{
             [3]u8,
             address.IPv4,
             address.RandomMACKind,
+            core.profiles.Mask,
             nl.route.IFF,
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
@@ -98,6 +100,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = [4]u8, .alias = "ip_address" },
             .{ .ChildT = [3]u8, .alias = "oui" },
             .{ .ChildT = address.IPv4, .alias = "ip_address/cidr" },
+            .{ .ChildT = core.profiles.Mask, .alias = "profile_mask" },
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
             .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
@@ -120,6 +123,7 @@ pub const setup_cmd = CommandT{
         "disco host --dir '/tmp'",
     },
     .cmd_groups = &.{ "ACTIVE", "INTERFACE", "SETTINGS" },
+    .opt_groups = &.{ "ACTIVE", "PROFILE", "SETTINGS" },
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
     .vals = &.{
@@ -133,6 +137,7 @@ pub const setup_cmd = CommandT{
         .{
             .name = "interfaces",
             .description = "The WiFi Interface(s) available for DisCo to use. (Multiple Interfaces can be provided.)",
+            .opt_group = "ACTIVE",
             .short_name = 'i',
             .long_name = "interfaces",
             .val = ValueT.ofType([]const u8, .{
@@ -143,11 +148,35 @@ pub const setup_cmd = CommandT{
         .{
             .name = "ssids",
             .description = "Provide SSIDs to focus on. (Up to 10 SSIDs.)",
+            .opt_group = "ACTIVE",
             .short_name = 's',
             .long_name = "ssids",
             .val = ssids_val,
         },
         channels_opt,
+        .{
+            .name = "mask",
+            .description = "Choose a Profile Mask to hide your system. (A list of masks can be viewed w/ `list --masks`)",
+            .opt_group = "PROFILE",
+            .short_name = 'm',
+            .long_name = "mask",
+            .val = ValueT.ofType(core.profiles.Mask, .{
+                .parse_fn = struct {
+                    pub fn parseMask(raw_name: []const u8, _: mem.Allocator) !core.profiles.Mask {
+                        const map = core.profiles.Mask.map;
+                        var lower_buf: [50]u8 = .{ 0 } ** 50;
+                        const name = mem.trim(u8, ascii.lowerString(lower_buf[0..], raw_name), ascii.whitespace[0..]);
+                        return map.get(name) orelse getClosest: {
+                            for (map.keys()) |key| {
+                                if (mem.indexOf(u8, key, name) == null) continue;
+                                break :getClosest map.get(key).?;
+                            }
+                            break :getClosest error.NoMatchingProfileMask;
+                        };
+                    }
+                }.parseMask,
+            }),
+        },
         // TODO Implement these Base Options
         .{
             .name = "log-path",
@@ -214,6 +243,19 @@ pub const setup_cmd = CommandT{
                     .long_name = "gateway",
                     .alias_long_names = &.{ "gw" },
                     .short_name = 'g',
+                },
+            },
+        },
+        .{
+            .name = "list",
+            .alias_names = &.{ "view" },
+            .description = "List various System or DisCo properties.",
+            .cmd_group = "SETTINGS",
+            .opts = &.{
+                .{
+                    .name = "masks",
+                    .description = "List available Profile Masks.",
+                    .long_name = "masks",
                 },
             },
         },
@@ -496,6 +538,7 @@ pub const setup_cmd = CommandT{
 const channels_opt: OptionT = .{
     .name = "channels",
     .description = "Specify channels to be used. (By default, all channels will be used.)",
+    .opt_group = "ACTIVE",
     .short_name = 'c',
     .long_name = "channels",
     .val = ValueT.ofType(usize, .{
