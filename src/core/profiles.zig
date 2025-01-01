@@ -32,14 +32,15 @@ pub const Mask = struct {
         _: fmt.FormatOptions,
         writer: anytype,
     ) !void {
+        const oui = self.oui orelse [3]u8{ 0x01, 0x23, 0x45 };
         try writer.print(
-            \\- OUI:        {s}
+            \\- OUI:        {s} ({s})
             \\- Hostname:   {s}
             \\- TTL:        {d}
             \\- User Agent: {s}
             \\
             , .{
-                MACF{ .bytes = (self.oui orelse [3]u8{ 0x01, 0x23, 0x45 })[0..] },
+                MACF{ .bytes = oui[0..] }, try netdata.oui.findOUI(.short, .station, oui ++ .{ 0 } ** 3),
                 self.hostname,
                 self.ttl,
                 self.ua_str orelse "[Unknown]",
@@ -59,7 +60,7 @@ pub const Mask = struct {
     pub const google_pixel_6_pro: @This() = .{
         .oui = .{ 0xDC, 0xE5, 0x5B },
         .hostname = "Pixel 6 Pro",
-        .ua_str = "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
+        .ua_str = "Mozilla/5.0 (Linux; Android 15; Pixel 6 Pro Build/AP3A.241005.015; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.6778.22 Mobile Safari/537.36",
     };
     /// iPhone 13 Pro Max
     pub const iphone_13_pro_max: @This() = .{

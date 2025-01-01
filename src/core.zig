@@ -1,6 +1,7 @@
 //! Core Functionality of DisCo
 
 const std = @import("std");
+const atomic = std.atomic;
 const heap = std.heap;
 const log = std.log.scoped(.core);
 const mem = std.mem;
@@ -54,9 +55,9 @@ pub const Core = struct {
     /// Config
     config: Config,
     /// Interval for Thread Checks in milliseconds.
-    interval: usize = 100 * time.ns_per_ms,
+    interval: usize = 2500 * time.ns_per_ms,
     /// Active Status of the overall program.
-    active: bool = false,
+    active: atomic.Value(bool) = atomic.Value(bool).init(false),
     /// Interface Ctx
     if_ctx: interfaces.InterfaceCtx,
     /// Network Context
@@ -68,8 +69,8 @@ pub const Core = struct {
     /// Initialize the Core Context.
     pub fn init(alloc: mem.Allocator, config: Config) !@This() {
         log.info("Initializing DisCo Core...", .{});
-        var og_hn_buf = try alloc.alloc(u8, posix.HOST_NAME_MAX);
-        const og_hostname = try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX]);
+        var og_hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
+        const og_hostname = try alloc.dupe(u8, try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX]));
         var arena = heap.ArenaAllocator.init(alloc);
         const arena_alloc = arena.allocator();
         const if_ctx = ifMaps: {
@@ -130,7 +131,6 @@ pub const Core = struct {
                     try nl.route.setState(if_index, c(nl.route.IFF).UP);
                 defer self.if_ctx.interfaces.mutex.unlock();
                 if_entry.value_ptr.usage = .available;
-                //log.info("- Interface '{s}' available.", .{ if_entry.value_ptr.name });
             }
             alloc.free(available_ifs);
         }
@@ -139,7 +139,6 @@ pub const Core = struct {
             for (scan_conf_entries) |scan_conf_entry| {
                 try self.network_ctx.scan_configs.put(
                     alloc,
-                    //scan_conf_entry.if_index,
                     try nl.route.getIfIdx(scan_conf_entry.if_name),
                     scan_conf_entry.conf,
                 );
@@ -153,8 +152,13 @@ pub const Core = struct {
     /// Start the Core Context.
     pub fn start(self: *@This()) !void {
         log.info("Starting DisCo Core...", .{});
-        self.active = true;
+        self.active.store(true, .release);
         if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
+        log.info("Core Locked!", .{});
+        defer {
+            log.info("Core Unlocked!", .{});
+            self._mutex.unlock();
+        }
         try self._thread_pool.init(.{ .allocator = self._alloc, .n_jobs = 3 });
         // Interface Tracking
         self._thread_pool.spawnWg(
@@ -196,14 +200,17 @@ pub const Core = struct {
         );
         log.info("- Started WiFi Network Tracking.", .{});
         log.info("Started DisCo Core.", .{});
+        self._thread_pool.waitAndWork(&self._wait_group);
+        self._thread_pool.deinit();
     }
 
     /// Stop the Core Context, (TODO) archive session data, and Clean Up as needed.
     pub fn stop(self: *@This()) void {
         log.info("Stopping DisCo Core...", .{});
-        self.active = false;
-        self._thread_pool.waitAndWork(&self._wait_group);
-        self._thread_pool.deinit();
+        self.active.store(false, .seq_cst);
+        self._mutex.lock();
+        //self._thread_pool.waitAndWork(&self._wait_group);
+        //self._thread_pool.deinit();
         log.info("- Stopped all Core Threads.", .{});
         // TODO Archive Session Data
         self.cleanUp();
@@ -220,14 +227,15 @@ pub const Core = struct {
         else |err|
             log.warn("Couldn't reset the Hostname: {s}", .{ @errorName(err) });
         self.if_ctx.restore();
-        //self._arena.deinit();
-        log.info("- Allowing OS to clean up remaining Memory.", .{});
-        //self._alloc.free(self.og_hostname);
-        //time.sleep(self.interval);
-        //self.if_maps.deinit(self._alloc);
-        //log.info("- Deinitialized Interface Tracking.", .{});
-        //self.network_maps.deinit(self._alloc);
-        //log.info("- Deinitialized Network Tracking.", .{});
+        //log.info("- Allowing OS to clean up remaining Memory.", .{});
+        self._alloc.free(self.og_hostname);
+        self.if_ctx.deinit(self._alloc);
+        log.info("- Deinitialized Interface Tracking.", .{});
+        self.network_ctx.deinit(self._alloc);
+        log.info("- Deinitialized Network Tracking.", .{});
+        if (self.config.scan_configs) |scan_conf| self._alloc.free(scan_conf);
+        self._arena.deinit();
+        log.info("- Deinitialized All Contexts.", .{});
         log.info("Cleaned up DisCo Core.", .{});
     }
 };

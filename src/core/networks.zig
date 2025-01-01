@@ -1,6 +1,7 @@
 //! Network Tracking
 
 const std = @import("std");
+const atomic = std.atomic;
 const fmt = std.fmt;
 const linux = std.os.linux;
 const log = std.log.scoped(.networks);
@@ -86,12 +87,12 @@ pub const NetworkContext = struct {
     /// (TODO) Improve this if it will be called outside of stopping DisCo.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         self.scan_configs.deinit(alloc);
-        alloc.destroy(self.scan_configs);
+        //alloc.destroy(self.scan_configs);
         var nw_iter = self.networks.iterator();
         while (nw_iter.next()) |nw_entry| nw_entry.value_ptr.deinit(alloc);
         nw_iter.unlock();
         self.networks.deinit(alloc);
-        alloc.destroy(self.networks);
+        //alloc.destroy(self.networks);
         core.resetNLMap(
             alloc,
             [6]u8,
@@ -99,7 +100,7 @@ pub const NetworkContext = struct {
             self.scan_results,
         );
         self.scan_results.deinit(alloc);
-        alloc.destroy(self.scan_results);
+        //alloc.destroy(self.scan_results);
     }
 };
 
@@ -178,7 +179,7 @@ pub fn updScan(
 /// Start & Track Network Scans on available Interfaces.
 pub fn trackScans(
     alloc: mem.Allocator,
-    active: *const bool,
+    active: *const atomic.Value(bool),
     interval: *const usize,
     interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
     network_ctx: *NetworkContext,
@@ -186,7 +187,7 @@ pub fn trackScans(
 ) void {
     log.debug("Tracking WiFi Scans!", .{});
     var err_count: usize = 0;
-    while (active.*) {
+    while (active.load(.acquire)) {
         defer {
             if (err_count > 10) @panic("WiFi Scan Tracking encountered too many errors to continue.");
             time.sleep(interval.*);
@@ -241,15 +242,26 @@ pub fn stopScans(
 /// Track Networks
 pub fn trackNetworks(
     alloc: mem.Allocator,
-    active: *const bool,
+    active: *const atomic.Value(bool),
     interval: *const usize,
     interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
     network_ctx: *NetworkContext,
 ) void {
     log.debug("Tracking WiFi Networks!", .{});
     var err_count: usize = 0;
-    while (active.*) {
+    while (active.load(.acquire)) {
         defer {
+            //log.debug(
+            //    \\
+            //    \\
+            //    \\
+            //    \\ FINISHED NETWORK TRACK THREAD POOL!!!
+            //    \\ Active: {}
+            //    \\
+            //    \\
+            //    \\
+            //    , .{ active.load(.acquire) }
+            //);
             if (err_count >= 10) @panic("WiFi Network Tracking encountered too many errors to continue");
             time.sleep(interval.*);
         }
@@ -261,16 +273,17 @@ pub fn trackNetworks(
             const scan_if = if_entry.value_ptr;
             if (scan_if.usage == .scanning) job_count += 1;
         }
+        if_iter.unlock();
         network_ctx.scan_pool.init(.{ .allocator = alloc, .n_jobs = job_count }) catch |err| {
             log.err("WiFi Network Tracking Error: {s}", .{ @errorName(err) });
             err_count += 1;
             continue;
         };
         defer {
+            network_ctx.scan_pool.waitAndWork(network_ctx.scan_group);
             network_ctx.scan_pool.deinit();
             network_ctx.scan_group.reset();
         }
-        if_iter.unlock();
         if_iter = interfaces.iterator();
         defer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
@@ -281,26 +294,37 @@ pub fn trackNetworks(
                 trackNetworksIFNoErr,
                 .{
                     alloc,
+                    active,
                     scan_if,
                     interval,
                     network_ctx,
                 },
             );
         }
-        network_ctx.scan_pool.waitAndWork(network_ctx.scan_group);
+        //log.debug(
+        //    \\
+        //    \\
+        //    \\
+        //    \\ STARTED NEW NETWORK TRACK THREAD POOL!!!
+        //    \\
+        //    \\
+        //    \\
+        //    , .{}
+        //);
     }
-    log.debug("FINISHED NW TRACKING", .{});
 }
 
 /// Track Networks on the provided Scan Interface (`scan_if`) w/o bubbling up errors.
 fn trackNetworksIFNoErr(
     alloc: mem.Allocator,
+    active: *const atomic.Value(bool),
     scan_if: *const core.interfaces.Interface,
     interval: *const usize,
     network_ctx: *NetworkContext,
 ) void {
     trackNetworksIF(
         alloc,
+        active,
         scan_if,
         interval,
         network_ctx,
@@ -313,6 +337,7 @@ fn trackNetworksIFNoErr(
 /// Track Networks on the provided Scan Interface (`scan_if`)
 fn trackNetworksIF(
     alloc: mem.Allocator,
+    active: *const atomic.Value(bool),
     scan_if: *const core.interfaces.Interface,
     interval: *const usize,
     network_ctx: *NetworkContext,
@@ -352,19 +377,23 @@ fn trackNetworksIF(
         log.warn("Could not parse Scan Results: {s}", .{ @errorName(err) });
         return err;
     };
+    defer alloc.free(scan_results);
     if (scan_results.len == 0) return;
     //log.debug("Parsing {d} Scan Results...", .{ scan_results.len });
-    for (scan_results) |result| {
+    resLoop: for (scan_results) |result| {
+        if (!active.load(.acquire)) return;
         //log.debug("Result: {d}", .{ result.IFINDEX });
         const bss = result.BSS orelse continue;
         const bssid = bss.BSSID;
         //log.debug("Found Network: {s}", .{ MACF{ .bytes = bssid[0..] } });
         const ies = bss.INFORMATION_ELEMENTS orelse continue;
+        const ssid = try alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]");
+        errdefer alloc.free(ssid);
         var new_network: NetworkInfo = .{
             .if_index = result.IFINDEX,
             .last_seen = try zeit.instant(.{}),
             .bssid = bssid,
-            .ssid = try alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]"),
+            .ssid = ssid,
             // TODO Fix this Encryption Determination
             .encryption = switch (nl._80211.determineAuthAlg(result)) {
                 .OPEN => .open,
@@ -375,7 +404,13 @@ fn trackNetworksIF(
             },
             .freq = bss.FREQUENCY, 
             .channel = @intCast(try nl._80211.channelFromFreq(bss.FREQUENCY)),
-            .rssi = @divFloor(bss.SIGNAL_MBM orelse continue, 100),
+            .rssi = getRSSI: {
+                const rssi_mbm = bss.SIGNAL_MBM orelse {
+                    alloc.free(ssid);
+                    continue;
+                };
+                break :getRSSI @divFloor(rssi_mbm, 100);
+            },
             .beacon_interval = bss.BEACON_INTERVAL,
             .bss_tsf = bss.TSF,
         };
@@ -399,7 +434,8 @@ fn trackNetworksIF(
                         @divFloor(age, time.us_per_s) < 1 
                     ) {
                         //log.debug("Worse RSSI on Interface!", .{});
-                        continue;
+                        alloc.free(ssid);
+                        continue :resLoop;
                     }
                     if (age == 0) {
                         new_network.last_seen = old_network.last_seen;
@@ -417,6 +453,6 @@ fn trackNetworksIF(
         }
         else network_ctx.networks.mutex.unlock();
         try network_ctx.networks.put(alloc, bssid, new_network);
-        log.debug("-------------\n{s}", .{ new_network });
+        //log.debug("-------------\n{s}", .{ new_network });
     }
 }

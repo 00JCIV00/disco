@@ -94,13 +94,13 @@ pub fn main() !void {
 
     const main_opts = try main_cmd.getOpts(.{});
     var core_ifs: std.ArrayListUnmanaged(i32) = .{};
+    defer core_ifs.deinit(alloc);
     var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfEntry) = .{};
+    defer core_scan_confs.deinit(alloc);
     var freqs_list: std.ArrayListUnmanaged(u32) = .{};
     defer freqs_list.deinit(alloc);
     const if_names = 
         if (main_opts.get("interfaces")) |if_opt| ifOpt: {
-            errdefer core_ifs.deinit(alloc);
-            errdefer core_scan_confs.deinit(alloc);
             const ssids = ssids: {
                 const ssids_opt = main_opts.get("ssids").?;
                 break :ssids try ssids_opt.val.getAllAs([]const u8);
@@ -120,7 +120,6 @@ pub fn main() !void {
                 };
                 try core_ifs.append(alloc, if_index);
                 try core_scan_confs.append(alloc, .{ 
-                    //.if_index = if_index, 
                     .if_name = if_name,
                     .conf = .{ 
                         .ssids = ssids,
@@ -188,7 +187,13 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("list")) |list_cmd| {
         const list_opts = try list_cmd.getOpts(.{});
         if (list_opts.get("masks")) |_| {
-            log.debug("Listing Masks...", .{});
+            try stdout.print(
+                \\Profile Masks:
+                \\(Specify one of these with `--mask` to hide your System Details.)
+                \\
+                \\
+                , .{},
+            );
             for (masks_map.keys()) |key| {
                 try stdout.print(
                     \\{s}
@@ -224,12 +229,20 @@ pub fn main() !void {
     };
     _core_ctx = try core.Core.init(alloc, init_config);
     var core_ctx = _core_ctx orelse return error.CoreNotInitialized;
-    // Run Core Context
+    // Start Core Context
     if (main_cmd.sub_cmd == null) {
-        try core_ctx.start();
-        defer core_ctx.stop();
-        while (core_ctx.active) {}
+        //try core_ctx.start();
+        const core_thread = try std.Thread.spawn(.{}, core.Core.start, .{ &core_ctx });
+        core_thread.detach();
+        const stdin = io.getStdIn().reader();
+        //var active: bool = true;
+        //while (active) {
+        //}
+        const input = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
+        defer if (input) |in| alloc.free(in);
+        core_ctx.stop();
         return;
+        //posix.exit(0);
     }
 
     // Interface
@@ -241,13 +254,6 @@ pub fn main() !void {
             break :netIF null;
         };
         break :netIF core_ctx.if_ctx.interfaces.get(if_index);
-        //break :netIF NetworkInterface.get(if_name) catch |err| switch (err) {
-        //    error.NoInterfaceFound => {
-        //        log.err("Netlink request timed out. Could not find the '{s}' interface.", .{ if_name });
-        //        return;
-        //    },
-        //    else => return err,
-        //};
     };
     defer cleanUp(0);
 

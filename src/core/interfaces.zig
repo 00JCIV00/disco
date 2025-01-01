@@ -1,6 +1,7 @@
 //! Interface Management
 
 const std = @import("std");
+const atomic = std.atomic;
 const enums = std.enums;
 const fmt = std.fmt;
 const log = std.log.scoped(.interfaces);
@@ -152,32 +153,27 @@ pub const InterfaceCtx = struct {
         while (if_iter.next()) |if_entry| if_entry.value_ptr.deinit(alloc);
         if_iter.unlock();
         self.interfaces.deinit(alloc);
-        alloc.destroy(self.interfaces);
         core.resetNLMap(alloc, u32, nl._80211.Wiphy, self.wiphys);
         self.wiphys.deinit(alloc);
-        alloc.destroy(self.wiphys);
         core.resetNLMap(alloc, i32, nl._80211.Interface, self.wifi_ifs);
         self.wifi_ifs.deinit(alloc);
-        alloc.destroy(self.wifi_ifs);
         core.resetNLMap(alloc, i32, nl.route.IFInfoAndLink, self.links);
         self.links.deinit(alloc);
-        alloc.destroy(self.links);
         core.resetNLMap(alloc, [4]u8, nl.route.IFInfoAndAddr, self.addresses);
         self.addresses.deinit(alloc);
-        alloc.destroy(self.addresses);
     }
 };
 
 /// Track Interfaces
 pub fn trackInterfaces(
     alloc: mem.Allocator,
-    active: *const bool,
+    active: *const atomic.Value(bool),
     interval: *const usize,
     if_maps: *InterfaceCtx,
     config: *core.Core.Config,
 ) void {
     var err_count: usize = 0;
-    while (active.*) {
+    while (active.load(.acquire)) {
         defer {
             if (err_count > 10) @panic("Interface Tracking encountered too many errors to continue!");
             time.sleep(interval.*);
@@ -197,7 +193,7 @@ pub fn trackInterfaces(
 /// Update Interfaces
 pub fn updInterfaces(
     alloc: mem.Allocator,
-    if_maps: *InterfaceCtx,
+    if_ctx: *InterfaceCtx,
     config: *core.Core.Config,
 ) !void {
     trackWiFiIFs: {
@@ -206,13 +202,14 @@ pub fn updInterfaces(
             alloc,
             i32,
             nl._80211.Interface,
-            if_maps.wifi_ifs,
+            if_ctx.wifi_ifs,
         );
         // Parse
         const nl_wifi_ifs = nl._80211.getAllInterfaces(alloc) catch |err| {
             log.err("Could not parse Netlink WiFi Interfaces: {s}", .{ @errorName(err) });
             break :trackWiFiIFs;
         };
+        errdefer for (nl_wifi_ifs) |wifi_if| nl.parse.freeBytes(alloc, nl._80211.Interface, wifi_if);
         defer alloc.free(nl_wifi_ifs);
         if (nl_wifi_ifs.len == 0) {
             log.warn("No Interfaces Found.", .{});
@@ -220,7 +217,7 @@ pub fn updInterfaces(
         }
         for (nl_wifi_ifs) |wifi_if| {
             //log.debug("WiFi IF: {d}", .{ wifi_if.IFINDEX });
-            const _old = try if_maps.wifi_ifs.fetchPut(alloc, @intCast(wifi_if.IFINDEX), wifi_if);
+            const _old = try if_ctx.wifi_ifs.fetchPut(alloc, @intCast(wifi_if.IFINDEX), wifi_if);
             if (_old) |old| nl.parse.freeBytes(alloc, nl._80211.Interface, old.value);
         }
     }
@@ -230,13 +227,14 @@ pub fn updInterfaces(
             alloc,
             u32,
             nl._80211.Wiphy,
-            if_maps.wiphys,
+            if_ctx.wiphys,
         );
         // Parse
         const nl_wiphys = nl._80211.getAllWIPHY(alloc) catch |err| {
             log.err("Could not parse Netlink WiFi Physical Devices: {s}", .{ @errorName(err) });
             break :trackWiphys;
         };
+        errdefer for (nl_wiphys) |wiphy| nl.parse.freeBytes(alloc, nl._80211.Wiphy, wiphy);
         defer alloc.free(nl_wiphys);
         if (nl_wiphys.len == 0) {
             log.warn("No WiFi Physical Devices Found.", .{});
@@ -244,7 +242,7 @@ pub fn updInterfaces(
         }
         for (nl_wiphys) |wiphy| {
             //log.debug("WIPHY: ({d}) {s}", .{ wiphy.WIPHY, wiphy.WIPHY_NAME });
-            const _old = try if_maps.wiphys.fetchPut(alloc, wiphy.WIPHY, wiphy);
+            const _old = try if_ctx.wiphys.fetchPut(alloc, wiphy.WIPHY, wiphy);
             if (_old) |old| nl.parse.freeBytes(alloc, nl._80211.Wiphy, old.value);
         }
     }
@@ -254,21 +252,22 @@ pub fn updInterfaces(
             alloc,
             i32,
             nl.route.IFInfoAndLink,
-            if_maps.links,
+            if_ctx.links,
         );
         // Parse
         const nl_links = nl.route.getAllIFLinks(alloc) catch |err| {
             log.err("Could not parse Netlink Interface Links: {s}", .{ @errorName(err) });
             break :trackLinks;
         };
+        errdefer for (nl_links) |link| nl.parse.freeBytes(alloc, nl.route.InterfaceLink, link.link);
         defer alloc.free(nl_links);
         if (nl_links.len == 0) {
             log.warn("No Interfaces Found.", .{});
             break :trackLinks;
         }
-        for (nl_links) |link| {
+        for (nl_links) |nl_link| {
             //log.debug("Link: {d}", .{ link.info.index });
-            const _old = try if_maps.links.fetchPut(alloc, link.info.index, link);
+            const _old = try if_ctx.links.fetchPut(alloc, nl_link.info.index, nl_link);
             if (_old) |old| nl.parse.freeBytes(alloc, nl.route.IFInfoAndLink, old.value);
         }
     }
@@ -278,41 +277,43 @@ pub fn updInterfaces(
             alloc,
             [4]u8,
             nl.route.IFInfoAndAddr,
-            if_maps.addresses,
+            if_ctx.addresses,
         );
         // Parse
         const nl_addrs = nl.route.getAllIFAddrs(alloc) catch |err| {
             log.err("Could not parse Netlink Interface Addresses: {s}", .{ @errorName(err) });
             break :trackAddrs;
         };
+        errdefer for (nl_addrs) |nl_addr| nl.parse.freeBytes(alloc, nl.route.InterfaceAddress, nl_addr.addr);
         defer alloc.free(nl_addrs);
         if (nl_addrs.len == 0) {
             log.warn("No Interfaces Found.", .{});
             break :trackAddrs;
         }
-        var links_iter = if_maps.links.iterator();
+        var links_iter = if_ctx.links.iterator();
         defer links_iter.unlock();
-        while (links_iter.next()) |link| {
-            //log.debug("IF: {d}", .{ link.key_ptr.* });
-            for (nl_addrs) |addr| {
-                if (
-                    addr.info.index != link.key_ptr.* or
-                    addr.info.family != nl.AF.INET
-                ) {
-                    //nl.parse.freeBytes(alloc, nl.route.IFInfoAndAddr, addr);
-                    continue;
-                }
-                const _old = try if_maps.addresses.fetchPut(alloc, addr.addr.ADDRESS orelse continue, addr);
-                if (_old) |old| nl.parse.freeBytes(alloc, nl.route.IFInfoAndAddr, old.value);
+        nlAddrs: for (nl_addrs) |nl_addr| {
+            if (nl_addr.info.family != nl.AF.INET) {
+                nl.parse.freeBytes(alloc, nl.route.IFInfoAndAddr, nl_addr);
+                continue;
             }
+            while (links_iter.next()) |link| {
+                if (nl_addr.info.index != link.key_ptr.*) continue;
+                //_ = try if_ctx.addresses.fetchPut(alloc, nl_addr.addr.ADDRESS orelse continue, nl_addr);
+                const _old = try if_ctx.addresses.fetchPut(alloc, nl_addr.addr.ADDRESS orelse continue, nl_addr);
+                if (_old) |old| nl.parse.freeBytes(alloc, nl.route.IFInfoAndAddr, old.value);
+                continue :nlAddrs;
+            }
+            nl.parse.freeBytes(alloc, nl.route.IFInfoAndAddr, nl_addr);
         }
     }
-    var wifi_ifs_iter = if_maps.wifi_ifs.iterator();
+    var wifi_ifs_iter = if_ctx.wifi_ifs.iterator();
     defer wifi_ifs_iter.unlock();
     //log.debug("Interfaces:", .{});
     while (wifi_ifs_iter.next()) |wifi_if| {
-        var _last_if = if_maps.interfaces.get(wifi_if.key_ptr.*);
+        var _last_if = if_ctx.interfaces.get(wifi_if.key_ptr.*);
         var add_if: Interface = _last_if orelse undefined;
+        add_if._init = false;
         add_if.usage = usage: {
             if (_last_if) |last_if| break :usage last_if.usage;
             const avail_ifs = config.available_ifs orelse break :usage .unavailable;
@@ -331,15 +332,25 @@ pub fn updInterfaces(
         add_if.last_upd = try zeit.instant(.{});
         add_if.name = alloc.dupe(u8, wifi_if.value_ptr.IFNAME) catch @panic("OOM");
         add_if.mac = wifi_if.value_ptr.MAC;
-        add_if.mode = wifi_if.value_ptr.IFTYPE orelse continue;
+        add_if.mode = wifi_if.value_ptr.IFTYPE orelse {
+            alloc.free(add_if.name);
+            continue;
+        };
         add_if.phy_index = wifi_if.value_ptr.WIPHY;
         wiphy: {
-            const wiphy = if_maps.wiphys.get(wifi_if.value_ptr.WIPHY) orelse continue;
+            const wiphy = if_ctx.wiphys.get(wifi_if.value_ptr.WIPHY) orelse {
+                alloc.free(add_if.name);
+                continue;
+            };
             add_if.phy_name = alloc.dupe(u8, wiphy.WIPHY_NAME) catch @panic("OOM");
             break :wiphy;
         }
+        defer if (!add_if._init) {
+            alloc.free(add_if.name);
+            alloc.free(add_if.phy_name);
+        };
         link: {
-            const link = if_maps.links.get(add_if.index) orelse continue;
+            const link = if_ctx.links.get(add_if.index) orelse continue;
             add_if.state = link.info.flags;
             add_if.mtu = link.link.MTU;
             add_if.og_mac = link.link.PERM_ADDRESS orelse link.link.ADDRESS orelse continue;
@@ -348,7 +359,7 @@ pub fn updInterfaces(
         addr: {
             add_if.ips = .{ null } ** 10;
             add_if.cidrs = .{ null } ** 10;
-            var addrs_iter = if_maps.addresses.iterator();
+            var addrs_iter = if_ctx.addresses.iterator();
             defer addrs_iter.unlock();
             newIP: while (addrs_iter.next()) |addr| {
                 const new_ip = addr.value_ptr.addr.ADDRESS orelse continue;
@@ -372,7 +383,7 @@ pub fn updInterfaces(
             break :addr;
         }
         if (add_if.usage != .unavailable) {
-            if (if_maps.interfaces.get(add_if.index) == null) {
+            if (if_ctx.interfaces.get(add_if.index) == null) {
                 var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
                 if (config.profile_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
                 try nl.route.setMAC(add_if.index, mask_mac);
@@ -385,12 +396,13 @@ pub fn updInterfaces(
             }
         }
         if (_last_if) |*last_if| last_if.deinit(alloc);
-        try if_maps.interfaces.put(alloc, add_if.index, add_if);
+        add_if._init = true;
+        try if_ctx.interfaces.put(alloc, add_if.index, add_if);
     }
     const now = try zeit.instant(.{});
     var rm_idxs: [50]?i32 = .{ null } ** 50;
     var rm_count: u8 = 0;
-    var if_iter = if_maps.interfaces.iterator();
+    var if_iter = if_ctx.interfaces.iterator();
     errdefer if_iter.unlock();
     while (if_iter.next()) |net_if| {
         const since_upd = @divFloor((now.timestamp -| net_if.value_ptr.last_upd.timestamp), @as(i128, time.ns_per_ms));
@@ -402,7 +414,7 @@ pub fn updInterfaces(
     if_iter.unlock();
     for (rm_idxs[0..rm_count]) |_idx| {
         const idx = _idx orelse break;
-        _ = if_maps.interfaces.remove(idx);
+        _ = if_ctx.interfaces.remove(idx);
     }
 }
 
