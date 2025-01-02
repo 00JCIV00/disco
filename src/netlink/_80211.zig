@@ -969,6 +969,32 @@ pub const SchedScanPlan = struct {
     DURATION: ?u16 = null,
 };
 
+/// Security Types
+pub const SecurityType = enum {
+    open,
+    wep,
+    wpa1,
+    wpa2,
+    wpa3t,
+    wpa3,
+};
+
+// Authentication types
+pub const AuthType = enum {
+    open,
+    /// Pre-shared key
+    psk,
+    /// Enterprise (802.1X)
+    eap,
+    // Simultaneous Authentication of Equals (WPA3)
+    sae,
+};
+
+pub const SecurityInfo = struct {
+    type: SecurityType,
+    auth: AuthType,
+};
+
 /// Basic Service Set (BSS)
 pub const BSS = enum(u32) {
     /// Invalid value for BSS attributes
@@ -1077,6 +1103,68 @@ pub const BasicServiceSet = struct {
     USE_FOR: ?u32 = null,
     /// Optional reasons this BSS cannot be used
     CANNOT_USE_REASONS: ?u32 = null,
+
+    
+    /// Get a network's Security Info based on this Basic Service Set.
+    pub fn getSecurityInfo(self: *const @This()) !SecurityInfo {
+        var security: SecurityInfo = .{
+            .type = .open,
+            .auth = .open,
+        };
+        const ies = self.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+        // Check RSN IE for WPA2/WPA3
+        if (ies.RSN) |rsn| {
+            var has_psk = false;
+            var has_sae = false;
+            var has_eap = false;
+            if (rsn.AKM_SUITES) |suites| {
+                for (suites) |suite| {
+                    // Check if RSN OUI
+                    if (std.mem.eql(u8, suite.OUI[0..], &.{ 0x00, 0x0F, 0xAC })) {
+                        const AKM = comptime c(InformationElements.RobustSecurityNetwork.RSN.AKM);
+                        switch (suite.TYPE) {
+                            AKM.PSK => has_psk = true,
+                            AKM.SAE => has_sae = true,
+                            AKM.EAP => has_eap = true,
+                            else => {},
+                        }
+                    }
+                }
+            }
+            // Set security type
+            security.type = 
+                if (has_sae and has_psk) .wpa3t
+                else if (has_sae) .wpa3
+                else .wpa2;
+            // Set auth type
+            security.auth =
+                if (has_sae) .sae
+                else if (has_eap) .eap
+                else if (has_psk) .psk
+                else .open;
+            return security;
+        }
+        // Check for WPA1 in vendor specific IEs
+        if (ies.VENDOR_SPECIFIC) |vendors| {
+            for (vendors) |vendor| {
+                if (
+                    vendor.len >= 4 and 
+                    std.mem.eql(u8, vendor[0..4], &.{ 0x00, 0x50, 0xF2, 0x01 }) and
+                    security.type == .open
+                ) {
+                    security.type = .wpa1;
+                    security.auth = .psk; // WPA1 typically uses PSK
+                    return security;
+                }
+            }
+        }
+        // Check for WEP if no other security type was found
+        const capability = self.CAPABILITY orelse return error.MissingCapability;
+        const is_privacy = (capability & 0x0010) != 0;
+        if (security.type == .open and is_privacy)
+            security.type = .wep;
+        return security;
+    }
 };
 
 /// Information Element Tag Header

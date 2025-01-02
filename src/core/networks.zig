@@ -33,7 +33,8 @@ pub const NetworkInfo = struct {
     // Details
     bssid: [6]u8,
     ssid: []const u8,
-    encryption: wpa.Protocol,
+    security: nl._80211.SecurityType,
+    auth: nl._80211.AuthType,
     channel: u32,
     freq: u32,
     rssi: i32,
@@ -53,6 +54,7 @@ pub const NetworkInfo = struct {
             \\{s}
             \\- BSSID:     {s} ({s})
             \\- Security:  {s}
+            \\- Auth:      {s}
             \\- Channel:   {d} ({d} MHz)
             \\- RSSI:      {d} dBm
             \\- Rx Qual:   {d}
@@ -61,7 +63,8 @@ pub const NetworkInfo = struct {
             , .{
                 self.ssid,
                 MACF{ .bytes = self.bssid[0..] }, try netdata.oui.findOUI(.short, .ap, self.bssid),
-                @tagName(self.encryption),
+                @tagName(self.security),
+                @tagName(self.auth),
                 self.channel, self.freq,
                 self.rssi,
                 self.rx_qual orelse 0,
@@ -294,7 +297,6 @@ pub fn trackNetworks(
                 trackNetworksIFNoErr,
                 .{
                     alloc,
-                    active,
                     scan_if,
                     interval,
                     network_ctx,
@@ -317,14 +319,12 @@ pub fn trackNetworks(
 /// Track Networks on the provided Scan Interface (`scan_if`) w/o bubbling up errors.
 fn trackNetworksIFNoErr(
     alloc: mem.Allocator,
-    active: *const atomic.Value(bool),
     scan_if: *const core.interfaces.Interface,
     interval: *const usize,
     network_ctx: *NetworkContext,
 ) void {
     trackNetworksIF(
         alloc,
-        active,
         scan_if,
         interval,
         network_ctx,
@@ -337,7 +337,6 @@ fn trackNetworksIFNoErr(
 /// Track Networks on the provided Scan Interface (`scan_if`)
 fn trackNetworksIF(
     alloc: mem.Allocator,
-    active: *const atomic.Value(bool),
     scan_if: *const core.interfaces.Interface,
     interval: *const usize,
     network_ctx: *NetworkContext,
@@ -381,10 +380,12 @@ fn trackNetworksIF(
     if (scan_results.len == 0) return;
     //log.debug("Parsing {d} Scan Results...", .{ scan_results.len });
     resLoop: for (scan_results) |result| {
-        if (!active.load(.acquire)) return;
         //log.debug("Result: {d}", .{ result.IFINDEX });
+        var valid_result: bool = false;
+        defer if(!valid_result) nl.parse.freeBytes(alloc, nl._80211.ScanResults, result);
         const bss = result.BSS orelse continue;
         const bssid = bss.BSSID;
+        const sec_info = try bss.getSecurityInfo();
         //log.debug("Found Network: {s}", .{ MACF{ .bytes = bssid[0..] } });
         const ies = bss.INFORMATION_ELEMENTS orelse continue;
         const ssid = try alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]");
@@ -394,14 +395,8 @@ fn trackNetworksIF(
             .last_seen = try zeit.instant(.{}),
             .bssid = bssid,
             .ssid = ssid,
-            // TODO Fix this Encryption Determination
-            .encryption = switch (nl._80211.determineAuthAlg(result)) {
-                .OPEN => .open,
-                .SHARED_KEY,
-                .FT,
-                .NETWORK_EAP => .wpa2,
-                .SAE => .wpa3,
-            },
+            .security = sec_info.type,
+            .auth = sec_info.auth,
             .freq = bss.FREQUENCY, 
             .channel = @intCast(try nl._80211.channelFromFreq(bss.FREQUENCY)),
             .rssi = getRSSI: {
@@ -414,6 +409,7 @@ fn trackNetworksIF(
             .beacon_interval = bss.BEACON_INTERVAL,
             .bss_tsf = bss.TSF,
         };
+        valid_result = true;
         const _old_result = try network_ctx.scan_results.fetchPut(alloc, bssid, result);
         if (_old_result) |old| nl.parse.freeBytes(alloc, nl._80211.ScanResults, old.value);
         const _old_network = network_ctx.networks.getEntry(bssid);
@@ -453,6 +449,6 @@ fn trackNetworksIF(
         }
         else network_ctx.networks.mutex.unlock();
         try network_ctx.networks.put(alloc, bssid, new_network);
-        //log.debug("-------------\n{s}", .{ new_network });
+        log.debug("-------------\n{s}", .{ new_network });
     }
 }

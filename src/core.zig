@@ -55,7 +55,7 @@ pub const Core = struct {
     /// Config
     config: Config,
     /// Interval for Thread Checks in milliseconds.
-    interval: usize = 2500 * time.ns_per_ms,
+    interval: usize = 100 * time.ns_per_ms,
     /// Active Status of the overall program.
     active: atomic.Value(bool) = atomic.Value(bool).init(false),
     /// Interface Ctx
