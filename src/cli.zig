@@ -178,10 +178,10 @@ pub const setup_cmd = CommandT{
             }),
         },
         .{
-            .name = "mask_mac",
+            .name = "mask_oui",
             .description = "Provide an OUI or Manufacturer to hide your WiFi Interfaces. (This will provide a Link Local Random OUI if one can't be found.)",
             .opt_group = "MASK",
-            .long_name = "mask-mac",
+            .long_name = "mask-oui",
             .val = ValueT.ofType([3]u8, .{
                 .parse_fn = struct {
                     pub fn parseOUI(oui_arg: []const u8, alloc: mem.Allocator) ![3]u8 {

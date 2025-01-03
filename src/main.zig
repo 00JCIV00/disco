@@ -154,8 +154,8 @@ pub fn main() !void {
         }
         const mask: core.profiles.Mask = .{
             .oui = getOUI: {
-                if (main_opts.get("mask_mac")) |mac_opt| 
-                    break :getOUI try mac_opt.val.getAs([3]u8);
+                if (main_opts.get("mask_oui")) |oui_opt| 
+                    break :getOUI try oui_opt.val.getAs([3]u8);
                 break :getOUI try oui.getOUI("Intel");
             },
             .hostname = getHN: {
