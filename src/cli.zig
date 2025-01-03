@@ -115,24 +115,24 @@ pub const setup_cmd = CommandT{
     .name = "disco",
     .description = "Discreetly Connect to networks.",
     .examples = &.{
-        "disco wlan0",
-        "disco wlan0 set --mac 00:11:22:aa:bb:cc",
-        "disco wlan0 add --ip 192.168.10.10",
-        "disco wlan0 del --route 192.168.0.0/16",
+        "disco -i wlan0",
+        "disco -i wlan0 set --mac 00:11:22:aa:bb:cc",
+        "disco -i wlan0 add --ip 192.168.10.10",
+        "disco -i wlan0 del --route 192.168.0.0/16",
         "disco sys set --hostname 'shaggy'",
         "disco host --dir '/tmp'",
     },
     .cmd_groups = &.{ "ACTIVE", "INTERFACE", "SETTINGS" },
-    .opt_groups = &.{ "ACTIVE", "PROFILE", "SETTINGS" },
+    .opt_groups = &.{ "ACTIVE", "MASK", "SETTINGS" },
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
-    .vals = &.{
-        // TODO replace this w/ the `--interface` Option?
-        ValueT.ofType([]const u8, .{
-            .name = "interface",
-            .description = "The Network Interface to use. (This is mandatory)"
-        }),
-    },
+    //.vals = &.{
+    //    // TODO replace this w/ the `--interface` Option?
+    //    ValueT.ofType([]const u8, .{
+    //        .name = "interface",
+    //        .description = "The Network Interface to use. (This is mandatory)"
+    //    }),
+    //},
     .opts = &.{
         .{
             .name = "interfaces",
@@ -157,7 +157,7 @@ pub const setup_cmd = CommandT{
         .{
             .name = "mask",
             .description = "Choose a Profile Mask to hide your system. (A list of masks can be viewed w/ `list --masks`)",
-            .opt_group = "PROFILE",
+            .opt_group = "MASK",
             .short_name = 'm',
             .long_name = "mask",
             .val = ValueT.ofType(core.profiles.Mask, .{
@@ -176,6 +176,45 @@ pub const setup_cmd = CommandT{
                     }
                 }.parseMask,
             }),
+        },
+        .{
+            .name = "mask_mac",
+            .description = "Provide an OUI or Manufacturer to hide your WiFi Interfaces. (This will provide a Link Local Random OUI if one can't be found.)",
+            .opt_group = "MASK",
+            .long_name = "mask-mac",
+            .val = ValueT.ofType([3]u8, .{
+                .parse_fn = struct {
+                    pub fn parseOUI(oui_arg: []const u8, alloc: mem.Allocator) ![3]u8 {
+                        return
+                            getOUI(oui_arg, alloc) catch
+                            oui.getOUI(oui_arg) catch
+                            address.getRandomMAC(.ll)[0..3].*;
+                    }
+                }.parseOUI,
+            }),
+        },
+        .{
+            .name = "mask_hostname",
+            .description = "Provide a Hostname to hide your System when connected to a network.",
+            .opt_group = "MASK",
+            .long_name = "mask-hostname",
+            .alias_long_names = &.{ "mask-hn" },
+            .val = ValueT.ofType([]const u8, .{}),
+        },
+        .{
+            .name = "mask_ttl",
+            .description = "Provide a Time-to-Live (TTL) value to hide your System when connected to a network.",
+            .opt_group = "MASK",
+            .long_name = "mask-ttl",
+            .val = ValueT.ofType(u8, .{}),
+        },
+        .{
+            .name = "mask_user_agent",
+            .description = "Provide a User Agent (UA) String to hide your System when connected to a network. (This only applies to HTTP traffic from DisCo.)",
+            .opt_group = "MASK",
+            .long_name = "mask-user-agent",
+            .alias_long_names = &.{ "mask-ua" },
+            .val = ValueT.ofType([]const u8, .{}),
         },
         // TODO Implement these Base Options
         .{
@@ -206,7 +245,16 @@ pub const setup_cmd = CommandT{
             .description = "Connect to a WiFi Network using the specified Interface.",
             .cmd_group = "ACTIVE",
             .vals = &.{
-                ssids_val,
+                ValueT.ofType([]const u8, .{
+                    .name = "ssid",
+                    .description = "Set the SSID of the Network. (Up to 32 characters)",
+                    .default_val = "",
+                    .valid_fn = struct {
+                        pub fn validSSID(arg: []const u8, _: mem.Allocator) bool {
+                            return arg.len > 0 and arg.len <= 32;
+                        }
+                    }.validSSID,
+                }),
             },
             .opts = &.{
                 channels_opt,
@@ -501,12 +549,12 @@ pub const setup_cmd = CommandT{
         },
         .{
             .name = "system",
-            .description = "Manage System attributes.",
+            .description = "Manage System properties.",
             .cmd_group = "SETTINGS",
             .sub_cmds = &.{
                 .{
                     .name = "set",
-                    .description = "Set System attributes.",
+                    .description = "Set System properties.",
                     .opts = &.{
                         .{
                             .name = "hostname",

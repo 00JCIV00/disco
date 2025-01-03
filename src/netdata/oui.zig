@@ -55,7 +55,6 @@ pub fn getOUI(manufacturer: []const u8) ![3]u8 {
     var cur_man_buf: [100]u8 = .{ 0 } ** 100;
     var oui_rows_iter = mem.tokenizeScalar(u8, oui_tbl, '\n');
     var start: usize = @as(u16, 10_000) + crypto.random.int(u15);
-    std.log.debug("OUI START: {d}", .{ start });
     while (true) : (start = 0) {
         var iter_idx: usize = 0;
         while (oui_rows_iter.next()) |oui_row| : (iter_idx += 1) {
@@ -63,10 +62,15 @@ pub fn getOUI(manufacturer: []const u8) ![3]u8 {
             var oui_iter = mem.tokenizeScalar(u8, oui_row, '\t');
             const cur_oui = oui_iter.next() orelse continue;
             _ = oui_iter.next() orelse continue;
-            const cur_man = ascii.lowerString(cur_man_buf[0..], mem.trim(u8, oui_iter.next() orelse continue, ascii.whitespace[0..]));
+            const cur_man = ascii.lowerString(
+                cur_man_buf[0..],
+                mem.trim(u8, oui_iter.next() orelse continue, 
+                ascii.whitespace[0..]),
+            );
             if (mem.indexOf(u8, cur_man, man) != null) 
                 return (try address.parseMAC(cur_oui))[0..3].*;
         }
+        if (start == 0) break;
     }
     return error.ManufacturerNotFound;
 }

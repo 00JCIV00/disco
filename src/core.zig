@@ -238,6 +238,29 @@ pub const Core = struct {
         log.info("- Deinitialized All Contexts.", .{});
         log.info("Cleaned up DisCo Core.", .{});
     }
+
+    /// Print System & Interface Info
+    pub fn printInfo(self: *@This(), writer: anytype) !void {
+        var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
+        try writer.print(
+            \\DisCo Info:
+            \\-----------
+            \\Hostname: {s}
+            \\-----------
+            \\
+            , .{ try posix.gethostname(hn_buf[0..]) }
+        );
+        var if_iter = self.if_ctx.interfaces.iterator();
+        defer if_iter.unlock();
+        while (if_iter.next()) |print_if| {
+            try writer.print(
+                \\Interface Details:
+                \\{s}
+                \\
+                , .{ print_if.value_ptr }
+            );
+        }
+    }
 };
 
 /// Thread Safe ArrayList

@@ -1,6 +1,7 @@
 //! Profile Information f/ DisCo
 
 const std = @import("std");
+const crypto = std.crypto;
 const fmt = std.fmt;
 const linux = std.os.linux;
 const log = std.log;
@@ -51,6 +52,7 @@ pub const Mask = struct {
     // TODO Fill out a few common Masks
     pub const map = std.StaticStringMap(@This()).initComptime(&.{
         .{ "google pixel 6 pro", google_pixel_6_pro },
+        .{ "intel windows 11 pc", intel_windows_11_pc },
         .{ "iphone 13 pro max", iphone_13_pro_max },
         .{ "lg v60 thingq 5g", lg_v60_thinq_5g },
         .{ "samsung galaxy s21", samsung_galaxy_s21 },
@@ -61,6 +63,13 @@ pub const Mask = struct {
         .oui = .{ 0xDC, 0xE5, 0x5B },
         .hostname = "Pixel 6 Pro",
         .ua_str = "Mozilla/5.0 (Linux; Android 15; Pixel 6 Pro Build/AP3A.241005.015; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.6778.22 Mobile Safari/537.36",
+    };
+    /// Intel Windows 11 PC
+    pub const intel_windows_11_pc: @This() = .{
+        .oui = .{ 0x70, 0xD8, 0x23 },
+        //.hostname = fmt.comptimePrint("DESKTOP-{X:7<L}", .{ crypto.random.int(u32) }),
+        .hostname = "DESKTOP-L836F9W",
+        .ua_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     };
     /// iPhone 13 Pro Max
     pub const iphone_13_pro_max: @This() = .{
@@ -80,5 +89,4 @@ pub const Mask = struct {
         .hostname = "samsung_s21",
         .ua_str = "Mozilla/5.0 (Linux; Android 14; SM-G991N Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/114.0.0.0 Whale/1.0.0.0 Crosswalk/28.114.0.25 Mobile Safari/537.36 NAVER(inapp; search; 2000; 12.9.3)",
     };
-
 };
