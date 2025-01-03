@@ -30,6 +30,8 @@ pub const Core = struct {
             conf: nl._80211.TriggerScanConfig,
         };
 
+        /// Use Profile Mask
+        use_mask: bool = true,
         /// Available Interfaces
         available_ifs: ?[]const i32 = null,
         /// Available Interface Names
@@ -114,8 +116,10 @@ pub const Core = struct {
             .network_ctx = network_ctx,
             .og_hostname = og_hostname,
         };
-        try sys.setHostName(config.profile_mask.hostname);
-        log.info("- Set Hostname to '{s}'.", .{ config.profile_mask.hostname });
+        if (config.use_mask) {
+            try sys.setHostName(config.profile_mask.hostname);
+            log.info("- Set Hostname to '{s}'.", .{ config.profile_mask.hostname });
+        }
         try interfaces.updInterfaces(
             alloc,
             &self.if_ctx,
@@ -209,6 +213,7 @@ pub const Core = struct {
         log.info("Stopping DisCo Core...", .{});
         self.active.store(false, .seq_cst);
         self._mutex.lock();
+        defer self._mutex.unlock();
         //self._thread_pool.waitAndWork(&self._wait_group);
         //self._thread_pool.deinit();
         log.info("- Stopped all Core Threads.", .{});

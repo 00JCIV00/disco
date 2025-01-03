@@ -259,6 +259,7 @@ pub fn main() !void {
 
     // Initialize Core Context
     const init_config: core.Core.Config = .{
+        .use_mask = !main_cmd.checkArgGroup(.Command, "INTERFACE"),
         .available_ifs = if (core_ifs.items.len > 0) try core_ifs.toOwnedSlice(alloc) else null,
         .avail_if_names = if_names,
         .scan_configs = if (core_scan_confs.items.len > 0) try core_scan_confs.toOwnedSlice(alloc) else null,
@@ -728,6 +729,7 @@ fn checkIF(stdout: io.AnyWriter, cmd_name: []const u8) void {
     stdout.print("{s}\n\n   `disco {s}` needs to know which interface(s) to use. (Ex: disco -i wlan0 {s})\n", .{ art.wifi_card, cmd_name, cmd_name }) catch {
         log.err("DisCo needs to know which interface to use. (Ex: disco wlan0)", .{});
     };
+    process.exit(1);
     //cleanUp(0);
 }
 
@@ -775,6 +777,7 @@ fn cleanUp(_: i32) callconv(.C) void {
     }
     if (_core_ctx) |*core_ctx| {
         core_ctx.stop();
+        core_ctx._mutex.lock();
     }
     log.info("Exit!", .{});
     posix.exit(0);

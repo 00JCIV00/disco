@@ -291,6 +291,8 @@ pub const HandleConfig = struct {
     nl_type: u16,
     /// Family Command Value (only applies for Generic Netlink Headers)
     fam_cmd: ?u8 = null,
+    /// Log Parsing Errors as Warnings
+    warn_parse_err: bool = false,
 };
 
 /// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`).
@@ -347,7 +349,8 @@ pub fn handleType(
             };
             if (!(match_hdr and match_cmd)) continue;
             const instance = parseFn(alloc, msg.data) catch |err| {
-                log.warn("Parsing Error: {s}", .{ @errorName(err) });
+                if (config.warn_parse_err)
+                    log.warn("Parsing Error: {s}", .{ @errorName(err) });
                 continue;
             };
             try resp_list.append(alloc, instance);

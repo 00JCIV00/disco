@@ -176,7 +176,7 @@ pub fn trackInterfaces(
     while (active.load(.acquire)) {
         defer {
             if (err_count > 10) @panic("Interface Tracking encountered too many errors to continue!");
-            time.sleep(interval.*);
+            time.sleep(interval.* * 5);
         }
         updInterfaces(
             alloc,
@@ -266,7 +266,7 @@ pub fn updInterfaces(
             break :trackLinks;
         }
         for (nl_links) |nl_link| {
-            //log.debug("Link: {d}", .{ link.info.index });
+            //log.debug("Link: {d}", .{ nl_link.info.index });
             const _old = try if_ctx.links.fetchPut(alloc, nl_link.info.index, nl_link);
             if (_old) |old| nl.parse.freeBytes(alloc, nl.route.IFInfoAndLink, old.value);
         }
@@ -293,13 +293,13 @@ pub fn updInterfaces(
         var links_iter = if_ctx.links.iterator();
         defer links_iter.unlock();
         nlAddrs: for (nl_addrs) |nl_addr| {
+            defer links_iter._iter.index = 0;
             if (nl_addr.info.family != nl.AF.INET) {
                 nl.parse.freeBytes(alloc, nl.route.IFInfoAndAddr, nl_addr);
                 continue;
             }
             while (links_iter.next()) |link| {
                 if (nl_addr.info.index != link.key_ptr.*) continue;
-                //_ = try if_ctx.addresses.fetchPut(alloc, nl_addr.addr.ADDRESS orelse continue, nl_addr);
                 const _old = try if_ctx.addresses.fetchPut(alloc, nl_addr.addr.ADDRESS orelse continue, nl_addr);
                 if (_old) |old| nl.parse.freeBytes(alloc, nl.route.IFInfoAndAddr, old.value);
                 continue :nlAddrs;
@@ -383,12 +383,13 @@ pub fn updInterfaces(
             break :addr;
         }
         if (add_if.usage != .unavailable) {
-            if (if_ctx.interfaces.get(add_if.index) == null) {
+            if (if_ctx.interfaces.get(add_if.index) == null) newIF: {
+                log.info("Available Interface Found:\n{s}", .{ add_if });
+                if (!config.use_mask) break :newIF;
                 var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
                 if (config.profile_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
                 try nl.route.setMAC(add_if.index, mask_mac);
-                time.sleep(500 * time.ns_per_ms);
-                log.info("Available Interface Found:\n{s}", .{ add_if });
+                log.info("- Changed Interface '{s}' MAC to: {s}", .{ add_if.name, MACF{ .bytes = mask_mac[0..] } });
             }
             if (add_if.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN) {
                 try nl.route.setState(add_if.index, c(nl.route.IFF).UP);
