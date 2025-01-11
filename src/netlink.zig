@@ -321,7 +321,10 @@ pub fn handleType(
     const fam_hdr_len = @sizeOf(FamHdrT);
     // Parse Links
     var resp_list = try std.ArrayListUnmanaged(ResponseT).initCapacity(alloc, 0);
-    errdefer resp_list.deinit(alloc);
+    errdefer {
+        for (resp_list.items) |item| parse.freeBytes(alloc, ResponseT, item);
+        resp_list.deinit(alloc);
+    }
     // - Handle Multi-part
     multiPart: while (true) {
         var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
