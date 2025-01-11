@@ -7,7 +7,7 @@ const fmt = std.fmt;
 const mem = std.mem;
 
 const address = @import("address.zig");
-const oui_tbl = @embedFile("oui_table"); //@import("oui_table");
+const oui_tbl = @embedFile("oui_table");
 
 /// AP or Station
 pub const DeviceKind = enum {
@@ -27,11 +27,10 @@ pub const ll_rand_mac_nibbles: []const u8 = &.{ 2, 6, 0xA, 0xE };
 /// Find OUI Device Manufacturer
 pub fn findOUI(
     oui_kind: OUI_Kind,
-    device_kind: DeviceKind,
     mac: [6]u8,
 ) ![]const u8 {
     const rand_nib: u4 = @truncate(mac[0]);
-    if (mem.indexOfScalar(u8, ll_rand_mac_nibbles, rand_nib) != null and device_kind == .station)
+    if (mem.indexOfScalar(u8, ll_rand_mac_nibbles, rand_nib) != null)
         return "[Random MAC]";
     var oui_rows_iter = mem.tokenizeScalar(u8, oui_tbl, '\n');
     while (oui_rows_iter.next()) |oui_row| {
