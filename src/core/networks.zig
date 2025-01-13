@@ -26,7 +26,7 @@ const c = utils.toStruct;
 
 
 /// Network Info
-pub const NetworkInfo = struct {
+pub const Network = struct {
     // Meta
     if_index: i32,
     last_seen: zeit.Instant,
@@ -62,7 +62,7 @@ pub const NetworkInfo = struct {
             \\
             , .{
                 self.ssid,
-                MACF{ .bytes = self.bssid[0..] }, try netdata.oui.findOUI(.short, .ap, self.bssid),
+                MACF{ .bytes = self.bssid[0..] }, try netdata.oui.findOUI(.short, self.bssid),
                 @tagName(self.security),
                 @tagName(self.auth),
                 self.channel, self.freq,
@@ -78,24 +78,41 @@ pub const NetworkInfo = struct {
     }
 };
 
-/// Network Maps
-pub const NetworkContext = struct {
+/// Network Context 
+pub const Context = struct {
     scan_configs: *core.ThreadHashMap(i32, nl._80211.TriggerScanConfig),
-    networks: *core.ThreadHashMap([6]u8, NetworkInfo),
+    networks: *core.ThreadHashMap([6]u8, Network),
     scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
     scan_pool: *std.Thread.Pool,
     scan_group: *std.Thread.WaitGroup,
 
-    /// Deinitialize all Maps. (Unused. We just let the OS clean up.)
-    /// (TODO) Improve this if it will be called outside of stopping DisCo.
+
+    /// Initialize all Maps.
+    pub fn init(alloc: mem.Allocator) !@This() {
+        var self: @This() = undefined;
+        inline for (meta.fields(@This())) |field| {
+            switch (field.type) {
+                inline else => |f_ptr_type| {
+                    const f_type = @typeInfo(f_ptr_type).Pointer.child;
+                    const ctx_field = try alloc.create(f_type);
+                    ctx_field.* = switch (f_type) {
+                        std.Thread.Pool => .{ .threads = &[_]std.Thread{}, .allocator = alloc },
+                        inline else => .{},
+                    };
+                    @field(self, field.name) = ctx_field;
+                }
+            }
+        }
+        return self;
+    }
+
+    /// Deinitialize all Maps.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         self.scan_configs.deinit(alloc);
-        //alloc.destroy(self.scan_configs);
         var nw_iter = self.networks.iterator();
         while (nw_iter.next()) |nw_entry| nw_entry.value_ptr.deinit(alloc);
         nw_iter.unlock();
         self.networks.deinit(alloc);
-        //alloc.destroy(self.networks);
         core.resetNLMap(
             alloc,
             [6]u8,
@@ -103,7 +120,6 @@ pub const NetworkContext = struct {
             self.scan_results,
         );
         self.scan_results.deinit(alloc);
-        //alloc.destroy(self.scan_results);
     }
 };
 
@@ -112,7 +128,7 @@ pub const NetworkContext = struct {
 pub fn updScanSched(
     alloc: mem.Allocator,
     scan_if: *core.interfaces.Interface,
-    network_ctx: *NetworkContext,
+    network_ctx: *Context,
     new_config: ?nl._80211.SchedScanConfig,
 ) !void {
     const _old_conf = network_ctx.scan_configs.get(scan_if.index);
@@ -151,14 +167,15 @@ pub fn updScanSched(
 pub fn updScan(
     alloc: mem.Allocator,
     scan_if: *core.interfaces.Interface,
-    network_ctx: *NetworkContext,
+    network_ctx: *Context,
     trigger_config: ?nl._80211.TriggerScanConfig,
 ) !void {
     const _old_conf = network_ctx.scan_configs.get(scan_if.index);
     switch (scan_if.usage) {
-        .available,
-        .scanning => triggerScan: {
-            const config = triggerConf: {
+        //.available,
+        //.scanning => triggerScan: {
+        .available => triggerScan: {
+            var config = triggerConf: {
                 if (trigger_config) |new_conf| {
                     try network_ctx.scan_configs.put(alloc, scan_if.index, new_conf);
                     break :triggerConf new_conf;
@@ -168,6 +185,7 @@ pub fn updScan(
                 scan_if.usage = .available;
                 break :triggerScan;
             };
+            config.nl_sock = scan_if.nl_sock;
             nl._80211.triggerScan(alloc, scan_if.index, config) catch |err| switch (err) {
                 error.BUSY,
                 error.NODEV => {},
@@ -185,7 +203,7 @@ pub fn trackScans(
     active: *const atomic.Value(bool),
     interval: *const usize,
     interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
-    network_ctx: *NetworkContext,
+    network_ctx: *Context,
     config: *core.Core.Config,
 ) void {
     log.debug("Tracking WiFi Scans!", .{});
@@ -229,7 +247,7 @@ pub fn trackScans(
 pub fn stopScans(
     alloc: mem.Allocator,
     interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
-    network_ctx: *NetworkContext,
+    network_ctx: *Context,
 ) void {
     var if_iter = interfaces.iterator();
     errdefer if_iter.unlock();
@@ -248,23 +266,12 @@ pub fn trackNetworks(
     active: *const atomic.Value(bool),
     interval: *const usize,
     interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
-    network_ctx: *NetworkContext,
+    network_ctx: *Context,
 ) void {
     log.debug("Tracking WiFi Networks!", .{});
     var err_count: usize = 0;
     while (active.load(.acquire)) {
         defer {
-            //log.debug(
-            //    \\
-            //    \\
-            //    \\
-            //    \\ FINISHED NETWORK TRACK THREAD POOL!!!
-            //    \\ Active: {}
-            //    \\
-            //    \\
-            //    \\
-            //    , .{ active.load(.acquire) }
-            //);
             if (err_count >= 10) @panic("WiFi Network Tracking encountered too many errors to continue");
             time.sleep(interval.*);
         }
@@ -297,35 +304,28 @@ pub fn trackNetworks(
                 trackNetworksIFNoErr,
                 .{
                     alloc,
-                    scan_if,
+                    interfaces,
+                    scan_if.index,
                     interval,
                     network_ctx,
                 },
             );
         }
-        //log.debug(
-        //    \\
-        //    \\
-        //    \\
-        //    \\ STARTED NEW NETWORK TRACK THREAD POOL!!!
-        //    \\
-        //    \\
-        //    \\
-        //    , .{}
-        //);
     }
 }
 
 /// Track Networks on the provided Scan Interface (`scan_if`) w/o bubbling up errors.
 fn trackNetworksIFNoErr(
     alloc: mem.Allocator,
-    scan_if: *const core.interfaces.Interface,
+    interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
+    if_index: i32,
     interval: *const usize,
-    network_ctx: *NetworkContext,
+    network_ctx: *Context,
 ) void {
     trackNetworksIF(
         alloc,
-        scan_if,
+        interfaces,
+        if_index,
         interval,
         network_ctx,
     ) catch |err| {
@@ -337,52 +337,38 @@ fn trackNetworksIFNoErr(
 /// Track Networks on the provided Scan Interface (`scan_if`)
 fn trackNetworksIF(
     alloc: mem.Allocator,
-    scan_if: *const core.interfaces.Interface,
+    interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
+    if_index: i32,
     interval: *const usize,
-    network_ctx: *NetworkContext,
+    network_ctx: *Context,
 ) !void {
-    const info = nl._80211.ctrl_info orelse return; //error.NL80211ControlInfoNotInitialized;
-    const nl_sock = nlSock: {
-        if (interval.* >= 1000 * time.ns_per_ms) {
-            const timeout: i32 = @intCast(@divFloor(interval.*, time.ns_per_s));
-            //log.debug("Timeout: {d}s", .{ timeout });
-            break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = timeout, .tv_usec = 0 });
-        }
-        const timeout: i32 = @intCast(@divFloor(interval.*, time.ns_per_us));
-        //log.debug("Timeout: {d}us", .{ timeout });
-        break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = timeout });
-    };
-    defer posix.close(nl_sock);
-    const group_id = info.MCAST_GROUPS.get("scan").?;
-    const nl_addr: posix.sockaddr.nl = .{
-        .pid = 0,
-        .groups = @as(u32, 1) << @intCast(group_id - 1),
-    };
-    try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
-    try posix.setsockopt(
-        nl_sock,
-        posix.SOL.NETLINK,
-        nl.NETLINK_OPT.ADD_MEMBERSHIP,
-        mem.toBytes(group_id)[0..],
-    );
-    try posix.setsockopt(
-        nl_sock,
-        posix.SOL.SOCKET, 
-        posix.SO.PRIORITY,
-        mem.toBytes(@as(u32, math.maxInt(u32)))[0..],
-    );
-    try nl._80211.getScan(alloc, scan_if.index, nl_sock);
-    const scan_results = nl._80211.handleScanResults(alloc, nl_sock) catch |err| {
+    const scan_if = interfaces.get(if_index) orelse return error.InterfaceNotFound;
+    if (scan_if.usage != .scanning) return;
+    var set_if = (interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
+    set_if.usage = .available;
+    interfaces.mutex.unlock();
+    try nl._80211.getScan(alloc, scan_if.index, scan_if.nl_sock);
+    const scan_results = nl._80211.handleScanResults(alloc, scan_if.nl_sock) catch |err| {
         log.warn("Could not parse Scan Results: {s}", .{ @errorName(err) });
         return err;
     };
     defer alloc.free(scan_results);
+    var result_idx: usize = 0;
+    errdefer {
+        for (scan_results, 0..) |result, idx| {
+            if (idx < result_idx) continue;
+            nl.parse.freeBytes(alloc, nl._80211.ScanResults, result);
+        }
+    }
     if (scan_results.len == 0) return;
     //log.debug("Parsing {d} Scan Results...", .{ scan_results.len });
     resLoop: for (scan_results) |result| {
         //log.debug("Result: {d}", .{ result.IFINDEX });
         var valid_result: bool = false;
-        defer if(!valid_result) nl.parse.freeBytes(alloc, nl._80211.ScanResults, result);
+        defer {
+            if(!valid_result) nl.parse.freeBytes(alloc, nl._80211.ScanResults, result);
+            result_idx += 1;
+        }
         const bss = result.BSS orelse continue;
         const bssid = bss.BSSID;
         const sec_info = try bss.getSecurityInfo();
@@ -390,14 +376,14 @@ fn trackNetworksIF(
         const ies = bss.INFORMATION_ELEMENTS orelse continue;
         const ssid = try alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]");
         errdefer alloc.free(ssid);
-        var new_network: NetworkInfo = .{
+        var new_network: Network = .{
             .if_index = result.IFINDEX,
             .last_seen = try zeit.instant(.{}),
             .bssid = bssid,
             .ssid = ssid,
             .security = sec_info.type,
             .auth = sec_info.auth,
-            .freq = bss.FREQUENCY, 
+            .freq = bss.FREQUENCY,
             .channel = @intCast(try nl._80211.channelFromFreq(bss.FREQUENCY)),
             .rssi = getRSSI: {
                 const rssi_mbm = bss.SIGNAL_MBM orelse {
@@ -427,7 +413,7 @@ fn trackNetworksIF(
                     if (
                         old_network.if_index != new_network.if_index and
                         old_network.rssi > new_network.rssi and
-                        @divFloor(age, time.us_per_s) < 1 
+                        @divFloor(age, time.us_per_s) < 1
                     ) {
                         //log.debug("Worse RSSI on Interface!", .{});
                         alloc.free(ssid);
@@ -449,6 +435,6 @@ fn trackNetworksIF(
         }
         else network_ctx.networks.mutex.unlock();
         try network_ctx.networks.put(alloc, bssid, new_network);
-        log.debug("-------------\n{s}", .{ new_network });
+        //log.debug("-------------\n{s}", .{ new_network });
     }
 }

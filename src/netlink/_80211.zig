@@ -5,7 +5,7 @@ const ascii = std.ascii;
 const enums = std.enums;
 const heap = std.heap;
 const json = std.json;
-const log = std.log;
+const log = std.log.scoped(.nl80211);
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
@@ -1274,7 +1274,7 @@ pub const InformationElements = struct {
     pub const AttrHdrT = InformationElementHeader;
 
     /// Robust Security Network (RSN)
-    const RobustSecurityNetwork = struct {
+    pub const RobustSecurityNetwork = struct {
         pub fn fromBytes(alloc: mem.Allocator, bytes: []const u8) !@This() {
             var rsn: @This() = undefined;
             if (bytes.len < 8) {
@@ -1408,18 +1408,42 @@ pub const InformationElements = struct {
             };
             /// Authentication Key Management (AKM) Suite Selectors
             pub const AKM = enum(u8) {
+                /// 802.1X (Enterprise) authentication with PMKSA caching
+                EAP = 0x01,
                 /// WPA2 PSK (Pre-Shared Key)
                 PSK = 0x02,
-                /// 802.1X (Enterprise) authentication (used with EAP)
-                EAP = 0x01,
-                /// Simultaneous Authentication of Equals (SAE), used in WPA3-Personal
-                SAE = 0x08,
-                /// 802.11r Fast BSS Transition (FT) with PSK
-                FT_PSK = 0x04,
                 /// 802.11r Fast BSS Transition (FT) with EAP
                 FT_EAP = 0x03,
-                /// Suite B-192 authentication, used in WPA3-Enterprise
+                /// 802.11r Fast BSS Transition (FT) with PSK
+                FT_PSK = 0x04,
+                /// 802.1X with SHA-256
+                EAP_SHA256 = 0x05,
+                /// PSK with SHA-256
+                PSK_SHA256 = 0x06,
+                /// Tunneled Direct Link Setup (TDLS)
+                TDLS = 0x07,
+                /// Simultaneous Authentication of Equals (SAE), used in WPA3-Personal
+                SAE = 0x08,
+                /// Fast BSS Transition (FT) over SAE
+                FT_SAE = 0x09,
+                /// AP-CCMP (AP PeerKey for TDLS)
+                AP_PEER_KEY = 0x0A,
+                /// 802.1X with Suite-B SHA-256
+                EAP_SUITE_B_SHA256 = 0x0B,
+                /// 802.1X with Suite-B SHA-384 (Suite-B-192)
                 SUITE_B_192 = 0x0C,
+                /// Fast BSS Transition (FT) over 802.1X with SHA-384
+                FT_EAP_SHA384 = 0x0D,
+                /// FILS with SHA-256
+                FILS_SHA256 = 0x0E,
+                /// FILS with SHA-384
+                FILS_SHA384 = 0x0F,
+                /// Fast BSS Transition (FT) over FILS with SHA-256
+                FT_FILS_SHA256 = 0x10,
+                /// Fast BSS Transition (FT) over FILS with SHA-384
+                FT_FILS_SHA384 = 0x11,
+                /// Opportunistic Wireless Encryption (OWE)
+                OWE = 0x12,
             };
             /// Group Cipher Suites
             pub const GroupCipherSuites = enum(u8) {
@@ -2109,16 +2133,16 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
 
 
 /// Take Ownership of a Wireless Interface.
-/// This ensures that only the current process can manipulate the given Interface (`if_index`).
-pub fn takeOwnership(if_index: i32) !void {
+/// This ensures that only the provided socket (`nl_sock`) can manipulate the given Interface (`if_index`).
+pub fn takeOwnership(nl_sock: posix.socket_t, if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const fam_id = info.FAMILY_ID;
     const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
     var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    const nl_sock = try nl.request(
+    try nl.reqOnSock(
         fba.allocator(),
-        nl.NETLINK.GENERIC,
+        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2136,9 +2160,9 @@ pub fn takeOwnership(if_index: i32) !void {
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
             .{ .hdr = .{ .type = c(ATTR).SOCKET_OWNER }, .data = &.{} },
+            //.{ .hdr = .{ .type = c(ATTR).SOCKET_OWNER }, .data = mem.toBytes(@as(u32, 1))[0..] },
         },
     );
-    defer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
 }
 
@@ -2739,6 +2763,9 @@ pub fn scanSSID(
 
 /// Trigger Scan Config
 pub const TriggerScanConfig = struct {
+    /// Netlink Socket f/ the Request
+    /// If this is left `null` a temporary socket will be used.
+    nl_sock: ?posix.socket_t = null,
     /// Flags
     flags: u32 = c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH, // | c(SCAN_FLAG).RANDOM_SN,
     /// Frequencies (in MHz) to scan.
@@ -2802,9 +2829,10 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
             .data = ssid_attrs_bytes.?,
         });
     }
-    const nl_sock = try nl.request(
+    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 1, .tv_usec = 0 });
+    try nl.reqOnSock(
         alloc,
-        nl.NETLINK.GENERIC,
+        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2821,7 +2849,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
         },
         attrs_buf.items,
     );
-    defer posix.close(nl_sock);
+    defer if (config.nl_sock == null) posix.close(nl_sock);
     try nl.handleAck(nl_sock);
 }
 
@@ -2974,7 +3002,6 @@ pub fn handleScanResults(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const
     );
 }
 
-
 /// Determine Authentication Algorithm from the provided `scan_results`.
 pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
     const bss = scan_results.BSS orelse return .OPEN;
@@ -2982,11 +3009,29 @@ pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
     // TODO: Check for WEP (somehow) and WPA1 in VENDOR_SPECIFIC
     const rsn = ies.RSN orelse return .OPEN;
     const akms = rsn.AKM_SUITES orelse return .OPEN;
-    return switch (@as(InformationElements.RobustSecurityNetwork.RSN.AKM, @enumFromInt(akms[0].TYPE))) {
-        .PSK => .OPEN,
-        .EAP, .SUITE_B_192 => .NETWORK_EAP,
-        .SAE => .SAE,
-        .FT_EAP, .FT_PSK => .FT,
+    const akm_type = meta.intToEnum(InformationElements.RobustSecurityNetwork.RSN.AKM, akms[0].TYPE) catch {
+        log.err("'{X}' is not a valid AKM. Defaulting to OPEN.", .{ akms[0].TYPE });
+        return .OPEN;
+    };
+    return switch (akm_type) {
+        .PSK,
+        .PSK_SHA256,
+        .TDLS,
+        .AP_PEER_KEY,
+        .OWE => .OPEN,
+        .EAP,
+        .EAP_SHA256,
+        .EAP_SUITE_B_SHA256,
+        .SUITE_B_192,
+        .FILS_SHA256,
+        .FILS_SHA384 => .NETWORK_EAP,
+        .SAE,
+        .FT_SAE => .SAE,
+        .FT_EAP,
+        .FT_PSK,
+        .FT_FILS_SHA256,
+        .FT_FILS_SHA384,
+        .FT_EAP_SHA384 => .FT,
     };
 }
 
@@ -3221,16 +3266,12 @@ pub fn authWPA2(
 pub fn assocWPA2(
     alloc: mem.Allocator,
     nl_sock: posix.socket_t,
-    if_index: i32,
+    net_if: Interface,
+    wiphy: Wiphy,
     ssid: []const u8,
     scan_results: ScanResults,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const net_if = try getInterface(alloc, if_index);
-    defer nl.parse.freeBytes(alloc, Interface, net_if);
-    const phy_index = net_if.WIPHY; //orelse return error.MissingWIPHYIndex;
-    const wiphy = try getWIPHY(alloc, if_index, phy_index);
-    defer nl.parse.freeBytes(alloc, Wiphy, wiphy);
     const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy) orelse return error.MissingOperatingClasses;
     defer alloc.free(op_classes);
     const bss = scan_results.BSS orelse return error.MissingBSS;
@@ -3269,7 +3310,7 @@ pub fn assocWPA2(
         &.{
             .{ 
                 .hdr = .{ .type = c(ATTR).IFINDEX },
-                .data = mem.toBytes(if_index)[0..],
+                .data = mem.toBytes(net_if.IFINDEX)[0..],
             },
             .{
                 .hdr = .{ .type = c(ATTR).SOCKET_OWNER },
@@ -3529,7 +3570,6 @@ pub fn connectWPA2(
     config: ConnectConfig,
 ) !posix.socket_t {
     //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try takeOwnership(if_index);
     time.sleep(config.delay * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).DOWN);
     time.sleep(config.delay * time.ns_per_ms);
@@ -3538,6 +3578,7 @@ pub fn connectWPA2(
     try nl.route.setState(if_index, c(nl.route.IFF).UP);
     time.sleep(config.delay * time.ns_per_ms);
     const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 3, .tv_usec = 0 });
+    try takeOwnership(nl_sock, if_index);
     try registerFrames(
         alloc,
         nl_sock,
@@ -3558,9 +3599,13 @@ pub fn connectWPA2(
     const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
     defer alloc.free(ie_bytes);
     time.sleep(config.delay * time.ns_per_ms);
-    const bssid = bss.BSSID; // orelse return error.MissingBSSID;
+    const bssid = bss.BSSID;
     try resetKeyState(alloc, if_index, bssid);
-    //const auth_type = determineAuthAlg(scan_results);
+    const net_if = try getInterface(alloc, if_index);
+    defer nl.parse.freeBytes(alloc, Interface, net_if);
+    const phy_index = net_if.WIPHY;
+    const wiphy = try getWIPHY(alloc, @intCast(net_if.IFINDEX), phy_index);
+    defer nl.parse.freeBytes(alloc, Wiphy, wiphy);
     var aa_err: anyerror!void = {};
     errdefer posix.close(nl_sock);
     var attempts: usize = 0;
@@ -3571,7 +3616,7 @@ pub fn connectWPA2(
             continue;
         };
         time.sleep(config.delay * time.ns_per_ms);
-        assocWPA2(alloc, nl_sock, if_index, ssid, scan_results) catch |err| {
+        assocWPA2(alloc, nl_sock, net_if, wiphy, ssid, scan_results) catch |err| {
             aa_err = err;
             continue;
         };

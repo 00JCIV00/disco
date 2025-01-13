@@ -4,7 +4,7 @@ const std = @import("std");
 const fmt = std.fmt;
 const heap = std.heap;
 const json = std.json;
-const log = std.log;
+const log = std.log.scoped(.rtnetlink);
 const math = std.math;
 const mem = std.mem;
 const os = std.os;
@@ -1554,74 +1554,3 @@ pub const DeviceInfo = struct {
         }
     }
 };
-
-///// Get All Interface Details (WIP)
-//pub fn getAllIF(if_name: []const u8) !void {
-//    const nl_sock = try netlinkRequest(
-//        .{
-//            .nlh = .{
-//                .len = 0,
-//                .type = RTM.GETLINK,
-//                .flags = nl.NLM_F.REQUEST | nl.NLM_F.DUMP,
-//                .seq = 0,
-//                .pid = 50505,
-//            },
-//            .msg = .{
-//                .family = AF.PACKET,
-//                .index = 0,
-//                .flags = 0,
-//                .change = 0,
-//                .type = 0,
-//            },
-//        },
-//        attr,
-//        .{
-//            .len = 0,
-//            .type = .IFNAME,
-//        },
-//        if_name,
-//        IFNAMESIZE,
-//    );
-//    defer posix.close(nl_sock);
-//
-//    var resp_idx: usize = 0;
-//    while (resp_idx <= 10) : (resp_idx += 1) {
-//        var resp_buf: [4096]u8 = undefined;
-//        const resp_len = posix.recv(
-//            nl_sock,
-//            resp_buf[0..],
-//            0,
-//        ) catch |err| switch (err) {
-//            error.WouldBlock => return error.NoInterfaceFound,
-//            else => return err,
-//        };
-//
-//        var offset: usize = 0;
-//        while (offset < resp_len) {
-//            var start: usize = offset;
-//            var end: usize = (offset + @sizeOf(os.linux.nlmsghdr));
-//            const nl_resp_hdr: *os.linux.nlmsghdr = @alignCast(@ptrCast(resp_buf[start..end]));
-//            if (nl_resp_hdr.len < @sizeOf(os.linux.nlmsghdr))
-//                return error.InvalidMessage;
-//            if (nl_resp_hdr.type == .ERROR)
-//                return error.NetlinkMessageError;
-//            if (nl_resp_hdr.type == RTM.NEWLINK) ifi: {
-//                start = end;
-//                end += @sizeOf(os.linux.ifinfomsg);
-//                //const ifi: *const os.linux.ifinfomsg = @alignCast(@ptrCast(resp_buf[start..end]));
-//                start = end;
-//                end += @sizeOf(attr);
-//                const attr: *const attr = @alignCast(@ptrCast(resp_buf[start..end]));
-//                if (attr.type != .IFNAME) break :ifi;
-//                start = end;
-//                end += attr.len;
-//                const name = resp_buf[start..end];
-//                if (!mem.eql(u8, if_name, name[0..@min(attr.len, if_name.len)])) break :ifi;
-//                //return ifi.index;
-//            }
-//
-//            offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-//        }
-//    }
-//    return error.NoInterfaceIndexFound;
-//}

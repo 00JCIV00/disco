@@ -41,7 +41,7 @@ pub const Mask = struct {
             \\- User Agent: {s}
             \\
             , .{
-                MACF{ .bytes = oui[0..] }, try netdata.oui.findOUI(.short, .station, oui ++ .{ 0 } ** 3),
+                MACF{ .bytes = oui[0..] }, try netdata.oui.findOUI(.short, oui ++ .{ 0 } ** 3),
                 self.hostname,
                 self.ttl,
                 self.ua_str orelse "[Unknown]",
@@ -69,6 +69,7 @@ pub const Mask = struct {
         .oui = .{ 0x70, 0xD8, 0x23 },
         //.hostname = fmt.comptimePrint("DESKTOP-{X:7<L}", .{ crypto.random.int(u32) }),
         .hostname = "DESKTOP-L836F9W",
+        .ttl = 128,
         .ua_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     };
     /// iPhone 13 Pro Max

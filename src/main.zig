@@ -93,90 +93,6 @@ pub fn main() !void {
         }
     };
 
-    const main_opts = try main_cmd.getOpts(.{});
-    var core_ifs: std.ArrayListUnmanaged(i32) = .{};
-    defer core_ifs.deinit(alloc);
-    var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfEntry) = .{};
-    defer core_scan_confs.deinit(alloc);
-    var freqs_list: std.ArrayListUnmanaged(u32) = .{};
-    defer freqs_list.deinit(alloc);
-    const if_names = 
-        if (main_opts.get("interfaces")) |if_opt| ifOpt: {
-            const ssids = ssids: {
-                const ssids_opt = main_opts.get("ssids").?;
-                break :ssids try ssids_opt.val.getAllAs([]const u8);
-            };
-            const freqs = freqs: {
-                const ch_opts = main_opts.get("channels") orelse break :freqs null;
-                const channels = try ch_opts.val.getAllAs(usize);
-                for (channels) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
-                break :freqs freqs_list.items;
-            };
-            const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt null;
-            if (if_names.len == 0) break :ifOpt null;
-            for (if_names) |if_name| {
-                const if_index = nl.route.getIfIdx(if_name) catch {
-                    log.warn("Could not find Interface '{s}'.", .{ if_name });
-                    continue;
-                };
-                try core_ifs.append(alloc, if_index);
-                try core_scan_confs.append(alloc, .{ 
-                    .if_name = if_name,
-                    .conf = .{ 
-                        .ssids = ssids,
-                        .freqs = freqs,
-                    },
-                });
-            }
-            break :ifOpt if_names;
-        }
-        else null;
-    const profile_mask = getMask: {
-        if (!main_cmd.checkArgGroup(.Option, "MASK")) {
-            const mask_idx = crypto.random.int(u16) % masks_map.keys().len;
-            for (masks_map.keys(), 0..) |key, idx| {
-                if (idx != mask_idx) continue;
-                const mask = masks_map.get(key).?;
-                log.info("No Profile Mask provided. Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
-                    try oui.findOUI(.long, .station, mask.oui.? ++ .{ 0, 0, 0 }),
-                    mask,
-                });
-                break :getMask mask;
-            }
-        }
-        if (main_opts.get("mask")) |mask_opt| {
-            const mask = try mask_opt.val.getAs(core.profiles.Mask);
-            log.info("Using the provided '{s}' Profile Mask:\n{s}", .{
-                try oui.findOUI(.long, .station, mask.oui.? ++ .{ 0, 0, 0 }),
-                mask,
-            });
-            break :getMask mask;
-        }
-        const mask: core.profiles.Mask = .{
-            .oui = getOUI: {
-                if (main_opts.get("mask_oui")) |oui_opt| 
-                    break :getOUI try oui_opt.val.getAs([3]u8);
-                break :getOUI try oui.getOUI("Intel");
-            },
-            .hostname = getHN: {
-                if (main_opts.get("mask_hostname")) |hn_opt|
-                    break :getHN try hn_opt.val.getAs([]const u8);
-                break :getHN "localhost";
-            },
-            .ttl = getTTL: {
-                if (main_opts.get("mask_ttl")) |ttl_opt|
-                    break :getTTL try ttl_opt.val.getAs(u8);
-                break :getTTL 64;
-            },
-            .ua_str = getUA: {
-                if (main_opts.get("mask_ua")) |ua_opt|
-                    break :getUA try ua_opt.val.getAs([]const u8);
-                break :getUA "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-            },
-        };
-        log.info("Using your Custom Profile Mask:\n{s}", .{ mask });
-        break :getMask mask;
-    };
     //const main_vals = try main_cmd.getVals(.{});
 
     // No Interface Needed
@@ -185,8 +101,8 @@ pub fn main() !void {
         const gen_key_vals = try gen_key_cmd.getVals(.{});
         const key = try gen_key_cmd.callAs(wpa.genKey, null, [32]u8);
         var key_buf: [64]u8 = undefined;
-        const end: usize = switch (try (gen_key_vals.get("protocol").?).getAs(wpa.Protocol)) {
-            .wpa2, .wpa3 => 32,
+        const end: usize = switch (try (gen_key_vals.get("protocol").?).getAs(nl._80211.SecurityType)) {
+            .wpa2, .wpa3t, .wpa3 => 32,
             .wep => 13,
             else => 0,
         };
@@ -200,7 +116,7 @@ pub fn main() !void {
             \\
             \\
             , .{
-                @tagName(try (gen_key_vals.get("protocol").?).getAs(wpa.Protocol)),
+                @tagName(try (gen_key_vals.get("protocol").?).getAs(nl._80211.SecurityType)),
                 try (gen_key_vals.get("ssid").?).getAs([]const u8),
                 try (gen_key_vals.get("passphrase").?).getAs([]const u8),
                 key_buf[0..],
@@ -257,12 +173,113 @@ pub fn main() !void {
         return;
     }
 
+    // Set up Core Data
+    const main_opts = try main_cmd.getOpts(.{});
+    var core_ifs: std.ArrayListUnmanaged(i32) = .{};
+    defer core_ifs.deinit(alloc);
+    var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfEntry) = .{};
+    defer core_scan_confs.deinit(alloc);
+    var freqs_list: std.ArrayListUnmanaged(u32) = .{};
+    defer freqs_list.deinit(alloc);
+    const if_names =
+        if (main_opts.get("interfaces")) |if_opt| ifOpt: {
+            const ssids = ssids: {
+                const ssids_opt = main_opts.get("ssids").?;
+                break :ssids try ssids_opt.val.getAllAs([]const u8);
+            };
+            const freqs = freqs: {
+                const ch_opt = main_opts.get("channels") orelse break :freqs null;
+                const channels = try ch_opt.val.getAllAs(usize);
+                for (channels) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+                break :freqs freqs_list.items;
+            };
+            const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt null;
+            if (if_names.len == 0) break :ifOpt null;
+            for (if_names) |if_name| {
+                const if_index = nl.route.getIfIdx(if_name) catch {
+                    log.warn("Could not find Interface '{s}'.", .{ if_name });
+                    continue;
+                };
+                try core_ifs.append(alloc, if_index);
+                try core_scan_confs.append(alloc, .{ 
+                    .if_name = if_name,
+                    .conf = .{
+                        .ssids = ssids,
+                        .freqs = freqs,
+                    },
+                });
+            }
+            break :ifOpt if_names;
+        }
+        else null;
+    const profile_mask: core.profiles.Mask = getMask: {
+        if (main_cmd.checkArgGroup(.Command, "INTERFACE")) {
+            var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
+            var mask = masks_map.get("intel windows 11 pc").?;
+            mask.hostname = try posix.gethostname(hn_buf[0..]);
+            break :getMask mask;
+        }
+        if (!main_cmd.checkArgGroup(.Option, "MASK")) {
+            const mask_idx = crypto.random.int(u16) % masks_map.keys().len;
+            for (masks_map.keys(), 0..) |key, idx| {
+                if (idx != mask_idx) continue;
+                const mask = masks_map.get(key).?;
+                log.info("No Profile Mask provided. Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
+                    try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
+                    mask,
+                });
+                break :getMask mask;
+            }
+        }
+        if (main_opts.get("mask")) |mask_opt| {
+            const mask = try mask_opt.val.getAs(core.profiles.Mask);
+            log.info("Using the provided '{s}' Profile Mask:\n{s}", .{
+                try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
+                mask,
+            });
+            break :getMask mask;
+        }
+        const mask: core.profiles.Mask = .{
+            .oui = getOUI: {
+                if (main_opts.get("mask_oui")) |oui_opt| 
+                    break :getOUI try oui_opt.val.getAs([3]u8);
+                break :getOUI try oui.getOUI("Intel");
+            },
+            .hostname = getHN: {
+                if (main_opts.get("mask_hostname")) |hn_opt|
+                    break :getHN try hn_opt.val.getAs([]const u8);
+                break :getHN "localhost";
+            },
+            .ttl = getTTL: {
+                if (main_opts.get("mask_ttl")) |ttl_opt|
+                    break :getTTL try ttl_opt.val.getAs(u8);
+                break :getTTL 64;
+            },
+            .ua_str = getUA: {
+                if (main_opts.get("mask_ua")) |ua_opt|
+                    break :getUA try ua_opt.val.getAs([]const u8);
+                break :getUA "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            },
+        };
+        log.info("Using your Custom Profile Mask:\n{s}", .{ mask });
+        break :getMask mask;
+    };
+    var core_conn_confs: std.ArrayListUnmanaged(core.Core.Config.ConnectionEntry) = .{};
+    defer core_conn_confs.deinit(alloc);
+    connConfs: {
+        const conn_opt = main_opts.get("connect_info") orelse break :connConfs;
+        const conn_confs = try conn_opt.val.getAllAs(core.connections.Config);
+        log.debug("Looking for {d} Connection(s).", .{ conn_confs.len });
+        for (conn_confs) |conn_conf|
+            try core_conn_confs.append(alloc, .{ .ssid = conn_conf.ssid, .conf = conn_conf });
+    }
     // Initialize Core Context
     const init_config: core.Core.Config = .{
         .use_mask = !main_cmd.checkArgGroup(.Command, "INTERFACE"),
         .available_ifs = if (core_ifs.items.len > 0) try core_ifs.toOwnedSlice(alloc) else null,
         .avail_if_names = if_names,
         .scan_configs = if (core_scan_confs.items.len > 0) try core_scan_confs.toOwnedSlice(alloc) else null,
+        .connect_configs = core_conn_confs.items,
         .profile_mask = profile_mask,
     };
     _core_ctx = try core.Core.init(alloc, init_config);
@@ -303,8 +320,16 @@ pub fn main() !void {
         var if_iter = set_ifs.iterator();
         defer {
             if_iter.unlock();
-            core.interfaces.updInterfaces(alloc, &core_ctx.if_ctx, &core_ctx.config) catch |err|
+            core.interfaces.updInterfaces(
+                alloc,
+                &core_ctx.if_ctx,
+                &core_ctx.config,
+                &core_ctx.interval,
+            ) catch |err|
                 log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
+            core_ctx.printInfo(stdout) catch {};
+            stdout_bw.flush() catch {};
+            posix.exit(0);
         }
         while (if_iter.next()) |set_if_entry| {
             const set_if = set_if_entry.value_ptr;
@@ -470,14 +495,21 @@ pub fn main() !void {
     if (main_cmd.matchSubCmd("add")) |add_cmd| {
         checkRoot(stdout_file.any());
         const add_ifs = core_ctx.if_ctx.interfaces;
-        if (num_avail_ifs == 0) {
+        if (num_avail_ifs == 0)
             checkIF(stdout, "add");
-        }
         var if_iter = add_ifs.iterator();
         defer {
             if_iter.unlock();
-            core.interfaces.updInterfaces(alloc, &core_ctx.if_ctx, &core_ctx.config) catch |err|
+            core.interfaces.updInterfaces(
+                alloc,
+                &core_ctx.if_ctx,
+                &core_ctx.config,
+                &core_ctx.interval,
+            ) catch |err|
                 log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
+            core_ctx.printInfo(stdout) catch {};
+            stdout_bw.flush() catch {};
+            posix.exit(0);
         }
         while (if_iter.next()) |add_if_entry| {
             const add_if = add_if_entry.value_ptr;
@@ -541,8 +573,16 @@ pub fn main() !void {
         var if_iter = del_ifs.iterator();
         defer {
             if_iter.unlock();
-            core.interfaces.updInterfaces(alloc, &core_ctx.if_ctx, &core_ctx.config) catch |err|
+            core.interfaces.updInterfaces(
+                alloc,
+                &core_ctx.if_ctx,
+                &core_ctx.config,
+                &core_ctx.interval,
+            ) catch |err|
                 log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
+            core_ctx.printInfo(stdout) catch {};
+            stdout_bw.flush() catch {};
+            posix.exit(0);
         }
         while (if_iter.next()) |del_if_entry| {
             const del_if = del_if_entry.value_ptr;
@@ -599,13 +639,24 @@ pub fn main() !void {
     // - Connect
     if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
         checkRoot(stdout_file.any());
+        try core.interfaces.updInterfaces(
+            alloc,
+            &core_ctx.if_ctx,
+            &core_ctx.config,
+            &core_ctx.interval,
+        );
         const conn_ifs = core_ctx.if_ctx.interfaces;
         if (num_avail_ifs == 0) checkIF(stdout, "connect");
         var if_iter = conn_ifs.iterator();
         defer {
             if_iter.unlock();
             if (conn_ifs.count() > 0) {
-                core.interfaces.updInterfaces(alloc, &core_ctx.if_ctx, &core_ctx.config) catch |err|
+                core.interfaces.updInterfaces(
+                    alloc,
+                    &core_ctx.if_ctx,
+                    &core_ctx.config,
+                    &core_ctx.interval,
+                ) catch |err|
                     log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
             }
         }
@@ -613,6 +664,7 @@ pub fn main() !void {
             const conn_if = conn_if_entry.value_ptr;
             if (conn_if.usage != .unavailable) break :connIF conn_if;
         } else return error.NoAvailableInterfaces;
+        raw_net_if = conn_if.*;
         const connect_vals = try connect_cmd.getVals(.{});
         const connect_opts = try connect_cmd.getOpts(.{});
         const ssid = (connect_vals.get("ssid").?).getAs([]const u8) catch {
@@ -621,10 +673,10 @@ pub fn main() !void {
         };
         const security,
         const pass = security: {
-            const security = try (connect_opts.get("security").?).val.getAs(wpa.Protocol);
+            const security = try (connect_opts.get("security").?).val.getAs(nl._80211.SecurityType);
             break :security switch (security) {
                 .open => .{ security, "" },
-                .wep, .wpa2, .wpa3 => .{
+                .wep, .wpa1, .wpa2, .wpa3t, .wpa3 => .{
                     security,
                     (connect_opts.get("passphrase").?).val.getAs([]const u8) catch {
                         log.err("The {s} protocol requires a passhprase.", .{ @tagName(security) });
@@ -645,11 +697,11 @@ pub fn main() !void {
         defer if (freqs) |_freqs| alloc.free(_freqs);
         try stdout_file.print("Connecting to {s}...\n", .{ ssid });
         switch (security) {
-            .open, .wep, .wpa3 => {
+            .open, .wep, .wpa1, .wpa3 => {
                 log.info("WIP!", .{});
                 return;
             },
-            .wpa2 => {
+            .wpa2, .wpa3t => {
                 const pmk = try wpa.genKey(.wpa2, ssid, pass);
                 _ = try nl._80211.connectWPA2(
                     alloc,
@@ -703,9 +755,10 @@ pub fn main() !void {
             }
         }
         //time.sleep(10 * time.ns_per_s);
-        active = true;
+        //if_iter.unlock();
         connected = true;
-        while (active) {}
+        const stdin = io.getStdIn().reader();
+        _ = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
     }
 
     // System Details

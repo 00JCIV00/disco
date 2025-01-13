@@ -5,8 +5,10 @@ const atomic = std.atomic;
 const enums = std.enums;
 const fmt = std.fmt;
 const log = std.log.scoped(.interfaces);
+const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
+const posix = std.posix;
 const time = std.time;
 
 const zeit = @import("zeit");
@@ -25,6 +27,7 @@ pub const UsageState = enum {
     unavailable,
     available,
     scanning,
+    connecting,
     connected,
 };
 
@@ -56,6 +59,7 @@ const IFStateF = struct {
 pub const Interface = struct {
     // Meta
     _init: bool = true,
+    nl_sock: posix.socket_t,
     usage: UsageState = .unavailable,
     last_upd: zeit.Instant,
     // Details
@@ -93,8 +97,8 @@ pub const Interface = struct {
                 self.index, self.name, @tagName(self.usage),
                 last_ts,
                 self.phy_index, self.phy_name,
-                MACF{ .bytes = self.og_mac[0..] }, try netdata.oui.findOUI(.short, .station, self.og_mac),
-                MACF{ .bytes = self.mac[0..] }, try netdata.oui.findOUI(.short, .station, self.mac),
+                MACF{ .bytes = self.og_mac[0..] }, try netdata.oui.findOUI(.short, self.og_mac),
+                MACF{ .bytes = self.mac[0..] }, try netdata.oui.findOUI(.short, self.mac),
                 @tagName(@as(nl._80211.IFTYPE, @enumFromInt(self.mode))),
                 IFStateF{ .flags = self.state },
                 self.mtu,
@@ -109,17 +113,23 @@ pub const Interface = struct {
         }
     }
 
-    /// Free the allocated portions of this Interface
+    /// Free the allocated portions of this Interface.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         if (!self._init) return;
         alloc.free(self.name);
         alloc.free(self.phy_name);
         self._init = false;
     }
+
+    /// Free the allocated portions of this Interface and close the Netlink Socket.
+    pub fn stop(self: *@This(), alloc: mem.Allocator) void {
+        self.deinit(alloc);
+        posix.close(self.nl_sock);
+    }
 };
 
-/// Interface Context
-pub const InterfaceCtx = struct {
+/// Interfaces Context
+pub const Context = struct {
     /// Available Interfaces
     interfaces: *core.ThreadHashMap(i32, Interface),
     /// WiFi Physical Devices (WIPHYs)
@@ -130,6 +140,22 @@ pub const InterfaceCtx = struct {
     links: *core.ThreadHashMap(i32, nl.route.IFInfoAndLink),
     /// Addresses
     addresses: *core.ThreadHashMap([4]u8, nl.route.IFInfoAndAddr),
+
+    /// Initialize all Maps.
+    pub fn init(alloc: mem.Allocator) !@This() {
+        var self: @This() = undefined;
+        inline for (meta.fields(@This())) |field| {
+            switch (field.type) {
+                inline else => |f_ptr_type| {
+                    const f_type = @typeInfo(f_ptr_type).Pointer.child;
+                    const ctx_field = try alloc.create(f_type);
+                    ctx_field.* = f_type{};
+                    @field(self, field.name) = ctx_field;
+                }
+            }
+        }
+        return self;
+    }
 
     /// Restore All Interfaces to their Original MAC Addresses.
     pub fn restore(self: *@This()) void {
@@ -146,11 +172,10 @@ pub const InterfaceCtx = struct {
         }
     }
 
-    /// Deinitialize all Maps. (Unused. We just let the OS clean up.)
-    /// (TODO) Improve this if it will be called outside of stopping DisCo.
+    /// Deinitialize all Maps.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         var if_iter = self.interfaces.iterator();
-        while (if_iter.next()) |if_entry| if_entry.value_ptr.deinit(alloc);
+        while (if_iter.next()) |if_entry| if_entry.value_ptr.stop(alloc);
         if_iter.unlock();
         self.interfaces.deinit(alloc);
         core.resetNLMap(alloc, u32, nl._80211.Wiphy, self.wiphys);
@@ -164,12 +189,49 @@ pub const InterfaceCtx = struct {
     }
 };
 
+/// Initialize Netlink Socket f/ the provided Interface (`if_index`).
+pub fn initIFSock(
+    if_index: i32,
+    interval: *const usize,
+) !posix.socket_t {
+    const info = nl._80211.ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const group_id = info.MCAST_GROUPS.get("scan").?;
+    const nl_addr: posix.sockaddr.nl = .{
+        .pid = 0,
+        .groups = @as(u32, 1) << @intCast(group_id - 1),
+    };
+    const nl_sock = nlSock: {
+        if (interval.* >= 1000 * time.ns_per_ms) {
+            const timeout: i32 = @intCast(@divFloor(interval.*, time.ns_per_s));
+            break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = timeout, .tv_usec = 0 });
+        }
+        const timeout: i32 = @intCast(@divFloor(interval.*, time.ns_per_us));
+        break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = timeout });
+    };
+    errdefer posix.close(nl_sock);
+    try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
+    try posix.setsockopt(
+        nl_sock,
+        posix.SOL.NETLINK,
+        nl.NETLINK_OPT.ADD_MEMBERSHIP,
+        mem.toBytes(group_id)[0..],
+    );
+    try posix.setsockopt(
+        nl_sock,
+        posix.SOL.SOCKET, 
+        posix.SO.PRIORITY,
+        mem.toBytes(@as(u32, math.maxInt(u32)))[0..],
+    );
+    try nl._80211.takeOwnership(nl_sock, if_index);
+    return nl_sock;
+}
+
 /// Track Interfaces
 pub fn trackInterfaces(
     alloc: mem.Allocator,
     active: *const atomic.Value(bool),
     interval: *const usize,
-    if_maps: *InterfaceCtx,
+    if_maps: *Context,
     config: *core.Core.Config,
 ) void {
     var err_count: usize = 0;
@@ -182,6 +244,7 @@ pub fn trackInterfaces(
             alloc,
             if_maps,
             config,
+            interval,
         ) catch |err| {
             log.err("Interface Update Error: {s}", .{ @errorName(err) });
             err_count += 1;
@@ -193,8 +256,9 @@ pub fn trackInterfaces(
 /// Update Interfaces
 pub fn updInterfaces(
     alloc: mem.Allocator,
-    if_ctx: *InterfaceCtx,
+    if_ctx: *Context,
     config: *core.Core.Config,
+    interval: *const usize,
 ) !void {
     trackWiFiIFs: {
         // Reset
@@ -311,9 +375,16 @@ pub fn updInterfaces(
     defer wifi_ifs_iter.unlock();
     //log.debug("Interfaces:", .{});
     while (wifi_ifs_iter.next()) |wifi_if| {
-        var _last_if = if_ctx.interfaces.get(wifi_if.key_ptr.*);
+        if_ctx.interfaces.mutex.lock();
+        defer if_ctx.interfaces.mutex.unlock();
+        var _last_if = if_ctx.interfaces.map.get(wifi_if.key_ptr.*);
+        if (_last_if == null)
+            log.info("New Interface Found: ({d}) {s}", .{ wifi_if.key_ptr.*, wifi_if.value_ptr.IFNAME });
         var add_if: Interface = _last_if orelse undefined;
         add_if._init = false;
+        add_if.nl_sock =
+            if (_last_if) |last_if| last_if.nl_sock
+            else try initIFSock(wifi_if.key_ptr.*, interval);
         add_if.usage = usage: {
             if (_last_if) |last_if| break :usage last_if.usage;
             const avail_ifs = config.available_ifs orelse break :usage .unavailable;
@@ -323,7 +394,7 @@ pub fn updInterfaces(
                     wifi_if.key_ptr.* != avail_idx and
                     wifi_if.key_ptr.* != nl.route.getIfIdx(avail_name) catch continue
                 ) continue;
-                //log.debug("Available Interface Found: {s}", .{ avail_name });
+                //log.info("Available Interface Found: {s}", .{ avail_name });
                 break :usage .available;
             }
             break :usage .unavailable;
@@ -383,7 +454,7 @@ pub fn updInterfaces(
             break :addr;
         }
         if (add_if.usage != .unavailable) {
-            if (if_ctx.interfaces.get(add_if.index) == null) newIF: {
+            if (if_ctx.interfaces.map.get(add_if.index) == null) newIF: {
                 log.info("Available Interface Found:\n{s}", .{ add_if });
                 if (!config.use_mask) break :newIF;
                 var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
@@ -398,7 +469,7 @@ pub fn updInterfaces(
         }
         if (_last_if) |*last_if| last_if.deinit(alloc);
         add_if._init = true;
-        try if_ctx.interfaces.put(alloc, add_if.index, add_if);
+        try if_ctx.interfaces.map.put(alloc, add_if.index, add_if);
     }
     const now = try zeit.instant(.{});
     var rm_idxs: [50]?i32 = .{ null } ** 50;

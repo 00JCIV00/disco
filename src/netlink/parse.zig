@@ -276,7 +276,7 @@ pub fn baseFromBytes(
     }
     //log.debug("---", .{});
     if (field_count < req_fields) {
-        log.err("Error converting to Type '{s}'. Required Fields: {d}. Provided Fields: {d}.", .{ @typeName(T), req_fields, field_count });
+        //log.err("Error converting to Type '{s}'. Required Fields: {d}. Provided Fields: {d}.", .{ @typeName(T), req_fields, field_count });
         return error.IncompleteTypeData;
     }
     return instance;

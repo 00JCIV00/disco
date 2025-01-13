@@ -29,6 +29,7 @@ const wpa = proto.wpa;
 pub const CommandT = cova.Command.Custom(.{
     .global_help_prefix = "DisCo",
     .help_category_order = &.{ .Prefix, .Usage, .Header, .Aliases, .Examples, .Values, .Options, .Commands },
+    .global_allow_inheritable_opts = false,
     .allow_abbreviated_cmds = true,
     .abbreviated_min_len = 1,
     .val_config = .{
@@ -43,10 +44,11 @@ pub const CommandT = cova.Command.Custom(.{
             address.IPv4,
             address.RandomMACKind,
             core.profiles.Mask,
+            core.connections.Config,
             nl.route.IFF,
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
-            wpa.Protocol,
+            nl._80211.SecurityType,
         },
         .child_type_parse_fns = &.{
             .{
@@ -101,9 +103,10 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = [3]u8, .alias = "oui" },
             .{ .ChildT = address.IPv4, .alias = "ip_address/cidr" },
             .{ .ChildT = core.profiles.Mask, .alias = "profile_mask" },
+            .{ .ChildT = core.connections.Config, .alias = "connection_info" },
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
-            .{ .ChildT = wpa.Protocol, .alias = "security_protocol" },
+            .{ .ChildT = nl._80211.SecurityType, .alias = "security_protocol" },
         },
     }
 });
@@ -116,6 +119,7 @@ pub const setup_cmd = CommandT{
     .description = "Discreetly Connect to networks.",
     .examples = &.{
         "disco -i wlan0",
+        "disco -i wlan0 --mask \"google pixel 6\"",
         "disco -i wlan0 set --mac 00:11:22:aa:bb:cc",
         "disco -i wlan0 add --ip 192.168.10.10",
         "disco -i wlan0 del --route 192.168.0.0/16",
@@ -154,6 +158,44 @@ pub const setup_cmd = CommandT{
             .val = ssids_val,
         },
         channels_opt,
+        .{
+            .name = "connect_info",
+            .description = 
+                \\Provide Connection Info for a specific Network in JSON format. (Ex: '{ "ssid": "SomeNetwork", "passphrase": "somepassphrase1" }')
+                \\            Fields:
+                \\            * `ssid`:       SSID of the Network.
+                \\            * `passphrase`: Passphrase of the Network.
+                \\            * `security`:   Security Protocol of the Network (open, wep, wpa1, wpa2, wpa3t, wpa3).
+                \\            * `if_names`:   List of Interface Names that are allowed to connect to this Network.
+                \\            * `dhcp_conf`:  DHCP Lease Config in JSON format.
+            ,
+            .opt_group = "ACTIVE",
+            .short_name = 'C',
+            .long_name = "connect-info",
+            .alias_long_names = &.{ "connection" },
+            .val = ValueT.ofType(core.connections.Config, .{
+                .set_behavior = .Multi,
+                .max_entries = 32,
+                .arg_delims = ";",
+                .parse_fn = struct {
+                    pub fn parseConnInfo(raw_info: []const u8, alloc: mem.Allocator) !core.connections.Config {
+                        return json.parseFromSliceLeaky(
+                            core.connections.Config,
+                            alloc,
+                            raw_info,
+                            .{
+                                .duplicate_field_behavior = .use_first,
+                                .ignore_unknown_fields = true,
+                                .allocate = .alloc_always,
+                            },
+                        ) catch |err| {
+                            log.err("Couldn't parse the Connection Info: {s}", .{ @errorName(err) });
+                            return err;
+                        };
+                    }
+                }.parseConnInfo,
+            }),
+        },
         .{
             .name = "mask",
             .description = "Choose a Profile Mask to hide your system. (A list of masks can be viewed w/ `list --masks`)",
@@ -277,7 +319,7 @@ pub const setup_cmd = CommandT{
                     .description = "Set the WiFi Secruity Protocol. (open, wep, or wpa2 | Default = wpa2)",
                     .long_name = "security",
                     .short_name = 's',
-                    .val = ValueT.ofType(wpa.Protocol, .{ .default_val = .wpa2 }),
+                    .val = ValueT.ofType(nl._80211.SecurityType, .{ .default_val = .wpa2 }),
                 },
                 .{
                     .name = "dhcp",

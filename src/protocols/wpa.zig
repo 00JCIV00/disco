@@ -1,11 +1,11 @@
-//! WEP/WPA Security Protocol function for DisCo.
+//! WEP/WPA Security Protocol functions for DisCo.
 
 const std = @import("std");
 const bpf = std.os.linux.BPF;
 const crypto = std.crypto;
 const fmt = std.fmt;
 const json = std.json;
-const log = std.log;
+const log = std.log.scoped(.wpa);
 const mem = std.mem;
 const posix = std.posix;
 
@@ -19,18 +19,11 @@ const utils = @import("../utils.zig");
 const c = utils.toStruct;
 const l2 = netdata.l2;
 
-pub const Protocol = enum {
-    open,
-    wep,
-    wpa2,
-    wpa3,
-};
-
 /// Calculate a WEP Key or WPA Pre-Shared Key (PSK) using MD5 or PBKDF2 with HMAC-SHA1.
-pub fn genKey(protocol: Protocol, ssid: []const u8, passphrase: []const u8) ![32]u8 {
+pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
     var key: [32]u8 = .{ 0 } ** 32;
     switch (protocol) {
-        .wpa2 => {
+        .wpa2, .wpa3t => {
             // PBKDF2 HMAC-SHA1 Key Derivation
             try crypto.pwhash.pbkdf2(
                 key[0..],
@@ -230,11 +223,32 @@ const GTK_KDE = packed struct {
     _padding: u16
 };
 
+/// 4-Way Handshake State
+const HandshakeState = enum {
+    start,
+    m1,
+    m2,
+    m3,
+    m4,
+};
+
 /// Handle a 4-Way Handshake
 pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]u8, [16]u8 } {
+    var state: HandshakeState = .start;
     log.debug("Starting 4WHS...", .{});
-    defer log.debug("Finished 4WHS!", .{});
+    defer {
+        log.debug("{s}", .{
+            switch (state) {
+                .start => "Failed 4WHS before M1.",
+                .m1 => "Failed 4WHS after M1.",
+                .m2 => "Failed 4WHS after M2.",
+                .m3 => "Failed 4WHS after M3.",
+                .m4 => "Finshed 4WHS!",
+            }
+        });
+    }
     const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE));
+    defer posix.close(hs_sock);
     const sock_addr = posix.sockaddr.ll{
         .ifindex = if_index,
         .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE),
@@ -281,6 +295,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         }
     );
     while (true) {
+        state = .start;
         const snonce: [32]u8 = snonce: {
             var bytes: [32]u8 = .{ 0 } ** 32;
             crypto.random.bytes(bytes[0..]);
@@ -344,6 +359,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         );
         const kck = ptk[0..16];
         const kek = ptk[16..32];
+        state = .m1;
         // Message 2
         const m2_eth_hdr: l2.Eth.Header = .{
             .dst_mac_addr = ap_mac,
@@ -415,6 +431,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
                 m2_mic,
             },
         );
+        state = .m2;
         // Message 3
         recv_buf = .{ 0 } ** 1600;
         const m3_len = try posix.recv(hs_sock, recv_buf[0..], 0);
@@ -545,6 +562,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         const m3_gtk_kde = mem.bytesAsValue(GTK_KDE, m3_uw_data[start..end]);
         //log.debug("GTK: {X:0>2}", .{ mem.toBytes(m3_gtk_kde.key)[0..] });
         const gtk: [16]u8 = mem.toBytes(m3_gtk_kde.key);
+        state = .m3;
         // Message 4
         const m4_eth_hdr = m2_eth_hdr;
         var m4_eap_hdr = m2_eap_hdr;
@@ -602,6 +620,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
                 m4_mic,
             },
         );
+        state = .m4;
 
         return .{ ptk, gtk };
     }
