@@ -2521,7 +2521,9 @@ pub fn getAllWIPHY(alloc: mem.Allocator) ![]const Wiphy {
                 .version = 0,
             },
         },
-        &.{},
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = mem.toBytes(@as(u32, 1))[0..] },
+        },
     );
     defer posix.close(nl_sock);
     return try handleWIPHY(alloc, nl_sock);
@@ -3388,6 +3390,7 @@ pub fn assocWPA2(
     );
     //errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
+    log.debug("ASSOC SENT", .{});
 }
 
 /// Send Control Frame

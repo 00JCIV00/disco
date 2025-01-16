@@ -74,6 +74,7 @@ pub const Config = struct {
     ssid: []const u8,
     passphrase: []const u8,
     security: nl._80211.SecurityType = .wpa2,
+    //dhcp: ?proto.dhcp.LeaseConfig = null,
     dhcp: ?proto.dhcp.LeaseConfig = null,
 };
 
@@ -156,7 +157,8 @@ pub fn trackConnections(
     errdefer if_iter.unlock();
     while (if_iter.next()) |if_entry| {
         const conn_if = if_entry.value_ptr;
-        if (conn_if.usage == .available or conn_if.usage == .scanning) job_count += 1;
+        //if (conn_if.usage == .available or conn_if.usage == .scanning) job_count += 1;
+        if (conn_if.usage == .available) job_count += 1;
     }
     if_iter.unlock();
     ctx.conn_pool.init(.{ .allocator = alloc, .n_jobs = job_count }) catch |err| {
@@ -177,8 +179,10 @@ pub fn trackConnections(
                 var conns_iter = ctx.connections.iterator();
                 defer conns_iter.unlock();
                 while (conns_iter.next()) |conn| {
-                    if (mem.eql(u8, conf.ssid, conn.value_ptr.ssid)) 
-                        continue :checkConfs;
+                    if (
+                        mem.eql(u8, conf.ssid, conn.value_ptr.ssid) and
+                        conn.value_ptr.state != .disc
+                    ) continue :checkConfs;
                 }
             }
             var nw_iter = nw_ctx.networks.iterator();
@@ -199,7 +203,8 @@ pub fn trackConnections(
                         continue :connIF;
                     }
                     switch (conn_if.usage) {
-                        .available, .scanning => {},
+                        //.available, .scanning => {},
+                        .available => {},
                         else => continue :connIF,
                     }
                     log.debug("Using Interface: ({d}) {s}", .{ conn_if.index, conn_if.name });
@@ -211,6 +216,9 @@ pub fn trackConnections(
                         err_count += 1;
                         continue;
                     };
+                    if (ctx.connections.getEntry(conn_id)) |conn_entry|
+                        conn_entry.value_ptr.deinit(alloc);
+                    ctx.connections.mutex.unlock();
                     ctx.connections.put(
                         alloc,
                         conn_id,
@@ -238,7 +246,7 @@ pub fn trackConnections(
                             interval,
                             ctx,
                             conn_id,
-                            nw_ctx.scan_results.get(nw.bssid) orelse continue,
+                            nw_ctx.scan_results,
                             if_ctx,
                             conn_if.index,
                         },
@@ -265,7 +273,7 @@ pub fn handleConnectionNoErr(
     interval: *const usize,
     ctx: *Context,
     conn_id: [10]u8,
-    scan_results: nl._80211.ScanResults,
+    nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
 ) void {
@@ -275,11 +283,12 @@ pub fn handleConnectionNoErr(
         interval,
         ctx,
         conn_id,
-        scan_results,
+        nw_scan_results,
         if_ctx,
         if_index,
     ) catch |err| {
         log.err("Connection Handling Error: {s}", .{ @errorName(err) });
+        time.sleep(interval.*);
         return;
     };
 }
@@ -292,7 +301,7 @@ pub fn handleConnection(
     interval: *const usize,
     ctx: *Context,
     conn_id: [10]u8,
-    scan_results: nl._80211.ScanResults,
+    nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
 ) !void {
@@ -300,8 +309,15 @@ pub fn handleConnection(
     var err_count: usize = 0;
     var last_err: anyerror = error.Unknown;
     var conn = ctx.connections.get(conn_id) orelse return error.ConnectionNotFound;
-    const conn_if = if_ctx.interfaces.get(if_index) orelse return error.InterfaceNotFound;
+    var conn_if = if_ctx.interfaces.get(if_index) orelse return error.InterfaceNotFound;
+    conn_if.name = try alloc.dupe(u8, conn_if.name);
+    conn_if.phy_name = try alloc.dupe(u8, conn_if.phy_name);
     defer {
+        alloc.free(conn_if.name);
+        alloc.free(conn_if.phy_name);
+    }
+    defer {
+        log.info("Cleaning Connection (ssid: {s}, if: {s})...", .{ conn.ssid, conn_if.name });
         if (conn.dhcp_info) |dhcp_info| {
             proto.dhcp.releaseDHCP(
                 conn_if.name,
@@ -310,21 +326,31 @@ pub fn handleConnection(
                 dhcp_info.server_id,
                 dhcp_info.assigned_ip,
             ) catch |err| {
-                log.warn("Couldn't release the DHCP Lease for '{s}': {s}", .{ conn_if.name, @errorName(err) });
+                log.warn("- Couldn't release the DHCP Lease for '{s}': {s}", .{ conn_if.name, @errorName(err) });
             };
+            log.info("- Released DHCP lease.", .{});
         }
         if (if_ctx.interfaces.getEntry(if_index)) |conn_if_entry| {
+            conn_if.restore(alloc, .ips);
             conn_if_entry.value_ptr.usage = .available;
+            log.debug("- Interface '({d}) {s}' made Available.", .{ conn_if_entry.key_ptr.*, conn_if_entry.value_ptr.name });
             if_ctx.interfaces.mutex.unlock();
         }
-        else log.err("Couldn't update Interface State to Available: InterfaceNotFound", .{});
+        else log.err("- Couldn't update Interface State to Available: InterfaceNotFound", .{});
         if (ctx.connections.getEntry(conn_id)) |conn_entry| {
             conn_entry.value_ptr.state = .disc;
             ctx.connections.mutex.unlock();
         }
-        else log.err("Couldn't update Connection State to Disconnected: ConnectionNotFound", .{});
+        else log.err("- Couldn't update Connection State to Disconnected: ConnectionNotFound", .{});
+        log.info("Cleaning Connection (ssid: {s}, if: {s}).", .{ conn.ssid, conn_if.name });
     }
-    log.debug(
+    var set_conn = (ctx.connections.getEntry(conn_id) orelse {
+        ctx.connections.mutex.unlock();
+        return error.ConnectionNotFound;
+    }).value_ptr.*;
+    set_conn.state = .search;
+    ctx.connections.mutex.unlock();
+    log.info(
         \\Handling Connection {X}:
         \\- nw: ({s}) {s}
         \\- if: ({d}) {s}
@@ -332,29 +358,14 @@ pub fn handleConnection(
         , .{ 
             conn_id,
             MACF{ .bytes = conn.bssid[0..] },
-            conn.ssid, 
-            conn_if.index, 
+            conn.ssid,
+            conn_if.index,
             conn_if.name,
             conn.freq,
             try nl._80211.channelFromFreq(conn.freq),
         }
     );
     // Netlink Setup
-    const bss = scan_results.BSS orelse return error.MissingBSS;
-    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
-    const ie_bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements, ies);
-    defer alloc.free(ie_bytes);
-    const rsn_bytes = rsnBytes: {
-        const rsn = ies.RSN orelse return error.MissingRSN;
-        const bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements.RobustSecurityNetwork, rsn);
-        errdefer alloc.free(bytes);
-        var buf = std.ArrayListUnmanaged(u8).fromOwnedSlice(bytes);
-        errdefer buf.deinit(alloc);
-        try buf.insert(alloc, 0, @intCast(bytes.len));
-        try buf.insert(alloc, 0, c(nl._80211.IE).RSN);
-        break :rsnBytes try buf.toOwnedSlice(alloc);
-    };
-    defer alloc.free(rsn_bytes);
     try nl._80211.registerFrames(
         alloc,
         conn_if.nl_sock,
@@ -363,143 +374,186 @@ pub fn handleConnection(
         &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
     );
     time.sleep(interval.*);
-    // Authenticate
-    log.debug("Connection {X}: Authenticating", .{ conn_id });
-    conn.state = .auth;
-    try ctx.connections.put(alloc, conn_id, conn);
-    while (active.load(.acquire)) {
-        if (err_count >= err_max) {
-            log.err("Authentication Error: {s}", .{ @errorName(last_err) });
-            return last_err;
-        }
-        switch (conn.security) {
-            .wpa2, .wpa3t => {
-                nl._80211.authWPA2(
-                    alloc,
-                    conn_if.nl_sock,
-                    conn_if.index,
-                    conn.ssid,
-                    scan_results,
-                ) catch |err| {
-                    err_count += 1;
-                    last_err = err;
-                    time.sleep(interval.*);
-                    continue;
-                };
-                break;
-            },
-            else => |sec_proto| {
-                log.err("The Security Protocol/Type '{s}' is not implemented.", .{ @tagName(sec_proto) });
-                return error.UnimplementedSecurityType;
-            },
-        }
-    }
-    // Associacate
-    log.debug("Connection {X}: Associating", .{ conn_id });
-    conn.state = .assoc;
-    try ctx.connections.put(alloc, conn_id, conn);
-    while (active.load(.acquire)) {
-        if (err_count >= err_max) {
-            log.err("Association Error: {s}", .{ @errorName(last_err) });
-            return last_err;
-        }
-        if_ctx.wifi_ifs.mutex.lock();
-        defer if_ctx.wifi_ifs.mutex.unlock();
-        const conn_wifi_if = if_ctx.wifi_ifs.map.get(conn_if.index) orelse {
-            err_count += 1;
-            last_err = error.MissingWiFiInterface;
-            time.sleep(interval.*);
-            continue;
+    // This block locks Scan Tracking.
+    {
+        // Scan Results
+        const scan_results = (nw_scan_results.getEntry(conn.bssid) orelse return error.ScanResultsNotFound).value_ptr.*;
+        nw_scan_results.mutex.unlock();
+        const bss = scan_results.BSS orelse return error.MissingBSS;
+        const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+        const ie_bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements, ies);
+        defer alloc.free(ie_bytes);
+        const rsn_bytes = rsnBytes: {
+            const rsn = ies.RSN orelse return error.MissingRSN;
+            const bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements.RobustSecurityNetwork, rsn);
+            errdefer alloc.free(bytes);
+            var buf = std.ArrayListUnmanaged(u8).fromOwnedSlice(bytes);
+            errdefer buf.deinit(alloc);
+            try buf.insert(alloc, 0, @intCast(bytes.len));
+            try buf.insert(alloc, 0, c(nl._80211.IE).RSN);
+            break :rsnBytes try buf.toOwnedSlice(alloc);
         };
-        if_ctx.wiphys.mutex.lock();
-        defer if_ctx.wiphys.mutex.unlock();
-        const conn_wiphy = if_ctx.wiphys.map.get(conn_if.phy_index) orelse {
-            err_count += 1;
-            last_err = error.MissingWiPhy;
-            time.sleep(interval.*);
-            continue;
-        };
-        switch (conn.security) {
-            .wpa2, .wpa3t => {
-                nl._80211.assocWPA2(
-                    alloc,
-                    conn_if.nl_sock,
-                    conn_wifi_if,
-                    conn_wiphy,
-                    conn.ssid,
-                    scan_results,
-                ) catch |err| {
-                    err_count += 1;
-                    last_err = err;
-                    time.sleep(interval.*);
-                    continue;
-                };
-                break;
-            },
-            else => |sec_proto| {
-                log.err("The Security Protocol/Type '{s}' is not implemented.", .{ @tagName(sec_proto) });
-                return error.UnimplementedSecurityType;
-            },
+        defer alloc.free(rsn_bytes);
+        // Authenticate
+        log.debug("Connection {X}: Authenticating", .{ conn_id });
+        set_conn = (ctx.connections.getEntry(conn_id) orelse {
+            ctx.connections.mutex.unlock();
+            return error.ConnectionNotFound;
+        }).value_ptr.*;
+        set_conn.state = .auth;
+        ctx.connections.mutex.unlock();
+        while (active.load(.acquire)) {
+            if (err_count >= err_max) {
+                log.err("Authentication Error: {s}", .{ @errorName(last_err) });
+                return last_err;
+            }
+            switch (conn.security) {
+                .wpa2, .wpa3t => {
+                    nl._80211.authWPA2(
+                        alloc,
+                        conn_if.nl_sock,
+                        conn_if.index,
+                        conn.ssid,
+                        scan_results,
+                    ) catch |err| {
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(interval.*);
+                        continue;
+                    };
+                    break;
+                },
+                else => |sec_proto| {
+                    log.err("The Security Protocol/Type '{s}' is not implemented.", .{ @tagName(sec_proto) });
+                    return error.UnimplementedSecurityType;
+                },
+            }
         }
-    }
-    // EAPoL - TODO Make this stateful f/ different Security Types
-    log.debug("Connection {X}: Handling EAPoL", .{ conn_id });
-    try posix.setsockopt(
-        conn_if.nl_sock,
-        posix.SOL.SOCKET,
-        posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .tv_sec = 4, .tv_usec = 0 })[0..],
-    );
-    conn.state = .eapol;
-    try ctx.connections.put(alloc, conn_id, conn);
-    log.debug("{s}: {s}", .{ conn_if.name, conn.state });
-    const ptk,
-    const gtk = keys: while (active.load(.acquire)) {
-        if (err_count >= err_max) {
-            log.err("EAPoL Error: {s}", .{ @errorName(last_err) });
-            return last_err;
+        time.sleep(interval.*);
+        // Associacate
+        log.debug("Connection {X}: Associating", .{ conn_id });
+        set_conn = (ctx.connections.getEntry(conn_id) orelse {
+            ctx.connections.mutex.unlock();
+            return error.ConnectionNotFound;
+        }).value_ptr.*;
+        set_conn.state = .assoc;
+        ctx.connections.mutex.unlock();
+        while (active.load(.acquire)) {
+            if (err_count >= err_max) {
+                log.err("Association Error: {s}", .{ @errorName(last_err) });
+                return last_err;
+            }
+            if_ctx.wifi_ifs.mutex.lock();
+            defer if_ctx.wifi_ifs.mutex.unlock();
+            const conn_wifi_if = if_ctx.wifi_ifs.map.get(conn_if.index) orelse {
+                err_count += 1;
+                last_err = error.MissingWiFiInterface;
+                time.sleep(interval.*);
+                continue;
+            };
+            defer if_ctx.wiphys.mutex.unlock();
+            const conn_wiphy = (if_ctx.wiphys.getEntry(conn_if.phy_index) orelse {
+                err_count += 1;
+                last_err = error.MissingWiPhy;
+                time.sleep(interval.*);
+                continue;
+            }).value_ptr.*;
+            //log.debug("WIPHY:\n{}", .{ conn_wiphy });
+            switch (conn.security) {
+                .wpa2, .wpa3t => {
+                    nl._80211.assocWPA2(
+                        alloc,
+                        conn_if.nl_sock,
+                        conn_wifi_if,
+                        conn_wiphy,
+                        conn.ssid,
+                        scan_results,
+                    ) catch |err| {
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(interval.*);
+                        continue;
+                    };
+                    break;
+                },
+                else => |sec_proto| {
+                    log.err("The Security Protocol/Type '{s}' is not implemented.", .{ @tagName(sec_proto) });
+                    return error.UnimplementedSecurityType;
+                },
+            }
         }
-        const ptk,
-        const gtk = proto.wpa.handle4WHS(if_index, conn.psk, rsn_bytes) catch |err| {
-            err_count += 1;
-            last_err = err;
-            time.sleep(interval.*);
-            continue;
-        };
-        break :keys .{ ptk, gtk };
-    }
-    else return last_err;
-    inline for (&.{ ptk[32..], gtk[0..] }, 0..) |key, idx| {
-        try nl._80211.addKey(
-            alloc,
+        // EAPoL - TODO Make this stateful f/ different Security Types
+        log.debug("Connection {X}: Handling EAPoL", .{ conn_id });
+        try posix.setsockopt(
             conn_if.nl_sock,
-            if_index,
-            if (idx == 0) bss.BSSID else null,
-            .{
-                .DATA = key.*,
-                .CIPHER = c(nl._80211.CIPHER_SUITES).CCMP,
-                .SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
-                .IDX = idx,
-            },
+            posix.SOL.SOCKET,
+            posix.SO.RCVTIMEO,
+            mem.toBytes(posix.timeval{ .tv_sec = 4, .tv_usec = 0 })[0..],
+        );
+        set_conn = (ctx.connections.getEntry(conn_id) orelse {
+            ctx.connections.mutex.unlock();
+            return error.ConnectionNotFound;
+        }).value_ptr.*;
+        set_conn.state = .eapol;
+        log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
+        ctx.connections.mutex.unlock();
+        const ptk,
+        const gtk = keys: while (active.load(.acquire)) {
+            if (err_count >= err_max) {
+                log.err("EAPoL Error: {s}", .{ @errorName(last_err) });
+                return last_err;
+            }
+            const ptk,
+            const gtk = proto.wpa.handle4WHS(if_index, conn.psk, rsn_bytes) catch |err| {
+                err_count += 1;
+                last_err = err;
+                time.sleep(interval.*);
+                continue;
+            };
+            break :keys .{ ptk, gtk };
+        }
+        else return last_err;
+        inline for (&.{ ptk[32..], gtk[0..] }, 0..) |key, idx| {
+            try nl._80211.addKey(
+                alloc,
+                conn_if.nl_sock,
+                if_index,
+                if (idx == 0) bss.BSSID else null,
+                .{
+                    .DATA = key.*,
+                    .CIPHER = c(nl._80211.CIPHER_SUITES).CCMP,
+                    .SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
+                    .IDX = idx,
+                },
+            );
+        }
+        try posix.setsockopt(
+            conn_if.nl_sock,
+            posix.SOL.SOCKET,
+            posix.SO.RCVTIMEO,
+            mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
         );
     }
-    try posix.setsockopt(
-        conn_if.nl_sock,
-        posix.SOL.SOCKET,
-        posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
-    );
+    // Connected
+    var set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
+    set_if.usage = .connected;
+    if_ctx.interfaces.mutex.unlock();
     // DHCP
-    conn.state = .conn;
-    try ctx.connections.put(alloc, conn_id, conn);
-    log.debug("{s}: {s}", .{ conn_if.name, conn.state });
+    set_conn = (ctx.connections.getEntry(conn_id) orelse {
+        ctx.connections.mutex.unlock();
+        return error.ConnectionNotFound;
+    }).value_ptr.*;
+    set_conn.state = .dhcp;
+    log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
+    ctx.connections.mutex.unlock();
     const conf = ctx.configs.get(conn.ssid).?;
-    if (conf.dhcp) |dhcp_conf| {
+    if (conf.dhcp) |dhcp_conf| tryDHCP: {
         log.debug("Connection {X}: Handling DHCP", .{ conn_id });
         while (active.load(.acquire)) {
             if (err_count >= err_max) {
                 log.err("DHCP Error: {s}", .{ @errorName(last_err) });
-                return last_err;
+                //return last_err;
+                break :tryDHCP;
             }
             const dhcp_info = proto.dhcp.handleDHCP(
                 conn_if.name,
@@ -517,13 +571,14 @@ pub fn handleConnection(
             break;
         }
     }
-    // Connected
-    var set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
-    set_if.usage = .connecting;
-    if_ctx.interfaces.mutex.unlock();
-    conn.state = .conn;
-    try ctx.connections.put(alloc, conn_id, conn);
-    log.debug("{s}: {s}", .{ conn_if.name, conn.state });
+    // Hold Connection
+    set_conn = (ctx.connections.getEntry(conn_id) orelse {
+        ctx.connections.mutex.unlock();
+        return error.ConnectionNotFound;
+    }).value_ptr.*;
+    set_conn.state = .conn;
+    log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
+    ctx.connections.mutex.unlock();
     while (active.load(.acquire))
         time.sleep(interval.*);
 }

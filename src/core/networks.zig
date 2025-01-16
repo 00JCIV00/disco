@@ -59,6 +59,7 @@ pub const Network = struct {
             \\- RSSI:      {d} dBm
             \\- Rx Qual:   {d}
             \\- Last Seen: {s}
+            \\- Seen By:   {d}
             \\
             , .{
                 self.ssid,
@@ -69,6 +70,7 @@ pub const Network = struct {
                 self.rssi,
                 self.rx_qual orelse 0,
                 last_ts,
+                self.if_index
             },
         );
     }
@@ -345,7 +347,7 @@ fn trackNetworksIF(
     const scan_if = interfaces.get(if_index) orelse return error.InterfaceNotFound;
     if (scan_if.usage != .scanning) return;
     var set_if = (interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
-    set_if.usage = .available;
+    defer set_if.usage = .available;
     interfaces.mutex.unlock();
     try nl._80211.getScan(alloc, scan_if.index, scan_if.nl_sock);
     const scan_results = nl._80211.handleScanResults(alloc, scan_if.nl_sock) catch |err| {
@@ -435,6 +437,6 @@ fn trackNetworksIF(
         }
         else network_ctx.networks.mutex.unlock();
         try network_ctx.networks.put(alloc, bssid, new_network);
-        //log.debug("-------------\n{s}", .{ new_network });
+        log.debug("-------------\n{s}", .{ new_network });
     }
 }

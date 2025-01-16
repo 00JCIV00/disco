@@ -167,7 +167,7 @@ pub const setup_cmd = CommandT{
                 \\            * `passphrase`: Passphrase of the Network.
                 \\            * `security`:   Security Protocol of the Network (open, wep, wpa1, wpa2, wpa3t, wpa3).
                 \\            * `if_names`:   List of Interface Names that are allowed to connect to this Network.
-                \\            * `dhcp_conf`:  DHCP Lease Config in JSON format.
+                \\            * `dhcp`:  DHCP Lease Config in JSON format.
             ,
             .opt_group = "ACTIVE",
             .short_name = 'C',

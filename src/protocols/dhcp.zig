@@ -170,7 +170,8 @@ pub fn handleDHCP(
     );
     try posix.bind(dhcp_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
     const bootp_hdr_len = @sizeOf(l5.BOOTP.Header);
-    while (true) {
+    var attempts: u8 = 0;
+    while (attempts < 3) : (attempts += 1) {
         const transaction_id: u32 = transaction_id: {
             var bytes: [4]u8 = undefined;
             crypto.random.bytes(bytes[0..]);
@@ -609,6 +610,7 @@ pub fn handleDHCP(
                 c(l5.DHCP.OptionCode).ROUTER => {
                     if (opt_len == 4) ack_router_buf = opt_data[0..4].*;
                 },
+                // TODO Handle Better 
                 c(l5.DHCP.OptionCode).DNS => {
                     if (opt_len == 4) ack_dns_buf = opt_data[0..4].*;
                 },
@@ -684,6 +686,7 @@ pub fn handleDHCP(
             },
         }
     }
+    return error.CouldNotCompleteDHCP;
 }
 
 /// Release DHCP lease
