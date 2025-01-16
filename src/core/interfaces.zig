@@ -121,10 +121,45 @@ pub const Interface = struct {
         self._init = false;
     }
 
+    /// Restoration Kind
+    pub const RestoreKind = enum {
+        all,
+        ips,
+        mac,
+    };
+    /// Restore the Interface.
+    pub fn restore(self: *@This(), alloc: mem.Allocator, kind: RestoreKind) void {
+        log.info("- Restoring Interface '{s}'...", .{ self.name });
+        if (kind == .ips or kind == .all) {
+            for (self.ips, self.cidrs) |_ip, _cidr| {
+                const ip = _ip orelse continue;
+                const cidr = _cidr orelse 24;
+                defer nl.route.deleteIP(
+                    alloc,
+                    self.index,
+                    ip,
+                    cidr,
+                ) catch |err| switch (err) {
+                    error.ADDRNOTAVAIL => {},
+                    else => log.warn(" - Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
+                };
+                log.info(" - Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
+            }
+        }
+        if (kind == .mac or kind == .all) {
+            if (nl.route.setMAC(self.index, self.og_mac))
+                log.info(" - Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
+            else |_|
+                log.warn(" - Could not restore Interface '{s}' to its orignal MAC '{s}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
+        }
+        log.info("- Restored Interface '{s}'.", .{ self.name });
+    }
+
     /// Free the allocated portions of this Interface and close the Netlink Socket.
     pub fn stop(self: *@This(), alloc: mem.Allocator) void {
-        self.deinit(alloc);
+        self.restore(alloc, .all);
         posix.close(self.nl_sock);
+        self.deinit(alloc);
     }
 };
 
@@ -157,18 +192,15 @@ pub const Context = struct {
         return self;
     }
 
-    /// Restore All Interfaces to their Original MAC Addresses.
-    pub fn restore(self: *@This()) void {
+    /// Restore All Interfaces to their Original MAC Addresses and remove any IP Addresses.
+    pub fn restore(self: *@This(), alloc: mem.Allocator) void {
+        if (self.interfaces.count() == 0) return;
         var if_iter = self.interfaces.iterator();
         defer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const res_if = if_entry.value_ptr;
             if (res_if.usage == .unavailable) continue;
-            nl.route.setMAC(res_if.index, res_if.og_mac) catch {
-                log.warn("Could not restore Interface '{s}' to its orignal MAC '{s}'.", .{ res_if.name, MACF{ .bytes = res_if.og_mac[0..] } });
-                continue;
-            };
-            log.info("- Restored Interface '{s}' to its orignal MAC '{s}'.", .{ res_if.name, MACF{ .bytes = res_if.og_mac[0..] } });
+            res_if.restore(alloc, .all);
         }
     }
 
@@ -294,21 +326,34 @@ pub fn updInterfaces(
             if_ctx.wiphys,
         );
         // Parse
-        const nl_wiphys = nl._80211.getAllWIPHY(alloc) catch |err| {
-            log.err("Could not parse Netlink WiFi Physical Devices: {s}", .{ @errorName(err) });
-            break :trackWiphys;
-        };
-        errdefer for (nl_wiphys) |wiphy| nl.parse.freeBytes(alloc, nl._80211.Wiphy, wiphy);
-        defer alloc.free(nl_wiphys);
-        if (nl_wiphys.len == 0) {
-            log.warn("No WiFi Physical Devices Found.", .{});
-            break :trackWiphys;
-        }
-        for (nl_wiphys) |wiphy| {
-            //log.debug("WIPHY: ({d}) {s}", .{ wiphy.WIPHY, wiphy.WIPHY_NAME });
+        //const nl_wiphys = nl._80211.getAllWIPHY(alloc) catch |err| {
+        //    log.err("Could not parse Netlink WiFi Physical Devices: {s}", .{ @errorName(err) });
+        //    break :trackWiphys;
+        //};
+        //errdefer for (nl_wiphys) |wiphy| nl.parse.freeBytes(alloc, nl._80211.Wiphy, wiphy);
+        //defer alloc.free(nl_wiphys);
+        //if (nl_wiphys.len == 0) {
+        //    log.warn("No WiFi Physical Devices Found.", .{});
+        //    break :trackWiphys;
+        //}
+        //for (nl_wiphys) |wiphy| {
+        //    log.debug("WIPHY: ({d}) {s}", .{ wiphy.WIPHY, wiphy.WIPHY_NAME });
+        //    var add_wiphy = wiphy;
+        //    if (wiphy.WIPHY_BANDS == null) {
+        //        nl.parse.freeBytes(alloc, nl._80211.Wiphy, wiphy);
+        //        continue;
+        //    }
+        //    const _old = try if_ctx.wiphys.fetchPut(alloc, wiphy.WIPHY, wiphy);
+        //    if (_old) |old| nl.parse.freeBytes(alloc, nl._80211.Wiphy, old.value);
+        //}
+        var if_iter = if_ctx.wifi_ifs.iterator();
+        defer if_iter.unlock();
+        while (if_iter.next()) |wifi_if| {
+            const wiphy = nl._80211.getWIPHY(alloc, wifi_if.key_ptr.*, wifi_if.value_ptr.WIPHY) catch continue;
             const _old = try if_ctx.wiphys.fetchPut(alloc, wiphy.WIPHY, wiphy);
             if (_old) |old| nl.parse.freeBytes(alloc, nl._80211.Wiphy, old.value);
         }
+        break :trackWiphys;
     }
     trackLinks: {
         // Reset
@@ -388,13 +433,13 @@ pub fn updInterfaces(
         add_if.usage = usage: {
             if (_last_if) |last_if| break :usage last_if.usage;
             const avail_ifs = config.available_ifs orelse break :usage .unavailable;
+            for (avail_ifs) |avail_idx| {
+                if (wifi_if.key_ptr.* != avail_idx) continue;
+                break :usage .available;
+            }
             const avail_if_names = config.avail_if_names orelse break :usage .unavailable;
-            for (avail_ifs, avail_if_names) |avail_idx, avail_name| {
-                if (
-                    wifi_if.key_ptr.* != avail_idx and
-                    wifi_if.key_ptr.* != nl.route.getIfIdx(avail_name) catch continue
-                ) continue;
-                //log.info("Available Interface Found: {s}", .{ avail_name });
+            for (avail_if_names) |avail_name| {
+                if (!mem.eql(u8, wifi_if.value_ptr.IFNAME, avail_name)) continue;
                 break :usage .available;
             }
             break :usage .unavailable;
