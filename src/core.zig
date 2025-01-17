@@ -40,6 +40,10 @@ pub const Core = struct {
         conflict_proc_names: []const []const u8 = &.{
             "wpa_supplicant",
             "dhcpcd",
+            "angryoxide",
+            "kismet",
+            "nmcli",
+            "nmtui",
         },
         /// Use Profile Mask
         use_mask: bool = true,
@@ -81,6 +85,9 @@ pub const Core = struct {
     conn_ctx: connections.Context,
     /// Original Hostname
     og_hostname: []const u8,
+    /// Forced Close
+    forced_close: bool = false,
+
 
 
     /// Initialize the Core Context.
@@ -250,11 +257,14 @@ pub const Core = struct {
             if (sys.setHostName(self.og_hostname)) 
                 log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname })
             else |err|
-                log.warn("Couldn't reset the Hostname: {s}", .{ @errorName(err) });
+                log.warn("- Couldn't reset the Hostname: {s}", .{ @errorName(err) });
             self.if_ctx.restore(self._alloc);
         }
-        //log.info("- Allowing OS to clean up remaining Memory.", .{});
         self._alloc.free(self.og_hostname);
+        if (self.forced_close) {
+            log.warn("- Forced close. Leaving memory clean up to the OS.", .{});
+            return;
+        }
         self.if_ctx.deinit(self._alloc);
         log.info("- Deinitialized Interface Tracking.", .{});
         self.network_ctx.deinit(self._alloc);

@@ -437,6 +437,6 @@ fn trackNetworksIF(
         }
         else network_ctx.networks.mutex.unlock();
         try network_ctx.networks.put(alloc, bssid, new_network);
-        log.debug("-------------\n{s}", .{ new_network });
+        //log.debug("-------------\n{s}", .{ new_network });
     }
 }

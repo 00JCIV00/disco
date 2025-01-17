@@ -5,6 +5,7 @@ const heap = std.heap;
 const io = std.io;
 const json = std.json;
 const log = std.log;
+const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
 const process = std.process;
@@ -33,6 +34,10 @@ const c = utils.toStruct;
 
 // Cleaning Hang Protection
 var cleaning: bool = false;
+// Forcing Close
+var forcing_close: bool = false;
+// Panic Messaging
+var panicking: bool = false;
 // Core Context
 var _core_ctx: ?core.Core = null;
 // TODO: Pull these into Core context
@@ -46,10 +51,11 @@ var dhcp_info: ?dhcp.Info = null;
 var raw_net_if: ?core.interfaces.Interface = null;
 
 pub fn main() !void {
+    // Catch Forced Close
     try posix.sigaction(
         posix.SIG.INT,
         &.{
-            .handler = .{ .handler = cleanUp },
+            .handler = .{ .handler = forceClose },
             .mask = posix.empty_sigset,
             .flags = 0,
         },
@@ -793,15 +799,14 @@ fn cleanUp(_: i32) callconv(.C) void {
         posix.exit(1);
     }
     cleaning = true;
-    log.info("Closing gracefully...\n(Force close w/ `ctrl + c` again.)", .{});
+    if (panicking) log.err("Runtime Panic! Attempting to close gracefully...", .{})
+    else if (forcing_close) log.info("Forced close! Attempting to close gracefully...", .{})
+    else log.info("Closing gracefully...\n(Force close w/ `ctrl + c`.)", .{});
     if (connected) cleanup: {
         active = false;
         //const core_ctx = _core_ctx orelse break :cleanup;
         //raw_net_if = core_ctx.if_maps.interfaces.get(net_if.index);
         const net_if = raw_net_if orelse break :cleanup;
-        //net_if.update() catch break :cleanup;
-        //if (connect_cmd.checkFlag("dhcp")) dhcp: {
-        //    const d_info = dhcp_info orelse break :dhcp;
         if (dhcp_info) |d_info| {
             dhcp.releaseDHCP(
                 net_if.name,
@@ -811,27 +816,49 @@ fn cleanUp(_: i32) callconv(.C) void {
                 d_info.assigned_ip,
             ) catch log.warn("Could not release DHCP lease for `{s}`!", .{ d_info.assigned_ip });
         }
-        for (net_if.ips, net_if.cidrs) |_ip, _cidr| {
-            const ip = _ip orelse continue;
-            const cidr = _cidr orelse 24;
-            var fba_buf: [2048]u8 = undefined;
-            var fba = heap.FixedBufferAllocator.init(fba_buf[0..]);
-            defer nl.route.deleteIP(
-                //alloc,
-                fba.allocator(),
-                net_if.index,
-                ip,
-                cidr,
-            ) catch |err| switch (err) {
-                error.ADDRNOTAVAIL => {},
-                else => log.warn("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
-            };
-        }
+        //for (net_if.ips, net_if.cidrs) |_ip, _cidr| {
+        //    const ip = _ip orelse continue;
+        //    const cidr = _cidr orelse 24;
+        //    var fba_buf: [2048]u8 = undefined;
+        //    var fba = heap.FixedBufferAllocator.init(fba_buf[0..]);
+        //    defer nl.route.deleteIP(
+        //        //alloc,
+        //        fba.allocator(),
+        //        net_if.index,
+        //        ip,
+        //        cidr,
+        //    ) catch |err| switch (err) {
+        //        error.ADDRNOTAVAIL => {},
+        //        else => log.warn("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
+        //    };
+        //}
     }
     if (_core_ctx) |*core_ctx| {
+        if (panicking or forcing_close)
+            core_ctx.forced_close = true;
         core_ctx.stop();
         core_ctx._mutex.lock();
     }
+    if (panicking) return;
     log.info("Exit!", .{});
-    posix.exit(0);
+    posix.exit(1);
+}
+
+/// Force Close
+pub fn forceClose(errno: i32) callconv(.C) void {
+    forcing_close = true;
+    cleanUp(errno);
+}
+
+/// Attempt to recover from Panics gracefully.
+pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    @setCold(true);
+    if (!cleaning and !panicking) {
+        panicking = true;
+        cleanUp(1);
+    }
+    log.err("Panic Report: ({d}) {s}", .{ ret_addr orelse 0, msg });
+    if (@import("builtin").mode == .Debug)
+        std.builtin.default_panic(msg, trace, ret_addr)
+    else posix.exit(1);
 }

@@ -1275,6 +1275,7 @@ pub const InformationElements = struct {
 
     /// Robust Security Network (RSN)
     pub const RobustSecurityNetwork = struct {
+        /// Custom Netlink Parse Function (implicitly used by `nl.parse`)
         pub fn fromBytes(alloc: mem.Allocator, bytes: []const u8) !@This() {
             var rsn: @This() = undefined;
             if (bytes.len < 8) {
@@ -1306,6 +1307,7 @@ pub const InformationElements = struct {
                         );
                     }
                 }
+                errdefer nl.parse.freeOptBytes(alloc, ?[]const Suite, rsn.PAIRWISE_CIPHER_SUITES);
                 start = end;
                 end += 2;
                 if (end > bytes.len) break :opts;
@@ -1324,6 +1326,7 @@ pub const InformationElements = struct {
                         );
                     }
                 }
+                errdefer nl.parse.freeOptBytes(alloc, ?[]const Suite, rsn.AKM_SUITES);
                 start = end;
                 end += 2;
                 if (end > bytes.len) break :opts;
@@ -1346,11 +1349,14 @@ pub const InformationElements = struct {
                             bytes[start..end],
                         );
                     }
+                    errdefer nl.parse.freeOptBytes(alloc, ?[]const Suite, rsn.PMKID_LIST);
                 }
                 if (end > bytes.len) break :opts;
 
                 start = end;
                 end += @sizeOf(Suite);
+                if (bytes.len - start < end - start)
+                    return error.MalformedRSN;
                 rsn.GROUP_MANAGEMENT_CIPHER_SUITE = @bitCast(bytes[start..end][0..4].*);
             }
             //{

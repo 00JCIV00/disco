@@ -141,23 +141,23 @@ pub const Interface = struct {
                     cidr,
                 ) catch |err| switch (err) {
                     error.ADDRNOTAVAIL => {},
-                    else => log.warn(" - Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
+                    else => log.warn("-- Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
                 };
-                log.info(" - Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
+                log.info("-- Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
             }
         }
         if (kind == .mac or kind == .all) {
             if (nl.route.setMAC(self.index, self.og_mac))
-                log.info(" - Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
+                log.info("-- Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
             else |_|
-                log.warn(" - Could not restore Interface '{s}' to its orignal MAC '{s}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
+                log.warn("-- Could not restore Interface '{s}' to its orignal MAC '{s}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
         }
-        log.info("- Restored Interface '{s}'.", .{ self.name });
+        //log.info("- Restored Interface '{s}'.", .{ self.name });
     }
 
     /// Free the allocated portions of this Interface and close the Netlink Socket.
     pub fn stop(self: *@This(), alloc: mem.Allocator) void {
-        self.restore(alloc, .all);
+        //self.restore(alloc, .all);
         posix.close(self.nl_sock);
         self.deinit(alloc);
     }
@@ -317,6 +317,7 @@ pub fn updInterfaces(
             if (_old) |old| nl.parse.freeBytes(alloc, nl._80211.Interface, old.value);
         }
     }
+    // TODO Figure out if this can be done w/ `getAllWIPHY()`.
     trackWiphys: {
         // Reset
         core.resetNLMap(
