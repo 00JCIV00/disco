@@ -40,6 +40,7 @@ pub const Core = struct {
         conflict_proc_names: []const []const u8 = &.{
             "wpa_supplicant",
             "dhcpcd",
+            "dhclient",
             "angryoxide",
             "kismet",
             "nmcli",

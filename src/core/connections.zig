@@ -74,12 +74,12 @@ pub const Config = struct {
     ssid: []const u8,
     passphrase: []const u8,
     security: nl._80211.SecurityType = .wpa2,
-    //dhcp: ?proto.dhcp.LeaseConfig = null,
     dhcp: ?proto.dhcp.LeaseConfig = null,
 };
 
 /// Connection Info
 pub const Connection = struct {
+    active: atomic.Value(bool) = atomic.Value(bool).init(false),
     if_index: i32,
     state: State,
     bssid: [6]u8,
@@ -89,6 +89,7 @@ pub const Connection = struct {
     psk: [32]u8 = .{ 0 } ** 32,
     security: nl._80211.SecurityType = .wpa2,
     auth: nl._80211.AuthType = .psk,
+    dhcp_conf: ?proto.dhcp.LeaseConfig = null,
     dhcp_info: ?dhcp.Info = null,
 
     pub fn deinit (self: *const @This(), alloc: mem.Allocator) void {
@@ -151,6 +152,7 @@ pub fn trackConnections(
     nw_ctx: *const core.networks.Context,
 ) void {
     log.debug("Searching for {d} Connection(s)...", .{ ctx.configs.count() });
+    const err_max: usize = 10;
     var err_count: usize = 0;
     var job_count: u32 = 0;
     var if_iter = if_ctx.interfaces.iterator();
@@ -158,7 +160,7 @@ pub fn trackConnections(
     while (if_iter.next()) |if_entry| {
         const conn_if = if_entry.value_ptr;
         //if (conn_if.usage == .available or conn_if.usage == .scanning) job_count += 1;
-        if (conn_if.usage == .available) job_count += 1;
+        if (conn_if.usage == .available) job_count += 10;
     }
     if_iter.unlock();
     ctx.conn_pool.init(.{ .allocator = alloc, .n_jobs = job_count }) catch |err| {
@@ -167,30 +169,35 @@ pub fn trackConnections(
     };
     while (active.load(.acquire)) {
         defer {
-            if (err_count > 10) @panic("Connection Tracking encountered too many errors to continue!");
+            if (err_count > err_max) @panic("Connection Tracking encountered too many errors to continue!");
             time.sleep(interval.*);
         }
         var confs_iter = ctx.configs.iterator();
         defer confs_iter.unlock();
-        checkConfs: while (confs_iter.next()) |conf_entry| {
+        //checkConfs: while (confs_iter.next()) |conf_entry| {
+        while (confs_iter.next()) |conf_entry| {
             const conf = conf_entry.value_ptr;
-            //log.debug("Searching for SSID '{s}' to Connect.", .{ conf.ssid });
-            {
-                var conns_iter = ctx.connections.iterator();
-                defer conns_iter.unlock();
-                while (conns_iter.next()) |conn| {
-                    if (
-                        mem.eql(u8, conf.ssid, conn.value_ptr.ssid) and
-                        conn.value_ptr.state != .disc
-                    ) continue :checkConfs;
-                }
-            }
             var nw_iter = nw_ctx.networks.iterator();
             defer nw_iter.unlock();
-            while (nw_iter.next()) |nw_entry| {
+            checkNW: while (nw_iter.next()) |nw_entry| {
                 const nw = nw_entry.value_ptr;
-                if (!mem.eql(u8, conf.ssid, nw.ssid)) continue;
-                log.debug("FOUND CONNECTION SSID: {s}", .{ nw.ssid });
+                if (mem.indexOf(u8, nw.ssid, conf.ssid) == null) continue;
+                {
+                    var conns_iter = ctx.connections.iterator();
+                    defer conns_iter.unlock();
+                    while (conns_iter.next()) |conn_entry| {
+                        const conn = conn_entry.value_ptr;
+                        if (
+                            mem.eql(u8, conf.ssid, conn.ssid) and
+                            mem.eql(u8, conn.bssid[0..], nw.bssid[0..]) and
+                            conn.active.load(.acquire)
+                        ) {
+                            //log.debug("Found Connection SSID but ignoring: {s}", .{ nw.ssid });
+                            continue :checkNW;
+                        }
+                    }
+                }
+                //log.debug("FOUND CONNECTION SSID: {s}", .{ nw.ssid });
                 var ifs_iter = if_ctx.interfaces.iterator();
                 defer ifs_iter.unlock();
                 connIF: while (ifs_iter.next()) |if_entry| {
@@ -203,7 +210,6 @@ pub fn trackConnections(
                         continue :connIF;
                     }
                     switch (conn_if.usage) {
-                        //.available, .scanning => {},
                         .available => {},
                         else => continue :connIF,
                     }
@@ -211,7 +217,7 @@ pub fn trackConnections(
                     var set_if = (if_ctx.interfaces.map.getEntry(conn_if.index) orelse continue).value_ptr;
                     set_if.usage = .connecting;
                     const conn_id = nw.bssid ++ mem.toBytes(conn_if.index);
-                    const psk = wpa.genKey(conf.security, conf.ssid, conf.passphrase) catch |err| {
+                    const psk = wpa.genKey(conf.security, nw.ssid, conf.passphrase) catch |err| {
                         log.err("Connection Update Error: {s}", .{ @errorName(err) });
                         err_count += 1;
                         continue;
@@ -223,6 +229,7 @@ pub fn trackConnections(
                         alloc,
                         conn_id,
                         .{
+                            .active = atomic.Value(bool).init(true),
                             .if_index = conn_if.index,
                             .state = .search,
                             .bssid = nw.bssid,
@@ -231,6 +238,7 @@ pub fn trackConnections(
                             .passphrase = alloc.dupe(u8, conf.passphrase) catch @panic("OOM"),
                             .psk = psk,
                             .security = conf.security,
+                            .dhcp_conf = conf.dhcp,
                         },
                     ) catch |err| {
                         log.err("Connection Update Error: {s}", .{ @errorName(err) });
@@ -305,10 +313,18 @@ pub fn handleConnection(
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
 ) !void {
-    const err_max = 10;
+    const err_max = 3;
     var err_count: usize = 0;
     var last_err: anyerror = error.Unknown;
     var conn = ctx.connections.get(conn_id) orelse return error.ConnectionNotFound;
+    const conn_active: *atomic.Value(bool) = connActive: {
+        var get_conn = (ctx.connections.getEntry(conn_id) orelse {
+            ctx.connections.mutex.unlock();
+            return error.ConnectionNotFound;
+        }).value_ptr.*;
+        defer ctx.connections.mutex.unlock();
+        break :connActive &get_conn.active;
+    };
     var conn_if = if_ctx.interfaces.get(if_index) orelse return error.InterfaceNotFound;
     conn_if.name = try alloc.dupe(u8, conn_if.name);
     conn_if.phy_name = try alloc.dupe(u8, conn_if.phy_name);
@@ -318,17 +334,19 @@ pub fn handleConnection(
     }
     defer {
         log.info("Cleaning Connection (ssid: {s}, if: {s})...", .{ conn.ssid, conn_if.name });
-        if (conn.dhcp_info) |dhcp_info| {
-            proto.dhcp.releaseDHCP(
-                conn_if.name,
-                conn_if.index,
-                conn_if.mac,
-                dhcp_info.server_id,
-                dhcp_info.assigned_ip,
-            ) catch |err| {
-                log.warn("- Couldn't release the DHCP Lease for '{s}': {s}", .{ conn_if.name, @errorName(err) });
-            };
-            log.info("- Released DHCP lease.", .{});
+        if (ctx.connections.get(conn_id)) |get_conn| {
+            if (get_conn.dhcp_info) |dhcp_info| {
+                proto.dhcp.releaseDHCP(
+                    conn_if.name,
+                    conn_if.index,
+                    conn_if.mac,
+                    dhcp_info.server_id,
+                    dhcp_info.assigned_ip,
+                ) catch |err| {
+                    log.warn("- Couldn't release the DHCP Lease for '{s}': {s}", .{ conn_if.name, @errorName(err) });
+                };
+                log.info("- Released DHCP lease.", .{});
+            }
         }
         if (if_ctx.interfaces.getEntry(if_index)) |conn_if_entry| {
             conn_if.restore(alloc, .ips);
@@ -342,13 +360,13 @@ pub fn handleConnection(
             ctx.connections.mutex.unlock();
         }
         else log.err("- Couldn't update Connection State to Disconnected: ConnectionNotFound", .{});
-        log.info("Cleaning Connection (ssid: {s}, if: {s}).", .{ conn.ssid, conn_if.name });
+        conn_active.store(false, .seq_cst);
+        log.info("Cleaned Connection (ssid: {s}, if: {s}).", .{ conn.ssid, conn_if.name });
     }
     var set_conn = (ctx.connections.getEntry(conn_id) orelse {
         ctx.connections.mutex.unlock();
         return error.ConnectionNotFound;
-    }).value_ptr.*;
-    set_conn.state = .search;
+    }).value_ptr;
     ctx.connections.mutex.unlock();
     log.info(
         \\Handling Connection {X}:
@@ -366,6 +384,7 @@ pub fn handleConnection(
         }
     );
     // Netlink Setup
+    if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
     try nl._80211.registerFrames(
         alloc,
         conn_if.nl_sock,
@@ -378,7 +397,7 @@ pub fn handleConnection(
     {
         // Scan Results
         const scan_results = (nw_scan_results.getEntry(conn.bssid) orelse return error.ScanResultsNotFound).value_ptr.*;
-        nw_scan_results.mutex.unlock();
+        defer nw_scan_results.mutex.unlock();
         const bss = scan_results.BSS orelse return error.MissingBSS;
         const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
         const ie_bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements, ies);
@@ -395,14 +414,15 @@ pub fn handleConnection(
         };
         defer alloc.free(rsn_bytes);
         // Authenticate
+        if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         log.debug("Connection {X}: Authenticating", .{ conn_id });
         set_conn = (ctx.connections.getEntry(conn_id) orelse {
             ctx.connections.mutex.unlock();
             return error.ConnectionNotFound;
-        }).value_ptr.*;
+        }).value_ptr;
         set_conn.state = .auth;
         ctx.connections.mutex.unlock();
-        while (active.load(.acquire)) {
+        while (active.load(.acquire) and conn_active.load(.acquire)) {
             if (err_count >= err_max) {
                 log.err("Authentication Error: {s}", .{ @errorName(last_err) });
                 return last_err;
@@ -431,14 +451,15 @@ pub fn handleConnection(
         }
         time.sleep(interval.*);
         // Associacate
+        if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         log.debug("Connection {X}: Associating", .{ conn_id });
         set_conn = (ctx.connections.getEntry(conn_id) orelse {
             ctx.connections.mutex.unlock();
             return error.ConnectionNotFound;
-        }).value_ptr.*;
+        }).value_ptr;
         set_conn.state = .assoc;
         ctx.connections.mutex.unlock();
-        while (active.load(.acquire)) {
+        while (active.load(.acquire) and conn_active.load(.acquire)) {
             if (err_count >= err_max) {
                 log.err("Association Error: {s}", .{ @errorName(last_err) });
                 return last_err;
@@ -483,6 +504,7 @@ pub fn handleConnection(
             }
         }
         // EAPoL - TODO Make this stateful f/ different Security Types
+        if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         log.debug("Connection {X}: Handling EAPoL", .{ conn_id });
         try posix.setsockopt(
             conn_if.nl_sock,
@@ -493,12 +515,12 @@ pub fn handleConnection(
         set_conn = (ctx.connections.getEntry(conn_id) orelse {
             ctx.connections.mutex.unlock();
             return error.ConnectionNotFound;
-        }).value_ptr.*;
+        }).value_ptr;
         set_conn.state = .eapol;
         log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
         ctx.connections.mutex.unlock();
         const ptk,
-        const gtk = keys: while (active.load(.acquire)) {
+        const gtk = keys: while (active.load(.acquire) and conn_active.load(.acquire)) {
             if (err_count >= err_max) {
                 log.err("EAPoL Error: {s}", .{ @errorName(last_err) });
                 return last_err;
@@ -535,21 +557,22 @@ pub fn handleConnection(
         );
     }
     // Connected
+    if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
     var set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
     set_if.usage = .connected;
     if_ctx.interfaces.mutex.unlock();
     // DHCP
+    if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
     set_conn = (ctx.connections.getEntry(conn_id) orelse {
         ctx.connections.mutex.unlock();
         return error.ConnectionNotFound;
-    }).value_ptr.*;
+    }).value_ptr;
     set_conn.state = .dhcp;
     log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
     ctx.connections.mutex.unlock();
-    const conf = ctx.configs.get(conn.ssid).?;
-    if (conf.dhcp) |dhcp_conf| tryDHCP: {
+    if (conn.dhcp_conf) |dhcp_conf| tryDHCP: {
         log.debug("Connection {X}: Handling DHCP", .{ conn_id });
-        while (active.load(.acquire)) {
+        while (active.load(.acquire) and conn_active.load(.acquire)) {
             if (err_count >= err_max) {
                 log.err("DHCP Error: {s}", .{ @errorName(last_err) });
                 //return last_err;
@@ -566,8 +589,29 @@ pub fn handleConnection(
                 time.sleep(interval.*);
                 continue;
             };
-            conn.dhcp_info = dhcp_info;
-            try ctx.connections.put(alloc, conn_id, conn);
+            set_conn = (ctx.connections.getEntry(conn_id) orelse {
+                ctx.connections.mutex.unlock();
+                return error.ConnectionNotFound;
+            }).value_ptr;
+            set_conn.dhcp_info = dhcp_info;
+            set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
+            const dhcp_cidr = address.cidrFromSubnet(dhcp_info.subnet_mask);
+            nl.route.addIP(
+                alloc,
+                set_if.index,
+                dhcp_info.assigned_ip,
+                dhcp_cidr,
+            ) catch {
+                log.warn("Couldn't Add IP '{s}/{d}' to Interface '({d}) {s}'", .{
+                    IPF{ .bytes = dhcp_info.assigned_ip[0..] },
+                    dhcp_cidr,
+                    set_if.index,
+                    set_if.name,
+                });
+            };
+            if_ctx.interfaces.mutex.unlock();
+            log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
+            ctx.connections.mutex.unlock();
             break;
         }
     }
@@ -575,10 +619,10 @@ pub fn handleConnection(
     set_conn = (ctx.connections.getEntry(conn_id) orelse {
         ctx.connections.mutex.unlock();
         return error.ConnectionNotFound;
-    }).value_ptr.*;
+    }).value_ptr;
     set_conn.state = .conn;
     log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
     ctx.connections.mutex.unlock();
-    while (active.load(.acquire))
+    while (active.load(.acquire) and conn_active.load(.acquire))
         time.sleep(interval.*);
 }
