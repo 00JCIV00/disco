@@ -81,7 +81,7 @@ pub const Config = struct {
 pub const Connection = struct {
     active: atomic.Value(bool) = atomic.Value(bool).init(false),
     if_index: i32,
-    state: State,
+    state: State = .search,
     bssid: [6]u8,
     ssid: []const u8,
     freq: u32,
@@ -89,6 +89,7 @@ pub const Connection = struct {
     psk: [32]u8 = .{ 0 } ** 32,
     security: nl._80211.SecurityType = .wpa2,
     auth: nl._80211.AuthType = .psk,
+    eapol_keys: ?nl._80211.EAPoLKeys = null,
     dhcp_conf: ?proto.dhcp.LeaseConfig = null,
     dhcp_info: ?dhcp.Info = null,
 
@@ -349,8 +350,9 @@ pub fn handleConnection(
             }
         }
         if (if_ctx.interfaces.getEntry(if_index)) |conn_if_entry| {
-            conn_if.restore(alloc, .ips);
-            conn_if_entry.value_ptr.usage = .available;
+            const set_conn_if = conn_if_entry.value_ptr;
+            set_conn_if.restore(alloc, .ips);
+            set_conn_if.usage = .available;
             log.debug("- Interface '({d}) {s}' made Available.", .{ conn_if_entry.key_ptr.*, conn_if_entry.value_ptr.name });
             if_ctx.interfaces.mutex.unlock();
         }
@@ -369,12 +371,10 @@ pub fn handleConnection(
     }).value_ptr;
     ctx.connections.mutex.unlock();
     log.info(
-        \\Handling Connection {X}:
-        \\- nw: ({s}) {s}
+        \\Connecting to '({s}) {s}'...
         \\- if: ({d}) {s}
         \\- ch: ({d} MHz) {d}
         , .{ 
-            conn_id,
             MACF{ .bytes = conn.bssid[0..] },
             conn.ssid,
             conn_if.index,
@@ -519,23 +519,20 @@ pub fn handleConnection(
         set_conn.state = .eapol;
         log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
         ctx.connections.mutex.unlock();
-        const ptk,
-        const gtk = keys: while (active.load(.acquire) and conn_active.load(.acquire)) {
+        const keys = keys: while (active.load(.acquire) and conn_active.load(.acquire)) {
             if (err_count >= err_max) {
                 log.err("EAPoL Error: {s}", .{ @errorName(last_err) });
                 return last_err;
             }
-            const ptk,
-            const gtk = proto.wpa.handle4WHS(if_index, conn.psk, rsn_bytes) catch |err| {
+            break :keys proto.wpa.handle4WHS(if_index, conn.psk, rsn_bytes) catch |err| {
                 err_count += 1;
                 last_err = err;
                 time.sleep(interval.*);
                 continue;
             };
-            break :keys .{ ptk, gtk };
         }
         else return last_err;
-        inline for (&.{ ptk[32..], gtk[0..] }, 0..) |key, idx| {
+        inline for (&.{ keys.ptk[32..], keys.gtk[0..] }, 0..) |key, idx| {
             try nl._80211.addKey(
                 alloc,
                 conn_if.nl_sock,
@@ -549,6 +546,12 @@ pub fn handleConnection(
                 },
             );
         }
+        set_conn = (ctx.connections.getEntry(conn_id) orelse {
+            ctx.connections.mutex.unlock();
+            return error.ConnectionNotFound;
+        }).value_ptr;
+        set_conn.eapol_keys = keys;
+        ctx.connections.mutex.unlock();
         try posix.setsockopt(
             conn_if.nl_sock,
             posix.SOL.SOCKET,
@@ -621,7 +624,7 @@ pub fn handleConnection(
         return error.ConnectionNotFound;
     }).value_ptr;
     set_conn.state = .conn;
-    log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
+    log.info("{s}: {s}", .{ conn_if.name, set_conn.state });
     ctx.connections.mutex.unlock();
     while (active.load(.acquire) and conn_active.load(.acquire))
         time.sleep(interval.*);

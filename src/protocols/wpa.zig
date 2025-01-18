@@ -233,7 +233,7 @@ const HandshakeState = enum {
 };
 
 /// Handle a 4-Way Handshake
-pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]u8, [16]u8 } {
+pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EAPoLKeys { //struct{ [48]u8, [16]u8 } {
     var state: HandshakeState = .start;
     log.debug("Starting 4WHS...", .{});
     defer {
@@ -622,6 +622,6 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !struct{ [48]
         );
         state = .m4;
 
-        return .{ ptk, gtk };
+        return .{ .ptk = ptk, .gtk = gtk };
     }
 }

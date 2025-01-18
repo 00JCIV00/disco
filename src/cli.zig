@@ -139,6 +139,14 @@ pub const setup_cmd = CommandT{
     //},
     .opts = &.{
         .{
+            .name = "config",
+            .description = "Provide a JSON Config for DisCo.",
+            .opt_group = "ACTIVE",
+            .short_name = 'c',
+            .long_name = "config",
+            .val = ValueT.ofType(fs.File, .{}),
+        },
+        .{
             .name = "interfaces",
             .description = "The WiFi Interface(s) available for DisCo to use. (Multiple Interfaces can be provided.)",
             .opt_group = "ACTIVE",
@@ -170,7 +178,7 @@ pub const setup_cmd = CommandT{
                 \\            * `dhcp`:  DHCP Lease Config in JSON format.
             ,
             .opt_group = "ACTIVE",
-            .short_name = 'C',
+            //.short_name = 'C',
             .long_name = "connect-info",
             .alias_long_names = &.{ "connection" },
             .val = ValueT.ofType(core.connections.Config, .{
@@ -653,7 +661,7 @@ const channels_opt: OptionT = .{
     .name = "channels",
     .description = "Specify channels to be used. (By default, all channels will be used.)",
     .opt_group = "ACTIVE",
-    .short_name = 'c',
+    .short_name = 'C',
     .long_name = "channels",
     .val = ValueT.ofType(usize, .{
         .set_behavior = .Multi,

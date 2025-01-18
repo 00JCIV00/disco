@@ -3098,7 +3098,7 @@ pub fn registerFrames(
             }
         );
         nl.handleAck(nl_sock) catch |err| switch (err) {
-            error.ALREADY => log.warn("Frame Match {d} w/ Type {?d} is already registered.", .{ match, f_type }),
+            error.ALREADY => log.debug("Frame Match {d} w/ Type {?d} is already registered.", .{ match, f_type }),
             else => return err,
         };
         time.sleep(100 * time.ns_per_ms);
@@ -3555,6 +3555,12 @@ pub fn addKey(
     try nl.handleAck(nl_sock);
 }
 
+/// EAPoL Keys
+pub const EAPoLKeys = struct {
+    ptk: [48]u8,
+    gtk: [16]u8,
+};
+
 /// Config f/ `connectWPA2()`.
 pub const ConnectConfig = struct {
     /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
@@ -3575,7 +3581,7 @@ pub fn connectWPA2(
     ssid: []const u8, 
     pmk: [32]u8,
     /// A function to handle the 4-way Handshake and return both the PTK (`[48]u8`) and GTK (`[16]u8`).
-    handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!struct { [48]u8, [16]u8 },
+    handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!EAPoLKeys,
     config: ConnectConfig,
 ) !posix.socket_t {
     //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
@@ -3643,14 +3649,12 @@ pub fn connectWPA2(
         break :rsnBytes try buf.toOwnedSlice(alloc);
     };
     defer alloc.free(rsn_bytes);
-    const ptk, const gtk = keys: {
-        while (attempts < config.retries) : (attempts += 1) {
-            const ptk, const gtk = handle4WHS(if_index, pmk, rsn_bytes) catch continue;
-            break :keys .{ ptk, gtk };
-        }
+    const keys = keys: {
+        while (attempts < config.retries) : (attempts += 1)
+            break :keys handle4WHS(if_index, pmk, rsn_bytes) catch continue;
         return error.Unsuccessful4WHS;
     };
-    inline for (&.{ ptk[32..], gtk[0..] }, 0..) |key, idx| {
+    inline for (&.{ keys.ptk[32..], keys.gtk[0..] }, 0..) |key, idx| {
         log.debug("Adding Key: {X:0>2}", .{ key });
         try addKey(
             alloc,

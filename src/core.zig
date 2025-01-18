@@ -26,6 +26,7 @@ pub const profiles = @import("core/profiles.zig");
 /// This should be used as a Singleton that is passed around for context.
 pub const Core = struct {
     /// Config
+    /// This is made to be configurable by users via JSON.
     pub const Config = struct {
         pub const ScanConfEntry = struct { 
             if_name: []const u8,
@@ -89,7 +90,6 @@ pub const Core = struct {
     og_hostname: []const u8,
     /// Forced Close
     forced_close: bool = false,
-
 
 
     /// Initialize the Core Context.

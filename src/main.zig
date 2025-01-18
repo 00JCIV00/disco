@@ -1,6 +1,7 @@
 const std = @import("std");
 const crypto = std.crypto;
 const fmt = std.fmt;
+const fs = std.fs;
 const heap = std.heap;
 const io = std.io;
 const json = std.json;
@@ -255,7 +256,7 @@ pub fn main() !void {
             break :ifOpt if_names;
         }
         else null;
-    const profile_mask: core.profiles.Mask = getMask: {
+    const profile_mask: ?core.profiles.Mask = getMask: {
         if (main_cmd.checkArgGroup(.Command, "INTERFACE")) {
             var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
             var mask = masks_map.get("intel windows 11 pc").?;
@@ -263,6 +264,8 @@ pub fn main() !void {
             break :getMask mask;
         }
         if (!main_cmd.checkArgGroup(.Option, "MASK")) {
+            //if (main_cmd.checkFlag("config")) break :getMask null;
+            if (main_opts.get("config")) |_| break :getMask null;
             const mask_idx = crypto.random.int(u16) % masks_map.keys().len;
             for (masks_map.keys(), 0..) |key, idx| {
                 if (idx != mask_idx) continue;
@@ -317,15 +320,53 @@ pub fn main() !void {
             try core_conn_confs.append(alloc, .{ .ssid = conn_conf.ssid, .conf = conn_conf });
     }
     // Initialize Core Context
-    const init_config: core.Core.Config = .{
-        .use_mask = !main_cmd.checkArgGroup(.Command, "INTERFACE"),
-        .available_ifs = if (core_ifs.items.len > 0) try core_ifs.toOwnedSlice(alloc) else null,
-        .avail_if_names = if_names,
-        .scan_configs = if (core_scan_confs.items.len > 0) try core_scan_confs.toOwnedSlice(alloc) else null,
-        .connect_configs = core_conn_confs.items,
-        .profile_mask = profile_mask,
+    const core_config: core.Core.Config = config: {
+        var config: core.Core.Config = .{};
+        if (main_opts.get("config")) |config_opt| {
+            const config_file = try config_opt.val.getAs(fs.File);
+            const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
+            const config_bytes = try config_file.readToEndAlloc(cova_alloc, 1_000_000);
+            config = try json.parseFromSliceLeaky(
+                core.Core.Config,
+                cova_alloc,
+                config_bytes,
+                .{
+                    .duplicate_field_behavior = .use_first,
+                    .allocate = .alloc_always,
+                    //.ignore_unknown_fields = true,
+                },
+            );
+        }
+        if (config.avail_if_names) |avail_if_names| {
+            for (avail_if_names) |if_name| {
+                const if_index = nl.route.getIfIdx(if_name) catch {
+                    log.warn("Could not find Interface '{s}'.", .{ if_name });
+                    continue;
+                };
+                try core_ifs.append(alloc, if_index);
+            }
+        }
+        if (core_ifs.items.len > 0) {
+            config.available_ifs = try core_ifs.toOwnedSlice(alloc);
+            config.avail_if_names = config.avail_if_names orelse if_names;
+        }
+        if (config.scan_configs == null and core_scan_confs.items.len == 0) addScanConfs: {
+            for (config.avail_if_names orelse break :addScanConfs) |if_name| {
+                try core_scan_confs.append(alloc, .{ 
+                    .if_name = if_name,
+                    .conf = .{
+                        .ssids = &.{},
+                        .freqs = &.{},
+                    },
+                });
+            }
+        }
+        if (core_scan_confs.items.len > 0) config.scan_configs = try core_scan_confs.toOwnedSlice(alloc);
+        if (core_conn_confs.items.len > 0) config.connect_configs = core_conn_confs.items;
+        if (profile_mask) |pro_mask| config.profile_mask = pro_mask;
+        break :config config;
     };
-    _core_ctx = try core.Core.init(alloc, init_config);
+    _core_ctx = try core.Core.init(alloc, core_config);
     var core_ctx = _core_ctx orelse return error.CoreNotInitialized;
     // Start Core Context
     if (main_cmd.sub_cmd == null) {
