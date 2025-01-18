@@ -3213,8 +3213,8 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
     return .{ null, null };
 }
 
-/// Authenticate to the provided WPA2 Network `ssid`.
-pub fn authWPA2(
+/// Authenticate to the provided Network `ssid`.
+pub fn authenticate(
     alloc: mem.Allocator,
     nl_sock: posix.socket_t,
     if_index: i32,
@@ -3224,8 +3224,8 @@ pub fn authWPA2(
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const auth_type = determineAuthAlg(scan_results);
     const bss = scan_results.BSS orelse return error.MissingBSS;
-    const wiphy_freq = bss.FREQUENCY; // orelse return error.MissingFreq;
-    const bssid = bss.BSSID; // orelse return error.MissingBSSID;
+    const wiphy_freq = bss.FREQUENCY;
+    const bssid = bss.BSSID;
     try nl.reqOnSock(
         alloc, 
         nl_sock,
@@ -3266,12 +3266,11 @@ pub fn authWPA2(
             },
         },
     );
-    //errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
 }
 
-/// Associate to the provided WPA2 Network `ssid`.
-pub fn assocWPA2(
+/// Associate to the provided Network `ssid`.
+pub fn associate(
     alloc: mem.Allocator,
     nl_sock: posix.socket_t,
     net_if: Interface,
@@ -3283,20 +3282,107 @@ pub fn assocWPA2(
     const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy) orelse return error.MissingOperatingClasses;
     defer alloc.free(op_classes);
     const bss = scan_results.BSS orelse return error.MissingBSS;
-    const wiphy_freq = bss.FREQUENCY; // orelse return error.MissingFreq;
+    const wiphy_freq = bss.FREQUENCY;
     log.debug("Ch: {d}, Freq: {d}MHz", .{ try channelFromFreq(wiphy_freq), wiphy_freq });
-    const bssid = bss.BSSID; // orelse return error.MissingBSSID;
-    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
-    const rsn = ies.RSN orelse return error.MissingRSN;
-    const ext_capa = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10);
-    const new_ies: InformationElements = .{
-        .RSN = rsn,
-        .SUPPORTED_OPER_CLASSES = op_classes,
-        .EXTENDED_CAPABILITIES = ext_capa,
-    };
-    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, new_ies);
-    defer alloc.free(ie_bytes);
+    const bssid = bss.BSSID;
     const ht_attr, const vht_attr = try deriveAssocHTCapes(bss, wiphy);
+    var attr_list: std.ArrayListUnmanaged(nl.Attribute) = .{};
+    defer attr_list.deinit(alloc);
+    try attr_list.appendSlice(alloc, &.{
+        .{ 
+            .hdr = .{ .type = c(ATTR).IFINDEX },
+            .data = mem.toBytes(net_if.IFINDEX)[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).SOCKET_OWNER },
+            .data = &.{},
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+            .data = bssid[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
+            .data = mem.toBytes(wiphy_freq)[0..],
+        },
+        .{ 
+            .hdr = .{ .type = c(ATTR).SSID, .len = @intCast(ssid.len + 4) },
+            .data = ssid,
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).USE_RRM },
+            .data = &.{},
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).HT_CAPABILITY, .len = 30 },
+            .data = (ht_attr orelse @as([26]u8, .{ 0 } ** 26))[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).HT_CAPABILITY_MASK, .len = 30 },
+            .data = (wiphy.HT_CAPABILITY_MASK)[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).VHT_CAPABILITY },
+            .data = (vht_attr orelse @as([12]u8, .{ 0 } ** 12))[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).VHT_CAPABILITY_MASK },
+            .data = (wiphy.VHT_CAPABILITY_MASK)[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE, .len = 6 },
+            .data = mem.toBytes(@as(u16, @intCast(0x888E)))[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).CONTROL_PORT_NO_PREAUTH },
+            .data = &.{},
+        },
+    });
+    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+    const security: SecurityType = (try bss.getSecurityInfo()).type;
+    var ie_bytes: []const u8 = try nl.parse.toBytes(alloc, InformationElements, ies);
+    defer alloc.free(ie_bytes);
+    switch (security) {
+        .wpa2, .wpa3t => {
+            const rsn = ies.RSN orelse return error.MissingRSN;
+            const ext_capa = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10);
+            const new_ies: InformationElements = .{
+                .RSN = rsn,
+                .SUPPORTED_OPER_CLASSES = op_classes,
+                .EXTENDED_CAPABILITIES = ext_capa,
+            };
+            alloc.free(ie_bytes);
+            ie_bytes = try nl.parse.toBytes(alloc, InformationElements, new_ies);
+            try attr_list.appendSlice(alloc, &.{
+                .{ 
+                    .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
+                    .data = mem.toBytes(WPA.VERSION_2)[0..],
+                },
+                .{ 
+                    .hdr = .{ .type = c(ATTR).CIPHER_SUITES_PAIRWISE },
+                    .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
+                },
+                .{ 
+                    .hdr = .{ .type = c(ATTR).CIPHER_SUITE_GROUP },
+                    .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
+                },
+                .{
+                    .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
+                    .data = mem.toBytes(AKM_SUITES.PSK)[0..],
+                },
+                .{ 
+                    .hdr = .{ .type = c(ATTR).IE, .len = @intCast(ie_bytes.len + nl.attr_hdr_len) },
+                    .data = ie_bytes,
+                },
+            });
+        },
+        else => {
+            try attr_list.append(alloc, .{ 
+                .hdr = .{ .type = c(ATTR).IE, .len = @intCast(ie_bytes.len + nl.attr_hdr_len) },
+                .data = ie_bytes,
+            });
+        },
+    }
 
     try nl.reqOnSock(
         alloc, 
@@ -3315,84 +3401,7 @@ pub fn assocWPA2(
                 .version = 1,
             },
         },
-        &.{
-            .{ 
-                .hdr = .{ .type = c(ATTR).IFINDEX },
-                .data = mem.toBytes(net_if.IFINDEX)[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).SOCKET_OWNER },
-                .data = &.{},
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
-                .data = bssid[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
-                .data = mem.toBytes(wiphy_freq)[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).SSID, .len = @intCast(ssid.len + 4) },
-                .data = ssid,
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).IE, .len = @intCast(ie_bytes.len + nl.attr_hdr_len) },
-                .data = ie_bytes,
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).WPA_VERSIONS },
-                .data = mem.toBytes(WPA.VERSION_2)[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).CIPHER_SUITES_PAIRWISE },
-                .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).CIPHER_SUITE_GROUP },
-                .data = mem.toBytes(CIPHER_SUITES.CCMP)[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).AKM_SUITES, .len = 8 },
-                .data = mem.toBytes(AKM_SUITES.PSK)[0..],
-            },
-            //.{
-            //    .hdr = .{ .type = c(ATTR).CONTROL_PORT },
-            //    .data = &.{},
-            //},
-            .{
-                .hdr = .{ .type = c(ATTR).USE_RRM },
-                .data = &.{},
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).HT_CAPABILITY, .len = 30 },
-                .data = (ht_attr orelse @as([26]u8, .{ 0 } ** 26))[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).HT_CAPABILITY_MASK, .len = 30 },
-                .data = (wiphy.HT_CAPABILITY_MASK)[0..]
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).VHT_CAPABILITY },
-                .data = (vht_attr orelse @as([12]u8, .{ 0 } ** 12))[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).VHT_CAPABILITY_MASK },
-                .data = (wiphy.VHT_CAPABILITY_MASK)[0..], //orelse @as([12]u8, .{ 0 } ** 12))[0..],
-            },
-            //.{
-            //    .hdr = .{ .type = c(ATTR).CONTROL_PORT_OVER_NL80211 },
-            //    .data = &.{},
-            //},
-            .{
-                .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE, .len = 6 },
-                .data = mem.toBytes(@as(u16, @intCast(0x888E)))[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).CONTROL_PORT_NO_PREAUTH },
-                .data = &.{},
-            },
-        },
+        attr_list.items[0..],
     );
     //errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
@@ -3626,12 +3635,12 @@ pub fn connectWPA2(
     var attempts: usize = 0;
     while (attempts < config.retries) : (attempts += 1) {
         time.sleep(config.delay * time.ns_per_ms);
-        authWPA2(alloc, nl_sock, if_index, ssid, scan_results) catch |err| {
+        authenticate(alloc, nl_sock, if_index, ssid, scan_results) catch |err| {
             aa_err = err;
             continue;
         };
         time.sleep(config.delay * time.ns_per_ms);
-        assocWPA2(alloc, nl_sock, net_if, wiphy, ssid, scan_results) catch |err| {
+        associate(alloc, nl_sock, net_if, wiphy, ssid, scan_results) catch |err| {
             aa_err = err;
             continue;
         };

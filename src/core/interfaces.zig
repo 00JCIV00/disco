@@ -433,12 +433,12 @@ pub fn updInterfaces(
             else try initIFSock(wifi_if.key_ptr.*, interval);
         add_if.usage = usage: {
             if (_last_if) |last_if| break :usage last_if.usage;
-            const avail_ifs = config.available_ifs orelse break :usage .unavailable;
+            const avail_ifs = config.avail_if_indexes;
             for (avail_ifs) |avail_idx| {
                 if (wifi_if.key_ptr.* != avail_idx) continue;
                 break :usage .available;
             }
-            const avail_if_names = config.avail_if_names orelse break :usage .unavailable;
+            const avail_if_names = config.avail_if_names;
             for (avail_if_names) |avail_name| {
                 if (!mem.eql(u8, wifi_if.value_ptr.IFNAME, avail_name)) continue;
                 break :usage .available;

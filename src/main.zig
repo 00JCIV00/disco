@@ -70,7 +70,12 @@ pub fn main() !void {
     try stdout_file.print("{s}\n", .{ art.logo });
 
     var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
-    defer if (gpa.detectLeaks()) log.err("Memory leak detected!", .{});
+    defer {
+        if (@import("builtin").mode == .Debug and gpa.detectLeaks()) 
+            log.err("Memory leak detected!", .{})
+        else if (gpa.deinit() == .leak)
+            log.err("Memory leak detected!", .{});
+    }
     const alloc = gpa.allocator();
 
     // Get NL80211 Control Info
@@ -219,13 +224,13 @@ pub fn main() !void {
 
     // Set up Core Data
     const main_opts = try main_cmd.getOpts(.{});
-    var core_ifs: std.ArrayListUnmanaged(i32) = .{};
-    defer core_ifs.deinit(alloc);
+    var core_if_indexes: std.ArrayListUnmanaged(i32) = .{};
+    defer core_if_indexes.deinit(alloc);
     var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfEntry) = .{};
     defer core_scan_confs.deinit(alloc);
     var freqs_list: std.ArrayListUnmanaged(u32) = .{};
     defer freqs_list.deinit(alloc);
-    const if_names =
+    const if_names: []const []const u8 =
         if (main_opts.get("interfaces")) |if_opt| ifOpt: {
             const ssids = ssids: {
                 const ssids_opt = main_opts.get("ssids").?;
@@ -237,14 +242,8 @@ pub fn main() !void {
                 for (channels) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
                 break :freqs freqs_list.items;
             };
-            const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt null;
-            if (if_names.len == 0) break :ifOpt null;
+            const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt &.{};
             for (if_names) |if_name| {
-                const if_index = nl.route.getIfIdx(if_name) catch {
-                    log.warn("Could not find Interface '{s}'.", .{ if_name });
-                    continue;
-                };
-                try core_ifs.append(alloc, if_index);
                 try core_scan_confs.append(alloc, .{ 
                     .if_name = if_name,
                     .conf = .{
@@ -255,7 +254,7 @@ pub fn main() !void {
             }
             break :ifOpt if_names;
         }
-        else null;
+        else &.{};
     const profile_mask: ?core.profiles.Mask = getMask: {
         if (main_cmd.checkArgGroup(.Command, "INTERFACE")) {
             var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
@@ -310,15 +309,10 @@ pub fn main() !void {
         log.info("Using your Custom Profile Mask:\n{s}", .{ mask });
         break :getMask mask;
     };
-    var core_conn_confs: std.ArrayListUnmanaged(core.Core.Config.ConnectionEntry) = .{};
-    defer core_conn_confs.deinit(alloc);
-    connConfs: {
-        const conn_opt = main_opts.get("connect_info") orelse break :connConfs;
-        const conn_confs = try conn_opt.val.getAllAs(core.connections.Config);
-        log.debug("Looking for {d} Connection(s).", .{ conn_confs.len });
-        for (conn_confs) |conn_conf|
-            try core_conn_confs.append(alloc, .{ .ssid = conn_conf.ssid, .conf = conn_conf });
-    }
+    const core_conn_confs: []const core.connections.Config = connConfs: {
+        const conn_opt = main_opts.get("connect_info") orelse break :connConfs &.{};
+        break :connConfs conn_opt.val.getAllAs(core.connections.Config) catch &.{};
+    };
     // Initialize Core Context
     const core_config: core.Core.Config = config: {
         var config: core.Core.Config = .{};
@@ -337,21 +331,20 @@ pub fn main() !void {
                 },
             );
         }
-        if (config.avail_if_names) |avail_if_names| {
-            for (avail_if_names) |if_name| {
-                const if_index = nl.route.getIfIdx(if_name) catch {
-                    log.warn("Could not find Interface '{s}'.", .{ if_name });
-                    continue;
-                };
-                try core_ifs.append(alloc, if_index);
-            }
+        if (if_names.len > 0) config.avail_if_names = if_names;
+        for (config.avail_if_names) |if_name| {
+            const if_index = nl.route.getIfIdx(if_name) catch {
+                log.warn("Could not find Interface '{s}'.", .{ if_name });
+                continue;
+            };
+            try core_if_indexes.append(alloc, if_index);
         }
-        if (core_ifs.items.len > 0) {
-            config.available_ifs = try core_ifs.toOwnedSlice(alloc);
-            config.avail_if_names = config.avail_if_names orelse if_names;
+        if (core_if_indexes.items.len > 0) {
+            //config.avail_if_indexes = try core_if_indexes.toOwnedSlice(alloc);
+            config.avail_if_indexes = core_if_indexes.items; 
         }
-        if (config.scan_configs == null and core_scan_confs.items.len == 0) addScanConfs: {
-            for (config.avail_if_names orelse break :addScanConfs) |if_name| {
+        if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
+            for (config.avail_if_names) |if_name| {
                 try core_scan_confs.append(alloc, .{ 
                     .if_name = if_name,
                     .conf = .{
@@ -361,8 +354,9 @@ pub fn main() !void {
                 });
             }
         }
-        if (core_scan_confs.items.len > 0) config.scan_configs = try core_scan_confs.toOwnedSlice(alloc);
-        if (core_conn_confs.items.len > 0) config.connect_configs = core_conn_confs.items;
+        //if (core_scan_confs.items.len > 0) config.scan_configs = try core_scan_confs.toOwnedSlice(alloc);
+        if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
+        if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
         if (profile_mask) |pro_mask| config.profile_mask = pro_mask;
         break :config config;
     };

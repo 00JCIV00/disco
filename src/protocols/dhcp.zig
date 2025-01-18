@@ -3,7 +3,7 @@
 const std = @import("std");
 
 const crypto = std.crypto;
-const log = std.log;
+const log = std.log.scoped(.dhcp);
 const mem = std.mem;
 const net = std.net;
 const posix = std.posix;
@@ -170,8 +170,10 @@ pub fn handleDHCP(
     );
     try posix.bind(dhcp_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
     const bootp_hdr_len = @sizeOf(l5.BOOTP.Header);
+    const attempts_max: u8 = 3;
     var attempts: u8 = 0;
-    while (attempts < 3) : (attempts += 1) {
+    while (attempts < attempts_max) {
+        defer attempts += 1;
         const transaction_id: u32 = transaction_id: {
             var bytes: [4]u8 = undefined;
             crypto.random.bytes(bytes[0..]);
@@ -280,16 +282,18 @@ pub fn handleDHCP(
         );
         // OFFER
         var offer_buf: [1500]u8 = undefined;
-        const offer_len = offerLen: while (true) {
+        const offer_len = offerLen: while (attempts < attempts_max) {
             break :offerLen recvDHCPMsg(
                 dhcp_sock,
                 mac_addr,
                 offer_buf[0..],
             ) catch |err| {
                 log.warn("Unexpected DHCP Response: {s}", .{ @errorName(err) });
+                attempts += 1;
                 continue;
             };
-        };
+        }
+        else return error.CouldNotCompleteDHCP;
         // - Parse BOOTP header
         start = 0;
         end = bootp_hdr_len;

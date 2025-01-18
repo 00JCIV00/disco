@@ -215,21 +215,19 @@ pub fn trackScans(
             if (err_count > 10) @panic("WiFi Scan Tracking encountered too many errors to continue.");
             time.sleep(interval.*);
         }
-        if (config.scan_configs) |scan_conf_entries| {
-            for (scan_conf_entries) |scan_conf_entry| {
-                const if_index = nl.route.getIfIdx(scan_conf_entry.if_name) catch continue;
-                if (network_ctx.scan_configs.get(if_index)) |_| continue;
-                network_ctx.scan_configs.put(
-                    alloc,
-                    if_index,
-                    scan_conf_entry.conf,
-                ) catch |err| {
-                    log.err("Could not add Scan Config for '{s}': {s}", .{ scan_conf_entry.if_name, @errorName(err) });
-                    err_count += 1;
-                    continue;
-                };
-                log.debug("Updated Interface Index f/ Scan Config: {s} ({d})", .{ scan_conf_entry.if_name, if_index });
-            }
+        for (config.scan_configs) |scan_conf_entry| {
+            const if_index = nl.route.getIfIdx(scan_conf_entry.if_name) catch continue;
+            if (network_ctx.scan_configs.get(if_index)) |_| continue;
+            network_ctx.scan_configs.put(
+                alloc,
+                if_index,
+                scan_conf_entry.conf,
+            ) catch |err| {
+                log.err("Could not add Scan Config for '{s}': {s}", .{ scan_conf_entry.if_name, @errorName(err) });
+                err_count += 1;
+                continue;
+            };
+            log.debug("Updated Interface Index f/ Scan Config: {s} ({d})", .{ scan_conf_entry.if_name, if_index });
         }
         var if_iter = interfaces.iterator();
         defer if_iter.unlock();

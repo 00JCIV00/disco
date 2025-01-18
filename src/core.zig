@@ -33,11 +33,6 @@ pub const Core = struct {
             conf: nl._80211.TriggerScanConfig,
         };
 
-        pub const ConnectionEntry = struct { 
-            ssid: []const u8,
-            conf: connections.Config,
-        };
-
         /// Conflicting Process Names
         conflict_proc_names: []const []const u8 = &.{
             "wpa_supplicant",
@@ -50,14 +45,14 @@ pub const Core = struct {
         },
         /// Use Profile Mask
         use_mask: bool = true,
-        /// Available Interfaces
-        available_ifs: ?[]const i32 = null,
+        /// Available Interface Indexes
+        avail_if_indexes: []const i32 = &.{},
         /// Available Interface Names
-        avail_if_names: ?[]const []const u8 = null,
+        avail_if_names: []const []const u8 = &.{},
         /// Scan Configs
-        scan_configs: ?[]const ScanConfEntry = null,
+        scan_configs: []const ScanConfEntry = &.{},
         /// Connection Configs
-        connect_configs: ?[]const ConnectionEntry = null,
+        connect_configs: []const connections.Config = &.{},
         /// Profile Mask
         profile_mask: profiles.Mask = profiles.Mask.google_pixel_6_pro,
     };
@@ -134,38 +129,31 @@ pub const Core = struct {
             &self.config,
             &self.interval,
         );
-        if (config.available_ifs) |available_ifs| {
-            for (available_ifs) |if_index| {
-                const if_entry = self.if_ctx.interfaces.getEntry(if_index) orelse {
-                    log.warn("- No Interface Entry for Index: {d}", .{ if_index });
-                    continue;
-                };
-                defer self.if_ctx.interfaces.mutex.unlock();
-                if (if_entry.value_ptr.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN)
-                    try nl.route.setState(if_index, c(nl.route.IFF).UP);
-                if_entry.value_ptr.usage = .available;
-            }
-            alloc.free(available_ifs);
+        for (config.avail_if_indexes) |if_index| {
+            const if_entry = self.if_ctx.interfaces.getEntry(if_index) orelse {
+                log.warn("- No Interface Entry for Index: {d}", .{ if_index });
+                continue;
+            };
+            defer self.if_ctx.interfaces.mutex.unlock();
+            if (if_entry.value_ptr.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN)
+                try nl.route.setState(if_index, c(nl.route.IFF).UP);
+            if_entry.value_ptr.usage = .available;
         }
         log.info("- Initialized Interface Tracking Data.", .{});
-        if (config.scan_configs) |scan_conf_entries| {
-            for (scan_conf_entries) |scan_conf_entry| {
-                try self.network_ctx.scan_configs.put(
-                    alloc,
-                    try nl.route.getIfIdx(scan_conf_entry.if_name),
-                    scan_conf_entry.conf,
-                );
-            }
+        for (config.scan_configs) |scan_conf_entry| {
+            try self.network_ctx.scan_configs.put(
+                alloc,
+                nl.route.getIfIdx(scan_conf_entry.if_name) catch continue,
+                scan_conf_entry.conf,
+            );
         }
         log.info("- Initialized Network Tracking Data.", .{});
-        if (config.connect_configs) |conn_conf_entries| {
-            for (conn_conf_entries) |conn_conf_entry| {
-                try self.conn_ctx.configs.put(
-                    alloc,
-                    conn_conf_entry.ssid,
-                    conn_conf_entry.conf,
-                );
-            }
+        for (config.connect_configs) |conn_conf| {
+            try self.conn_ctx.configs.put(
+                alloc,
+                conn_conf.ssid,
+                conn_conf,
+            );
         }
         log.info("- Initialized Connection Tracking Data.", .{});
         log.info("Initialized DisCo Core.", .{});
@@ -275,7 +263,7 @@ pub const Core = struct {
         self.if_ctx.deinit(self._alloc);
         log.info("- Deinitialized Interface Tracking.", .{});
         self.network_ctx.deinit(self._alloc);
-        if (self.config.scan_configs) |scan_conf| self._alloc.free(scan_conf);
+        //if (self.config.scan_configs.len > 0) self._alloc.free(self.config.scan_configs);
         log.info("- Deinitialized Network Tracking.", .{});
         self.conn_ctx.deinit(self._alloc);
         log.info("- Deinitialized Connection Tracking.", .{});
