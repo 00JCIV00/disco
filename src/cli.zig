@@ -341,13 +341,37 @@ pub const setup_cmd = CommandT{
             .alias_names = &.{ "view" },
             .description = "List various System or DisCo properties.",
             .cmd_group = "SETTINGS",
+            .vals_mandatory = false,
             .opts = &.{
                 .{
                     .name = "masks",
                     .description = "List available Profile Masks.",
                     .long_name = "masks",
                 },
+                .{
+                    .name = "conflict_pids",
+                    .description = "List available Profile Masks.",
+                    .long_name = "conflict-pids",
+                    .alias_long_names = &.{ "pids", "conflicts", "procs", "processes" },
+                },
             },
+            .vals = &.{
+                ValueT.ofType([]const u8, .{
+                    .name = "item_list",
+                    .description = "List available Items from the provided List. (Look at the Options for this Command for valid Values.)",
+                    .set_behavior = .Multi,
+                    .max_entries = 10,
+                    .parse_fn = struct {
+                        pub fn parseList(arg: []const u8, alloc: mem.Allocator) ![]const u8 {
+                            const lower = try ascii.allocLowerString(alloc, arg);
+                            inline for (&.{ "masks", "pids", "conflict-pids", "conflicts", "procs", "processes" }) |list| {
+                                if (mem.eql(u8, lower, list)) return lower;
+                            }
+                            return error.InvalidList;
+                        }
+                    }.parseList,
+                }),
+            }
         },
         .{
             .name = "serve",

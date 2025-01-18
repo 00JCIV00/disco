@@ -145,7 +145,18 @@ pub fn main() !void {
     }
     if (main_cmd.matchSubCmd("list")) |list_cmd| {
         const list_opts = try list_cmd.getOpts(.{});
-        if (list_opts.get("masks")) |_| {
+        const list_vals = try list_cmd.getVals(.{});
+        const item_list: []const []const u8 = itemList: { 
+            if (list_vals.get("item_list")) |il_val|
+                break :itemList try il_val.getAllAs([]const u8);
+            break :itemList &.{};
+        };
+        const masks_val_set: bool =
+            for (item_list) |item| {
+                if (mem.eql(u8, item, "masks")) break true;
+            }
+            else false;
+        if (list_opts.get("masks") != null or masks_val_set) {
             try stdout.print(
                 \\Profile Masks:
                 \\(Specify one of these with `--mask` to hide your System Details.)
@@ -164,6 +175,32 @@ pub fn main() !void {
                     },
                 );
             }
+            try stdout_bw.flush();
+        }
+        const conflicts_val_set: bool =
+            for (item_list) |item| {
+                if (mem.eql(u8, item, "pids")) break true;
+                if (mem.eql(u8, item, "conflict-pids")) break true;
+                if (mem.eql(u8, item, "conflicts")) break true;
+                if (mem.eql(u8, item, "procs")) break true;
+                if (mem.eql(u8, item, "processes")) break true;
+            }
+            else false;
+        if (list_opts.get("conflict_pids") != null or conflicts_val_set) {
+            try stdout.print(
+                \\Conflict PIDs:
+                \\(You may want to kill these with `kill` or `pkill` to prevent issues with DisCo.)
+                \\
+                , .{}
+            );
+            try stdout_bw.flush();
+            const core_conf: core.Core.Config = .{};
+            try core.findConflictPIDs(
+                alloc, 
+                core_conf.conflict_proc_names,
+                stdout,
+                "- '{s}' process running {d} time(s) (PID(s): {d}).\n"
+            );
             try stdout_bw.flush();
         }
         posix.exit(0);

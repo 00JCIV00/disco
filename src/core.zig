@@ -3,6 +3,7 @@
 const std = @import("std");
 const atomic = std.atomic;
 const heap = std.heap;
+const io = std.io;
 const log = std.log.scoped(.core);
 const mem = std.mem;
 const meta = std.meta;
@@ -94,7 +95,12 @@ pub const Core = struct {
     /// Initialize the Core Context.
     pub fn init(alloc: mem.Allocator, config: Config) !@This() {
         log.info("Initializing DisCo Core...", .{});
-        try findConflictPIDs(alloc, config.conflict_proc_names);
+        try findConflictPIDs(
+            alloc, 
+            config.conflict_proc_names,
+            null,
+            "Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
+        );
         var og_hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
         const og_hostname = try alloc.dupe(u8, try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX]));
         errdefer alloc.free(og_hostname);
@@ -303,12 +309,22 @@ pub const Core = struct {
 };
 
 /// Find Conflicting PIDs
-pub fn findConflictPIDs(alloc: mem.Allocator, proc_names: []const []const u8) !void {
+pub fn findConflictPIDs(
+    alloc: mem.Allocator, 
+    proc_names: []const []const u8,
+    writer: ?io.AnyWriter,
+    comptime fmt: []const u8,
+) !void {
     for (proc_names) |p_name| {
         const pids = try sys.getPIDs(alloc, &.{ p_name });
         defer alloc.free(pids);
-        if (pids.len > 0)
-            log.warn("Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.", .{ p_name, pids.len, pids });
+        if (pids.len > 0) {
+            if (writer) |w| {
+                try w.print(fmt, .{ p_name, pids.len, pids });
+                continue;
+            }
+            log.warn(fmt, .{ p_name, pids.len, pids });
+        }
     }
 }
 
