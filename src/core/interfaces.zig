@@ -1,6 +1,7 @@
 //! Interface Management
 
 const std = @import("std");
+const ascii = std.ascii;
 const atomic = std.atomic;
 const enums = std.enums;
 const fmt = std.fmt;
@@ -134,14 +135,17 @@ pub const Interface = struct {
             for (self.ips, self.cidrs) |_ip, _cidr| {
                 const ip = _ip orelse continue;
                 const cidr = _cidr orelse 24;
-                defer nl.route.deleteIP(
+                nl.route.deleteIP(
                     alloc,
                     self.index,
                     ip,
                     cidr,
-                ) catch |err| switch (err) {
-                    error.ADDRNOTAVAIL => {},
-                    else => log.warn("-- Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
+                ) catch |err| {
+                    switch (err) {
+                        error.ADDRNOTAVAIL => {},
+                        else => log.warn("-- Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
+                    }
+                    continue;
                 };
                 log.info("-- Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
             }
@@ -377,6 +381,19 @@ pub fn updInterfaces(
         }
         for (nl_links) |nl_link| {
             //log.debug("Link: {d}", .{ nl_link.info.index });
+            //if (
+            //    nl_link.link.OPERSTATE == c(nl.route.IF_OPER).UNKNOWN or
+            //    nl_link.link.OPERSTATE == c(nl.route.IF_OPER).NOTPRESENT
+            //) {
+            //    nl.parse.freeBytes(alloc, nl.route.IFInfoAndLink, nl_link);
+            //    const _old = if_ctx.links.getEntry(nl_link.info.index);
+            //    defer if_ctx.links.mutex.unlock();
+            //    if (_old) |old| {
+            //        nl.parse.freeBytes(alloc, nl.route.IFInfoAndLink, old.value_ptr.*);
+            //        _ = if_ctx.links.map.remove(old.value_ptr.info.index);
+            //    }
+            //    continue;
+            //}
             const _old = try if_ctx.links.fetchPut(alloc, nl_link.info.index, nl_link);
             if (_old) |old| nl.parse.freeBytes(alloc, nl.route.IFInfoAndLink, old.value);
         }
@@ -422,25 +439,59 @@ pub fn updInterfaces(
     //log.debug("Interfaces:", .{});
     while (wifi_ifs_iter.next()) |wifi_if| {
         if_ctx.interfaces.mutex.lock();
-        defer if_ctx.interfaces.mutex.unlock();
-        var _last_if = if_ctx.interfaces.map.get(wifi_if.key_ptr.*);
-        if (_last_if == null)
+        defer {
+            time.sleep(interval.*);
+            if_ctx.interfaces.mutex.unlock();
+        }
+        var _last_if_entry = if_ctx.interfaces.map.getEntry(wifi_if.key_ptr.*);
+        //if (_last_if_entry) |*last_if_entry| checkLink: {
+        //    const last_if = last_if_entry.value_ptr;
+        //    if (last_if.usage == .unavailable) break :checkLink;
+        //    defer if_ctx.links.mutex.unlock();
+        //    const link_info = if_ctx.links.getEntry(wifi_if.key_ptr.*) orelse {
+        //        log.warn("Interface Index '{d}' is no longer available.", .{ wifi_if.key_ptr.* });
+        //        last_if.usage = .unavailable;
+        //        last_if.deinit(alloc);
+        //        _ = if_ctx.interfaces.map.remove(wifi_if.key_ptr.*);
+        //        continue;
+        //    };
+        //    const link = link_info.value_ptr.link;
+        //    if (
+        //        //link.OPERSTATE != c(nl.route.IF_OPER).UNKNOWN and 
+        //        link.OPERSTATE != c(nl.route.IF_OPER).NOTPRESENT
+        //    ) break :checkLink;
+        //    log.warn("Interface Index '{d}' is no longer available.", .{ wifi_if.key_ptr.* });
+        //    last_if.usage = .unavailable;
+        //    last_if.deinit(alloc);
+        //    _ = if_ctx.interfaces.map.remove(wifi_if.key_ptr.*);
+        //    continue;
+        //}
+        //else
+        if (_last_if_entry == null)
             log.info("New Interface Found: ({d}) {s}", .{ wifi_if.key_ptr.*, wifi_if.value_ptr.IFNAME });
-        var add_if: Interface = _last_if orelse undefined;
+        var add_if: Interface = if (_last_if_entry) |li_entry| li_entry.value_ptr.* else undefined;
         add_if._init = false;
         add_if.nl_sock =
-            if (_last_if) |last_if| last_if.nl_sock
+            if (_last_if_entry) |last_if_entry| last_if_entry.value_ptr.nl_sock
             else try initIFSock(wifi_if.key_ptr.*, interval);
         add_if.usage = usage: {
-            if (_last_if) |last_if| break :usage last_if.usage;
-            const avail_ifs = config.avail_if_indexes;
-            for (avail_ifs) |avail_idx| {
+            if (_last_if_entry) |last_if_entry| break :usage last_if_entry.value_ptr.usage;
+            for (config.avail_if_indexes) |avail_idx| {
                 if (wifi_if.key_ptr.* != avail_idx) continue;
                 break :usage .available;
             }
-            const avail_if_names = config.avail_if_names;
-            for (avail_if_names) |avail_name| {
-                if (!mem.eql(u8, wifi_if.value_ptr.IFNAME, avail_name)) continue;
+            for (config.avail_if_names) |avail_name| {
+                const if_name = mem.trim(u8, wifi_if.value_ptr.IFNAME, ascii.whitespace[0..] ++ &[_]u8{ 0 });
+                log.debug("Checking IF Name: '{s}'/'{X}' ({d}B) vs '{s}'/'{X}' ({d}B)", .{ 
+                    if_name,
+                    if_name,
+                    if_name.len,
+                    avail_name, 
+                    avail_name, 
+                    avail_name.len, 
+                });
+                if (!mem.eql(u8, if_name, avail_name)) continue;
+                log.debug("Avail IF Name Match: ({d}) {s}", .{ wifi_if.key_ptr.*, avail_name });
                 break :usage .available;
             }
             break :usage .unavailable;
@@ -510,10 +561,10 @@ pub fn updInterfaces(
             }
             if (add_if.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN) {
                 try nl.route.setState(add_if.index, c(nl.route.IFF).UP);
-                log.info("Available Interface '{d}' set to Down. Setting to Up.", .{ add_if.index });
+                log.info("- Set Interface '{d}' set to Up.", .{ add_if.index });
             }
         }
-        if (_last_if) |*last_if| last_if.deinit(alloc);
+        if (_last_if_entry) |*last_if_entry| last_if_entry.value_ptr.deinit(alloc);
         add_if._init = true;
         try if_ctx.interfaces.map.put(alloc, add_if.index, add_if);
     }
@@ -525,6 +576,7 @@ pub fn updInterfaces(
     while (if_iter.next()) |net_if| {
         const since_upd = @divFloor((now.timestamp -| net_if.value_ptr.last_upd.timestamp), @as(i128, time.ns_per_ms));
         if (since_upd < 5000) continue;
+        log.warn("Interface Index '{d}' is no longer available.", .{ net_if.key_ptr.* });
         net_if.value_ptr.deinit(alloc);
         rm_idxs[rm_count] = net_if.key_ptr.*;
         rm_count +|= 1;
@@ -533,6 +585,7 @@ pub fn updInterfaces(
     for (rm_idxs[0..rm_count]) |_idx| {
         const idx = _idx orelse break;
         _ = if_ctx.interfaces.remove(idx);
+        log.warn("Removed Interface Index '{d}'.", .{ idx });
     }
 }
 

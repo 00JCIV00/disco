@@ -164,7 +164,6 @@ pub fn trackConnections(
     errdefer if_iter.unlock();
     while (if_iter.next()) |if_entry| {
         const conn_if = if_entry.value_ptr;
-        //if (conn_if.usage == .available or conn_if.usage == .scanning) job_count += 1;
         if (conn_if.usage == .available) job_count += 10;
     }
     if_iter.unlock();
@@ -175,7 +174,16 @@ pub fn trackConnections(
     while (active.load(.acquire)) {
         defer {
             if (err_count > err_max) @panic("Connection Tracking encountered too many errors to continue!");
-            time.sleep(interval.*);
+            time.sleep(interval.* * 3);
+        }
+        checkIFs: {
+            if_iter = if_ctx.interfaces.iterator();
+            defer if_iter.unlock();
+            while (if_iter.next()) |if_entry| {
+                const conn_if = if_entry.value_ptr;
+                if (conn_if.usage == .available) break :checkIFs;
+            }
+            continue;
         }
         var confs_iter = ctx.configs.iterator();
         defer confs_iter.unlock();
@@ -197,12 +205,13 @@ pub fn trackConnections(
                             mem.eql(u8, conn.bssid[0..], nw.bssid[0..]) and
                             conn.active.load(.acquire)
                         ) {
-                            //log.debug("Found Connection SSID but ignoring: {s}", .{ nw.ssid });
+                            //log.debug("Found Connection SSID but ignoring: {s}, Active: {}", .{ nw.ssid, conn.active.load(.acquire) });
+                            time.sleep(interval.* * 3);
                             continue :checkNW;
                         }
                     }
                 }
-                //log.debug("FOUND CONNECTION SSID: {s}", .{ nw.ssid });
+                //log.debug("Found Connection SSID: {s}", .{ nw.ssid });
                 var ifs_iter = if_ctx.interfaces.iterator();
                 defer ifs_iter.unlock();
                 connIF: while (ifs_iter.next()) |if_entry| {
@@ -213,6 +222,11 @@ pub fn trackConnections(
                                 break :confIF;
                         }
                         continue :connIF;
+                    }
+                    checkLink: {
+                        const get_link = (if_ctx.links.get(conn_if.index) orelse break :checkLink).link;
+                        const oper_state = get_link.OPERSTATE orelse break :checkLink;
+                        if (oper_state == c(nl.route.IF_OPER).NOTPRESENT) continue :connIF;
                     }
                     switch (conn_if.usage) {
                         .available => {},
@@ -231,8 +245,9 @@ pub fn trackConnections(
                         .open => .{ 0 } ** 32,
                         else => continue,
                     };
-                    if (ctx.connections.getEntry(conn_id)) |conn_entry|
+                    if (ctx.connections.getEntry(conn_id)) |conn_entry| {
                         conn_entry.value_ptr.deinit(alloc);
+                    }
                     ctx.connections.mutex.unlock();
                     ctx.connections.put(
                         alloc,
@@ -269,8 +284,7 @@ pub fn trackConnections(
                             conn_if.index,
                         },
                     );
-                    time.sleep(interval.*);
-                    break;
+                    break :checkNW;
                 }
             }
         }
@@ -335,55 +349,62 @@ pub fn handleConnection(
         defer ctx.connections.mutex.unlock();
         break :connActive &get_conn.active;
     };
+    var set_conn = (ctx.connections.getEntry(conn_id) orelse {
+        ctx.connections.mutex.unlock();
+        return error.ConnectionNotFound;
+    }).value_ptr;
+    ctx.connections.mutex.unlock();
     errdefer errOut: {
         defer ctx.connections.mutex.unlock();
-        var set_conn = (ctx.connections.getEntry(conn_id) orelse break :errOut).value_ptr;
+        set_conn = (ctx.connections.getEntry(conn_id) orelse break :errOut).value_ptr;
         set_conn.state = .err;
     }
     var conn_if = if_ctx.interfaces.get(if_index) orelse return error.InterfaceNotFound;
     conn_if.name = try alloc.dupe(u8, conn_if.name);
     conn_if.phy_name = try alloc.dupe(u8, conn_if.phy_name);
     defer {
-        alloc.free(conn_if.name);
-        alloc.free(conn_if.phy_name);
-    }
-    defer {
         log.info("Cleaning Connection (ssid: {s}, if: {s})...", .{ conn.ssid, conn_if.name });
-        if (ctx.connections.get(conn_id)) |get_conn| {
-            if (get_conn.dhcp_info) |dhcp_info| {
-                proto.dhcp.releaseDHCP(
-                    conn_if.name,
-                    conn_if.index,
-                    conn_if.mac,
-                    dhcp_info.server_id,
-                    dhcp_info.assigned_ip,
-                ) catch |err| {
-                    log.warn("- Couldn't release the DHCP Lease for '{s}': {s}", .{ conn_if.name, @errorName(err) });
-                };
-                log.info("- Released DHCP lease.", .{});
+        if (ctx.connections.get(conn_id)) |get_conn| relDHCP: {
+            alloc.free(conn_if.name);
+            alloc.free(conn_if.phy_name);
+            conn_if = if_ctx.interfaces.get(if_index) orelse break :relDHCP;
+            if (conn_if.usage == .unavailable) break :relDHCP;
+            const dhcp_info = get_conn.dhcp_info orelse break :relDHCP;
+            proto.dhcp.releaseDHCP(
+                conn_if.name,
+                conn_if.index,
+                conn_if.mac,
+                dhcp_info.server_id,
+                dhcp_info.assigned_ip,
+            ) catch |err| {
+                log.warn("- Couldn't release the DHCP Lease for '{s}': {s}", .{ conn_if.name, @errorName(err) });
+                break :relDHCP;
+            };
+            log.info("- Released DHCP lease.", .{});
+        }
+        else {
+            alloc.free(conn_if.name);
+            alloc.free(conn_if.phy_name);
+        }
+        {
+            defer if_ctx.interfaces.mutex.unlock();
+            if (if_ctx.interfaces.getEntry(if_index)) |conn_if_entry| {
+                const set_conn_if = conn_if_entry.value_ptr;
+                set_conn_if.restore(alloc, .ips);
+                set_conn_if.usage = .available;
+                log.debug("- Interface '({d}) {s}' made Available.", .{ conn_if_entry.key_ptr.*, conn_if_entry.value_ptr.name });
             }
+            else log.err("- Couldn't update Interface State to Available: InterfaceNotFound", .{});
         }
-        if (if_ctx.interfaces.getEntry(if_index)) |conn_if_entry| {
-            const set_conn_if = conn_if_entry.value_ptr;
-            set_conn_if.restore(alloc, .ips);
-            set_conn_if.usage = .available;
-            log.debug("- Interface '({d}) {s}' made Available.", .{ conn_if_entry.key_ptr.*, conn_if_entry.value_ptr.name });
-            if_ctx.interfaces.mutex.unlock();
+        {
+            defer ctx.connections.mutex.unlock();
+            if (ctx.connections.getEntry(conn_id)) |conn_entry|
+                conn_entry.value_ptr.state = .disc
+            else log.err("- Couldn't update Connection State to Disconnected: ConnectionNotFound", .{});
         }
-        else log.err("- Couldn't update Interface State to Available: InterfaceNotFound", .{});
-        if (ctx.connections.getEntry(conn_id)) |conn_entry| {
-            conn_entry.value_ptr.state = .disc;
-            ctx.connections.mutex.unlock();
-        }
-        else log.err("- Couldn't update Connection State to Disconnected: ConnectionNotFound", .{});
         conn_active.store(false, .seq_cst);
         log.info("Cleaned Connection (ssid: {s}, if: {s}).", .{ conn.ssid, conn_if.name });
     }
-    var set_conn = (ctx.connections.getEntry(conn_id) orelse {
-        ctx.connections.mutex.unlock();
-        return error.ConnectionNotFound;
-    }).value_ptr;
-    ctx.connections.mutex.unlock();
     log.info(
         \\Connecting to '({s}) {s}'...
         \\- if:  ({d}) {s}
@@ -509,6 +530,7 @@ pub fn handleConnection(
                 },
             }
         }
+        time.sleep(interval.*);
         // EAPoL - TODO Make this stateful f/ different Security Types
         if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         switch (conn.security) {
@@ -571,12 +593,6 @@ pub fn handleConnection(
                 }).value_ptr;
                 set_conn.eapol_keys = keys;
                 ctx.connections.mutex.unlock();
-                try posix.setsockopt(
-                    conn_if.nl_sock,
-                    posix.SOL.SOCKET,
-                    posix.SO.RCVTIMEO,
-                    mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
-                );
             },
             .open => {},
             else => return error.UnsupportedSecurityType,
@@ -584,9 +600,18 @@ pub fn handleConnection(
     }
     // Connected
     if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
-    var set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
-    set_if.usage = .connected;
-    if_ctx.interfaces.mutex.unlock();
+    try posix.setsockopt(
+        conn_if.nl_sock,
+        posix.SOL.SOCKET,
+        posix.SO.RCVTIMEO,
+        mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
+    );
+    var set_if = setIF: {
+        defer if_ctx.interfaces.mutex.unlock();
+        var set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
+        set_if.usage = .connected;
+        break :setIF set_if;
+    };
     // DHCP
     if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
     set_conn = (ctx.connections.getEntry(conn_id) orelse {
@@ -620,22 +645,24 @@ pub fn handleConnection(
                 return error.ConnectionNotFound;
             }).value_ptr;
             set_conn.dhcp_info = dhcp_info;
-            set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
-            const dhcp_cidr = address.cidrFromSubnet(dhcp_info.subnet_mask);
-            nl.route.addIP(
-                alloc,
-                set_if.index,
-                dhcp_info.assigned_ip,
-                dhcp_cidr,
-            ) catch {
-                log.warn("Couldn't Add IP '{s}/{d}' to Interface '({d}) {s}'", .{
-                    IPF{ .bytes = dhcp_info.assigned_ip[0..] },
-                    dhcp_cidr,
+            {
+                defer if_ctx.interfaces.mutex.unlock();
+                set_if = (if_ctx.interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
+                const dhcp_cidr = address.cidrFromSubnet(dhcp_info.subnet_mask);
+                nl.route.addIP(
+                    alloc,
                     set_if.index,
-                    set_if.name,
-                });
-            };
-            if_ctx.interfaces.mutex.unlock();
+                    dhcp_info.assigned_ip,
+                    dhcp_cidr,
+                ) catch {
+                    log.warn("Couldn't Add IP '{s}/{d}' to Interface '({d}) {s}'", .{
+                        IPF{ .bytes = dhcp_info.assigned_ip[0..] },
+                        dhcp_cidr,
+                        set_if.index,
+                        set_if.name,
+                    });
+                };
+            }
             log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
             ctx.connections.mutex.unlock();
             break;
@@ -649,6 +676,31 @@ pub fn handleConnection(
     set_conn.state = .conn;
     log.info("{s}: {s}", .{ conn_if.name, set_conn.state });
     ctx.connections.mutex.unlock();
-    while (active.load(.acquire) and conn_active.load(.acquire))
+    var no_carrier_count: usize = 0;
+    while (
+        active.load(.acquire) and
+        conn_active.load(.acquire) and
+        no_carrier_count < err_max
+    ) {
+        const get_if = if_ctx.interfaces.get(if_index) orelse break;
+        if (get_if.usage == .unavailable) break;
+        const get_link = (if_ctx.links.get(conn_if.index) orelse continue).link;
+        const carrier = get_link.CARRIER orelse continue;
+        if (carrier == 0) no_carrier_count += 1
+        else no_carrier_count = 0;
         time.sleep(interval.*);
+    }
+    //log.debug(
+    //    \\Connection End:
+    //    \\- NCC {d}
+    //    \\- Active: {}
+    //    \\- Conn Active: {}
+    //    \\
+    //    , .{ 
+    //        no_carrier_count,
+    //        active.load(.acquire),
+    //        conn_active.load(.acquire),
+    //    }
+    //);
+    time.sleep(3 * time.ns_per_s);
 }

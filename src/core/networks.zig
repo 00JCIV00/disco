@@ -190,7 +190,7 @@ pub fn updScan(
             config.nl_sock = scan_if.nl_sock;
             nl._80211.triggerScan(alloc, scan_if.index, config) catch |err| switch (err) {
                 error.BUSY,
-                error.NODEV => {},
+                error.NODEV => return,
                 else => return err,
             };
             scan_if.usage = .scanning;
@@ -361,7 +361,7 @@ fn trackNetworksIF(
         }
     }
     if (scan_results.len == 0) return;
-    //log.debug("Parsing {d} Scan Results...", .{ scan_results.len });
+    log.debug("Parsing {d} Scan Results...", .{ scan_results.len });
     resLoop: for (scan_results) |result| {
         //log.debug("Result: {d}", .{ result.IFINDEX });
         var valid_result: bool = false;
