@@ -1,0 +1,29 @@
+Config:
+* `avail_if_names`:  The list of Available WiFi Interfaces for DisCo to use.
+* `scan_configs`:    A list of Scan Configurations. (See Scan)
+* `connect_configs`: A list of Connection Configurations. (See Connect)
+* `profile_mask`:    A Profile Mask to hide your system details from fingerprinting. (See DHCP)
+
+Scan:
+* `if_name`: The Interface this Scan Config applies to.
+* `ssids`:   SSIDs to scan for.	
+* `channels: Channels to scan on.
+
+Connect:
+* `ssid`:       SSID of the Network.
+* `passphrase`: Passphrase of the Network.
+* `security`:   Security Protocol of the Network (open, wep, wpa1, wpa2, wpa3t, wpa3).
+* `if_names`:   List of Interface Names that are allowed to connect to this Network.
+* `dhcp`:       DHCP Lease Config in JSON format. The DHCP Server may ignore these settings:
+
+DHCP:
+* `ip_addr`:        Request an IP Address.
+* `lease_time`:     Request a Lease Time in seconds.
+* `renewal_time`:   Request a Renewal Time in seconds.
+* `rebinding_time`: Request a Rebinding Time in seconds.
+
+Profile:
+* `oui`:      The OUI your WiFi Interfaces will be set to. Remaining bytes will be random.
+* `hostname`: The Hostname that will be sent over the Network.
+* `ttl`:      The Time-to-Live (TTL) setting for outgoing packets. (Currently unused.)
+* `ua_str`:   The User Agent (UA) String used for outgoing HTTP packets. (Currently unused.)

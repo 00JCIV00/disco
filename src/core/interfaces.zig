@@ -482,14 +482,6 @@ pub fn updInterfaces(
             }
             for (config.avail_if_names) |avail_name| {
                 const if_name = mem.trim(u8, wifi_if.value_ptr.IFNAME, ascii.whitespace[0..] ++ &[_]u8{ 0 });
-                log.debug("Checking IF Name: '{s}'/'{X}' ({d}B) vs '{s}'/'{X}' ({d}B)", .{ 
-                    if_name,
-                    if_name,
-                    if_name.len,
-                    avail_name, 
-                    avail_name, 
-                    avail_name.len, 
-                });
                 if (!mem.eql(u8, if_name, avail_name)) continue;
                 log.debug("Avail IF Name Match: ({d}) {s}", .{ wifi_if.key_ptr.*, avail_name });
                 break :usage .available;

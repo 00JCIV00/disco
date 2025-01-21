@@ -119,6 +119,7 @@ pub const setup_cmd = CommandT{
     .description = "Discreetly Connect to networks.",
     .examples = &.{
         "disco -i wlan0",
+        "disco -i wlan0 -c config.json",
         "disco -i wlan0 --mask \"google pixel 6\"",
         "disco -i wlan0 set --mac 00:11:22:aa:bb:cc",
         "disco -i wlan0 add --ip 192.168.10.10",
@@ -130,17 +131,14 @@ pub const setup_cmd = CommandT{
     .opt_groups = &.{ "ACTIVE", "MASK", "SETTINGS" },
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
-    //.vals = &.{
-    //    // TODO replace this w/ the `--interface` Option?
-    //    ValueT.ofType([]const u8, .{
-    //        .name = "interface",
-    //        .description = "The Network Interface to use. (This is mandatory)"
-    //    }),
-    //},
     .opts = &.{
         .{
             .name = "config",
-            .description = "Provide a JSON Config for DisCo.",
+            .description =
+                \\Provide a JSON Config for DisCo.
+                \\            Note, using CLI Options will supercede parts of this Config.
+                \\            Fields can be viewed w/ `list --config`.
+            ,
             .opt_group = "ACTIVE",
             .short_name = 'c',
             .long_name = "config",
@@ -169,13 +167,9 @@ pub const setup_cmd = CommandT{
         .{
             .name = "connect_info",
             .description = 
-                \\Provide Connection Info for a specific Network in JSON format. (Ex: '{ "ssid": "SomeNetwork", "passphrase": "somepassphrase1" }')
-                \\            Fields:
-                \\            * `ssid`:       SSID of the Network.
-                \\            * `passphrase`: Passphrase of the Network.
-                \\            * `security`:   Security Protocol of the Network (open, wep, wpa1, wpa2, wpa3t, wpa3).
-                \\            * `if_names`:   List of Interface Names that are allowed to connect to this Network.
-                \\            * `dhcp`:  DHCP Lease Config in JSON format.
+                \\Provide Connection Info for a specific Network in JSON format. 
+                \\            Ex: '{ "ssid": "SomeNetwork", "passphrase": "somepassphrase1" }'
+                \\            A list of masks can be viewed w/ `list --config` under "Connect".
             ,
             .opt_group = "ACTIVE",
             //.short_name = 'C',
@@ -362,6 +356,12 @@ pub const setup_cmd = CommandT{
                     .long_name = "conflict-pids",
                     .alias_long_names = &.{ "pids", "conflicts", "procs", "processes" },
                 },
+                .{
+                    .name = "config",
+                    .description = "List the Config Fields.",
+                    .long_name = "config",
+                    .alias_long_names = &.{ "fields" },
+                },
             },
             .vals = &.{
                 ValueT.ofType([]const u8, .{
@@ -372,7 +372,16 @@ pub const setup_cmd = CommandT{
                     .parse_fn = struct {
                         pub fn parseList(arg: []const u8, alloc: mem.Allocator) ![]const u8 {
                             const lower = try ascii.allocLowerString(alloc, arg);
-                            inline for (&.{ "masks", "pids", "conflict-pids", "conflicts", "procs", "processes" }) |list| {
+                            inline for (&.{ 
+                                "masks", 
+                                "pids", 
+                                "conflict-pids", 
+                                "conflicts", 
+                                "procs", 
+                                "processes",
+                                "config",
+                                "fields",
+                            }) |list| {
                                 if (mem.eql(u8, lower, list)) return lower;
                             }
                             return error.InvalidList;

@@ -3220,12 +3220,49 @@ pub fn authenticate(
     if_index: i32,
     ssid: []const u8,
     scan_results: ScanResults,
+    //wep_key: ?[16]u8, 
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const auth_type = determineAuthAlg(scan_results);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY;
     const bssid = bss.BSSID;
+    var attr_list: std.ArrayListUnmanaged(nl.Attribute) = .{};
+    defer attr_list.deinit(alloc);
+    try attr_list.appendSlice(alloc, &.{
+        .{ 
+            .hdr = .{ .type = c(ATTR).IFINDEX },
+            .data = mem.toBytes(if_index)[0..],
+        },
+        .{ 
+            .hdr = .{ .type = c(ATTR).SSID, .len = @intCast(ssid.len + 4) },
+            .data = ssid,
+        },
+        .{ 
+            .hdr = .{ .type = c(ATTR).AUTH_TYPE },
+            .data = mem.toBytes(@intFromEnum(auth_type))[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
+            .data = mem.toBytes(wiphy_freq)[0..],
+        },
+        .{
+            .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+            .data = bssid[0..],
+        },
+    });
+    // TODO WEP
+    //const security: SecurityType = (try bss.getSecurityInfo()).type;
+    //switch (security) {
+    //    .wep => {
+    //        const key = wep_key orelse return error.WEPKeyNotProvided;
+    //        try attr_list.append(alloc, .{
+    //            .{
+    //                .hdr = .{ .type = c(ATTR.KE }
+    //            },
+    //        });
+    //    }
+    //}
     try nl.reqOnSock(
         alloc, 
         nl_sock,
@@ -3243,28 +3280,7 @@ pub fn authenticate(
                 .version = 0,
             },
         },
-        &.{
-            .{ 
-                .hdr = .{ .type = c(ATTR).IFINDEX },
-                .data = mem.toBytes(if_index)[0..],
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).SSID, .len = @intCast(ssid.len + 4) },
-                .data = ssid,
-            },
-            .{ 
-                .hdr = .{ .type = c(ATTR).AUTH_TYPE },
-                .data = mem.toBytes(@intFromEnum(auth_type))[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
-                .data = mem.toBytes(wiphy_freq)[0..],
-            },
-            .{
-                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
-                .data = bssid[0..],
-            },
-        },
+        attr_list.items[0..],
     );
     try nl.handleAck(nl_sock);
 }
@@ -3405,7 +3421,6 @@ pub fn associate(
     );
     //errdefer posix.close(nl_sock);
     try nl.handleAck(nl_sock);
-    log.debug("ASSOC SENT", .{});
 }
 
 /// Send Control Frame

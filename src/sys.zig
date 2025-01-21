@@ -31,6 +31,13 @@ pub fn setHostName(hostname: []const u8) !void {
     };
 }
 
+/// Get the System's Current User
+pub fn getUser(user_buf: []u8) ?[]const u8 {
+    const user = posix.getenv("USER") orelse return null;
+    @memcpy(user_buf[0..user.len], user[0..]);
+    return user_buf[0..user.len];
+}
+
 /// Get a PID from the provided Process Name ('proc_name').
 pub fn getPID(proc_name: []const u8) !?u32 {
     var proc_dir = try fs.openDirAbsolute("/proc", .{ .iterate = true });

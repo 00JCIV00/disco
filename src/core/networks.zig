@@ -110,6 +110,9 @@ pub const Context = struct {
 
     /// Deinitialize all Maps.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+        var scan_conf_iter = self.scan_configs.iterator();
+        while (scan_conf_iter.next()) |scan_conf| alloc.free(scan_conf.value_ptr.freqs orelse continue);
+        scan_conf_iter.unlock();
         self.scan_configs.deinit(alloc);
         var nw_iter = self.networks.iterator();
         while (nw_iter.next()) |nw_entry| nw_entry.value_ptr.deinit(alloc);
@@ -215,19 +218,28 @@ pub fn trackScans(
             if (err_count > 10) @panic("WiFi Scan Tracking encountered too many errors to continue.");
             time.sleep(interval.*);
         }
-        for (config.scan_configs) |scan_conf_entry| {
-            const if_index = nl.route.getIfIdx(scan_conf_entry.if_name) catch continue;
+        for (config.scan_configs) |scan_conf| {
+            const if_index = nl.route.getIfIdx(scan_conf.if_name) catch continue;
             if (network_ctx.scan_configs.get(if_index)) |_| continue;
             network_ctx.scan_configs.put(
                 alloc,
                 if_index,
-                scan_conf_entry.conf,
+                //scan_conf_entry.conf,
+                .{
+                    .ssids = scan_conf.ssids,
+                    .freqs = freqs: {
+                        const chs = scan_conf.channels orelse break :freqs null;
+                        var freqs_list: std.ArrayListUnmanaged(u32) = .{};
+                        for (chs) |ch| freqs_list.append(alloc, @intCast(nl._80211.freqFromChannel(ch) catch continue)) catch continue;
+                        break :freqs freqs_list.toOwnedSlice(alloc) catch @panic("OOM");
+                    },
+                },
             ) catch |err| {
-                log.err("Could not add Scan Config for '{s}': {s}", .{ scan_conf_entry.if_name, @errorName(err) });
+                log.err("Could not add Scan Config for '{s}': {s}", .{ scan_conf.if_name, @errorName(err) });
                 err_count += 1;
                 continue;
             };
-            log.debug("Updated Interface Index f/ Scan Config: {s} ({d})", .{ scan_conf_entry.if_name, if_index });
+            log.debug("Updated Interface Index f/ Scan Config: {s} ({d})", .{ scan_conf.if_name, if_index });
         }
         var if_iter = interfaces.iterator();
         defer if_iter.unlock();

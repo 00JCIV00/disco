@@ -646,6 +646,24 @@ pub const InterfaceLink = struct {
     MAX_PACING_OFFLOAD_HORIZON: ?u32 = null,
 };
 
+/// Operational states for network interfaces.
+pub const IF_OPER = enum(u8) {
+    /// Unknown operational state.
+    UNKNOWN,
+    /// Interface is operationally up.
+    UP,
+    /// Interface is not operationally up.
+    DOWN,
+    /// Interface is testing mode.
+    TESTING,
+    /// Interface is dormant.
+    DORMANT,
+    /// Interface is operationally lower-layer down.
+    LOWERLAYERDOWN,
+    /// Interface is not present.
+    NOTPRESENT,
+};
+
 
 /// Scope of the Route
 pub const RT_SCOPE = enum(u8) {

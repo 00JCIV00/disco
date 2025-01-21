@@ -15,6 +15,8 @@ const time = std.time;
 const cova = @import("cova");
 const cli = @import("cli.zig");
 
+const config_fields = @embedFile("config_fields");
+
 const art = @import("art.zig");
 const core = @import("core.zig");
 const netdata = @import("netdata.zig");
@@ -149,6 +151,7 @@ pub fn main() !void {
             }
         }
     }
+    // - List
     if (main_cmd.matchSubCmd("list")) |list_cmd| {
         const list_opts = try list_cmd.getOpts(.{});
         const list_vals = try list_cmd.getVals(.{});
@@ -209,6 +212,21 @@ pub fn main() !void {
             );
             try stdout_bw.flush();
         }
+        const config_val_set: bool =
+            for (item_list) |item| {
+                if (mem.eql(u8, item, "config")) break true;
+                if (mem.eql(u8, item, "fields")) break true;
+            }
+            else false;
+        if (list_opts.get("config") != null or config_val_set) {
+            try stdout.print(
+                \\These fields can be provided in a JSON file to configure DisCo using `-c` or `--config`.
+                \\You can also create the file `/root/.configs/disco/config.json` to provide a persistent config.
+                \\{s}
+                , .{ config_fields }
+            );
+            try stdout_bw.flush();
+        }
         posix.exit(0);
     }
     // - File Serve
@@ -226,35 +244,30 @@ pub fn main() !void {
     const main_opts = try main_cmd.getOpts(.{});
     var core_if_indexes: std.ArrayListUnmanaged(i32) = .{};
     defer core_if_indexes.deinit(alloc);
-    var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfEntry) = .{};
+    var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfig) = .{};
     defer core_scan_confs.deinit(alloc);
-    var freqs_list: std.ArrayListUnmanaged(u32) = .{};
-    defer freqs_list.deinit(alloc);
-    const if_names: []const []const u8 =
-        if (main_opts.get("interfaces")) |if_opt| ifOpt: {
+    const if_names: []const []const u8 = ifOpt: {
+        if (main_opts.get("interfaces")) |if_opt| {
             const ssids = ssids: {
                 const ssids_opt = main_opts.get("ssids").?;
                 break :ssids try ssids_opt.val.getAllAs([]const u8);
             };
-            const freqs = freqs: {
-                const ch_opt = main_opts.get("channels") orelse break :freqs null;
-                const channels = try ch_opt.val.getAllAs(usize);
-                for (channels) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
-                break :freqs freqs_list.items;
+            const channels: ?[]const usize = getChs: {
+                const ch_opt = main_opts.get("channels") orelse break :getChs null;
+                break :getChs try ch_opt.val.getAllAs(usize);
             };
             const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt &.{};
             for (if_names) |if_name| {
                 try core_scan_confs.append(alloc, .{ 
                     .if_name = if_name,
-                    .conf = .{
-                        .ssids = ssids,
-                        .freqs = freqs,
-                    },
+                    .ssids = ssids,
+                    .channels = channels,
                 });
             }
             break :ifOpt if_names;
         }
-        else &.{};
+        else break :ifOpt &.{};
+    };
     const profile_mask: ?core.profiles.Mask = getMask: {
         if (main_cmd.checkArgGroup(.Command, "INTERFACE")) {
             var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
@@ -316,11 +329,23 @@ pub fn main() !void {
     // Initialize Core Context
     const core_config: core.Core.Config = config: {
         var config: core.Core.Config = .{};
-        if (main_opts.get("config")) |config_opt| {
-            const config_file = try config_opt.val.getAs(fs.File);
-            const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
-            const config_bytes = try config_file.readToEndAlloc(cova_alloc, 1_000_000);
-            config = try json.parseFromSliceLeaky(
+        const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
+        defaultConf: {
+            var user_buf: [100]u8 = .{ 0 } ** 100;
+            const user = sys.getUser(user_buf[0..]) orelse break :defaultConf;
+            log.debug("Current User: {s}", .{ user });
+            var path_buf: [fs.max_path_bytes]u8 = .{ 0 } ** fs.max_path_bytes;
+            const default_conf_path = confPath: {
+                if (mem.eql(u8, user, "root")) break :confPath "/root/.config/disco/config.json";
+                break :confPath fmt.bufPrint(path_buf[0..], "/home/{s}/.config/disco/config.json", .{ user }) catch break :defaultConf;
+            };
+            var cwd = fs.cwd();
+            const default_conf = cwd.openFile(default_conf_path, .{}) catch {
+                log.info("No Default Config found at: '{s}'", .{ default_conf_path });
+                break :defaultConf;
+            };
+            const config_bytes = default_conf.readToEndAlloc(cova_alloc, 1_000_000) catch break :defaultConf;
+            config = json.parseFromSliceLeaky(
                 core.Core.Config,
                 cova_alloc,
                 config_bytes,
@@ -329,7 +354,30 @@ pub fn main() !void {
                     .allocate = .alloc_always,
                     //.ignore_unknown_fields = true,
                 },
-            );
+            ) catch |err| {
+                log.warn("There was an error with the Default Config: {s}", .{ @errorName(err) });
+                break :defaultConf;
+            };
+            log.info("Imported the Default Config at '{s}'!", .{ default_conf_path });
+        }
+        if (main_opts.get("config")) |config_opt| userConf: {
+            const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
+            defer config_file.close();
+            const config_bytes = config_file.readToEndAlloc(cova_alloc, 1_000_000) catch break :userConf;
+            config = json.parseFromSliceLeaky(
+                core.Core.Config,
+                cova_alloc,
+                config_bytes,
+                .{
+                    .duplicate_field_behavior = .use_first,
+                    .allocate = .alloc_always,
+                    //.ignore_unknown_fields = true,
+                },
+            ) catch |err| {
+                log.warn("There was an error with the provided Config: {s}", .{ @errorName(err) });
+                break :userConf;
+            };
+            log.info("Imported provided Config!", .{});
         }
         if (if_names.len > 0) config.avail_if_names = if_names;
         for (config.avail_if_names) |if_name| {
@@ -347,10 +395,8 @@ pub fn main() !void {
             for (config.avail_if_names) |if_name| {
                 try core_scan_confs.append(alloc, .{ 
                     .if_name = if_name,
-                    .conf = .{
-                        .ssids = &.{},
-                        .freqs = &.{},
-                    },
+                    .ssids = &.{},
+                    .channels = &.{},
                 });
             }
         }

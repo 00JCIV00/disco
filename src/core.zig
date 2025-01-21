@@ -28,9 +28,10 @@ pub const Core = struct {
     /// Config
     /// This is made to be configurable by users via JSON.
     pub const Config = struct {
-        pub const ScanConfEntry = struct { 
+        pub const ScanConfig = struct {
             if_name: []const u8,
-            conf: nl._80211.TriggerScanConfig,
+            ssids: ?[]const []const u8 = null,
+            channels: ?[]const usize = null,
         };
 
         /// Conflicting Process Names
@@ -50,7 +51,7 @@ pub const Core = struct {
         /// Available Interface Names
         avail_if_names: []const []const u8 = &.{},
         /// Scan Configs
-        scan_configs: []const ScanConfEntry = &.{},
+        scan_configs: []const ScanConfig = &.{},
         /// Connection Configs
         connect_configs: []const connections.Config = &.{},
         /// Profile Mask
@@ -140,11 +141,20 @@ pub const Core = struct {
             if_entry.value_ptr.usage = .available;
         }
         log.info("- Initialized Interface Tracking Data.", .{});
-        for (config.scan_configs) |scan_conf_entry| {
+        for (config.scan_configs) |scan_conf| {
             try self.network_ctx.scan_configs.put(
                 alloc,
-                nl.route.getIfIdx(scan_conf_entry.if_name) catch continue,
-                scan_conf_entry.conf,
+                nl.route.getIfIdx(scan_conf.if_name) catch continue,
+                //scan_conf_entry.conf,
+                .{
+                    .ssids = scan_conf.ssids,
+                    .freqs = freqs: {
+                        const chs = scan_conf.channels orelse break :freqs null;
+                        var freqs_list: std.ArrayListUnmanaged(u32) = .{};
+                        for (chs) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+                        break :freqs try freqs_list.toOwnedSlice(alloc);
+                    },
+                },
             );
         }
         log.info("- Initialized Network Tracking Data.", .{});
