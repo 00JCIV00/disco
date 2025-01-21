@@ -71,7 +71,7 @@ pub fn main() !void {
     const stdout = stdout_bw.writer().any();
     try stdout_file.print("{s}\n", .{ art.logo });
 
-    var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
+    var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true, .stack_trace_frames = 25 }){};
     defer {
         if (@import("builtin").mode == .Debug and gpa.detectLeaks()) 
             log.err("Memory leak detected!", .{})
@@ -276,8 +276,8 @@ pub fn main() !void {
             break :getMask mask;
         }
         if (!main_cmd.checkArgGroup(.Option, "MASK")) {
-            //if (main_cmd.checkFlag("config")) break :getMask null;
-            if (main_opts.get("config")) |_| break :getMask null;
+            if (main_cmd.checkOpts(&.{ "config" }, .{})) break :getMask null;
+            //if (main_opts.get("config")) |_| break :getMask null;
             const mask_idx = crypto.random.int(u16) % masks_map.keys().len;
             for (masks_map.keys(), 0..) |key, idx| {
                 if (idx != mask_idx) continue;
@@ -322,7 +322,7 @@ pub fn main() !void {
         log.info("Using your Custom Profile Mask:\n{s}", .{ mask });
         break :getMask mask;
     };
-    const core_conn_confs: []const core.connections.Config = connConfs: {
+    const core_conn_confs: []core.connections.Config = connConfs: {
         const conn_opt = main_opts.get("connect_info") orelse break :connConfs &.{};
         break :connConfs conn_opt.val.getAllAs(core.connections.Config) catch &.{};
     };
@@ -393,7 +393,7 @@ pub fn main() !void {
         }
         if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
             for (config.avail_if_names) |if_name| {
-                try core_scan_confs.append(alloc, .{ 
+                try core_scan_confs.append(alloc, .{
                     .if_name = if_name,
                     .ssids = &.{},
                     .channels = &.{},
@@ -402,6 +402,9 @@ pub fn main() !void {
         }
         //if (core_scan_confs.items.len > 0) config.scan_configs = try core_scan_confs.toOwnedSlice(alloc);
         if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
+        if (main_cmd.checkOpts(&.{ "gateway" }, .{})) {
+            for (core_conn_confs) |*conn_conf| conn_conf.add_gw = true;
+        }
         if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
         if (profile_mask) |pro_mask| config.profile_mask = pro_mask;
         break :config config;

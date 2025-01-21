@@ -79,6 +79,7 @@ pub const Config = struct {
     security: nl._80211.SecurityType = .wpa2,
     auth: nl._80211.AuthType = .psk,
     dhcp: ?proto.dhcp.LeaseConfig = null,
+    add_gw: bool = false,
 };
 
 /// Connection Info
@@ -96,6 +97,7 @@ pub const Connection = struct {
     eapol_keys: ?nl._80211.EAPoLKeys = null,
     dhcp_conf: ?proto.dhcp.LeaseConfig = null,
     dhcp_info: ?dhcp.Info = null,
+    add_gw: bool = false,
 
     pub fn deinit (self: *const @This(), alloc: mem.Allocator) void {
         alloc.free(self.ssid);
@@ -264,6 +266,7 @@ pub fn trackConnections(
                             .security = conf.security,
                             .auth = conf.auth,
                             .dhcp_conf = conf.dhcp,
+                            .add_gw = conf.add_gw,
                         },
                     ) catch |err| {
                         log.err("Connection Update Error: {s}", .{ @errorName(err) });
@@ -294,7 +297,6 @@ pub fn trackConnections(
         ctx.conn_pool.deinit();
         ctx.conn_group.reset();
     }
-
 }
 
 /// Handle an Individual Connection
@@ -662,6 +664,29 @@ pub fn handleConnection(
                         set_if.name,
                     });
                 };
+                log.info("Added IP '{s}/{d}' to ({d}) {s}", .{
+                    IPF{ .bytes = dhcp_info.assigned_ip[0..] },
+                    dhcp_cidr,
+                    set_if.index,
+                    set_if.name,
+                });
+                if (conn.add_gw) {
+                    try nl.route.addRoute(
+                        alloc,
+                        set_if.index,
+                        address.IPv4.default.addr,
+                        .{
+                            .cidr = address.IPv4.default.cidr,
+                            .gateway = dhcp_info.router,
+                        },
+                    );
+                    log.info("Added Gateway '{s}/{d}' to ({d}) {s}", .{
+                        IPF{ .bytes = dhcp_info.router[0..] },
+                        dhcp_cidr,
+                        set_if.index,
+                        set_if.name,
+                    });
+                }
             }
             log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
             ctx.connections.mutex.unlock();

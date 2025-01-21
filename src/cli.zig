@@ -118,8 +118,8 @@ pub const setup_cmd = CommandT{
     .name = "disco",
     .description = "Discreetly Connect to networks.",
     .examples = &.{
+        "disco -c config.json",
         "disco -i wlan0",
-        "disco -i wlan0 -c config.json",
         "disco -i wlan0 --mask \"google pixel 6\"",
         "disco -i wlan0 set --mac 00:11:22:aa:bb:cc",
         "disco -i wlan0 add --ip 192.168.10.10",
@@ -198,6 +198,7 @@ pub const setup_cmd = CommandT{
                 }.parseConnInfo,
             }),
         },
+        conn_gw,
         .{
             .name = "mask",
             .description = "Choose a Profile Mask to hide your system. (A list of masks can be viewed w/ `list --masks`)",
@@ -329,13 +330,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "dhcp",
                     .short_name = 'd',
                 },
-                .{
-                    .name = "gateway",
-                    .description = "Automatically set the Gateway after obtaining an IP Address.",
-                    .long_name = "gateway",
-                    .alias_long_names = &.{ "gw" },
-                    .short_name = 'g',
-                },
+                conn_gw,
             },
         },
         .{
@@ -695,6 +690,14 @@ const ssids_val = ValueT.ofType([]const u8, .{
         }
     }.validSSID,
 });
+/// Connection Gateway
+const conn_gw: OptionT = .{
+    .name = "gateway",
+    .description = "Automatically set the Gateway after obtaining an IP Address.",
+    .long_name = "gateway",
+    .alias_long_names = &.{ "gw" },
+    .short_name = 'g',
+};
 
 // Function Wrappers
 fn parseIPv4(arg: []const u8, _: mem.Allocator) !address.IPv4 {
