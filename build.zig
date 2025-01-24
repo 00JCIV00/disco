@@ -20,8 +20,16 @@ pub fn build(b: *std.Build) void {
     // Config Fields
     const config_fields_mod = b.createModule(.{ .root_source_file = b.path("resources/config_fields") });
 
+    const exe_name = exeName: {
+        const default_name = b.allocator.dupe(u8, "disco") catch @panic("OOM");
+        const cpu_arch = target.query.cpu_arch orelse break :exeName default_name;
+        const os_tag = target.query.os_tag orelse break :exeName default_name;
+        break :exeName std.fmt.allocPrint(b.allocator, "disco_{s}-{s}", .{ @tagName(os_tag), @tagName(cpu_arch) }) catch @panic("OOM or Fmt");
+    };
+    defer b.allocator.free(exe_name);
     const exe = b.addExecutable(.{
-        .name = "disco",
+        //.name = "disco",
+        .name = exe_name,
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
