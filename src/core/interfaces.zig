@@ -483,7 +483,7 @@ pub fn updInterfaces(
             for (config.avail_if_names) |avail_name| {
                 const if_name = mem.trim(u8, wifi_if.value_ptr.IFNAME, ascii.whitespace[0..] ++ &[_]u8{ 0 });
                 if (!mem.eql(u8, if_name, avail_name)) continue;
-                log.debug("Avail IF Name Match: ({d}) {s}", .{ wifi_if.key_ptr.*, avail_name });
+                //log.debug("Avail IF Name Match: ({d}) {s}", .{ wifi_if.key_ptr.*, avail_name });
                 break :usage .available;
             }
             break :usage .unavailable;
@@ -553,7 +553,7 @@ pub fn updInterfaces(
             }
             if (add_if.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN) {
                 try nl.route.setState(add_if.index, c(nl.route.IFF).UP);
-                log.info("- Set Interface '{d}' set to Up.", .{ add_if.index });
+                log.info("- Set Interface '{d}' to Up.", .{ add_if.index });
             }
         }
         if (_last_if_entry) |*last_if_entry| last_if_entry.value_ptr.deinit(alloc);

@@ -20,6 +20,7 @@ pub const interfaces = @import("core/interfaces.zig");
 pub const networks = @import("core/networks.zig");
 pub const connections = @import("core/connections.zig");
 pub const profiles = @import("core/profiles.zig");
+pub const serve = @import("core/serve.zig");
 
 
 /// Core Context of DisCo.
@@ -56,6 +57,8 @@ pub const Core = struct {
         connect_configs: []const connections.Config = &.{},
         /// Profile Mask
         profile_mask: profiles.Mask = profiles.Mask.google_pixel_6_pro,
+        /// Serve Config
+        serve_config: ?serve.Config = null,
     };
 
     /// Allocator
@@ -82,6 +85,8 @@ pub const Core = struct {
     network_ctx: networks.Context,
     /// Connection Context
     conn_ctx: connections.Context,
+    /// Serve Context
+    serve_ctx: serve.Context,
     /// Original Hostname
     og_hostname: []const u8,
     /// Forced Close
@@ -100,6 +105,7 @@ pub const Core = struct {
         var og_hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
         const og_hostname = try alloc.dupe(u8, try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX]));
         errdefer alloc.free(og_hostname);
+        // Context Allocation
         var arena = heap.ArenaAllocator.init(alloc);
         errdefer arena.deinit();
         const arena_alloc = arena.allocator();
@@ -109,6 +115,9 @@ pub const Core = struct {
         errdefer network_ctx.deinit(alloc);
         var conn_ctx = try connections.Context.init(arena_alloc);
         errdefer conn_ctx.deinit(alloc);
+        var serve_ctx = try serve.Context.init(alloc);
+        errdefer serve_ctx.deinit(alloc);
+        // Core Creation
         var self: @This() = .{
             ._alloc = alloc,
             ._arena = arena,
@@ -118,12 +127,14 @@ pub const Core = struct {
             .if_ctx = if_ctx,
             .network_ctx = network_ctx,
             .conn_ctx = conn_ctx,
+            .serve_ctx = serve_ctx,
             .og_hostname = og_hostname,
         };
         if (config.use_mask) {
             try sys.setHostName(config.profile_mask.hostname);
             log.info("- Set Hostname to '{s}'.", .{ config.profile_mask.hostname });
         }
+        // Context Setup
         try interfaces.updInterfaces(
             alloc,
             &self.if_ctx,
@@ -166,8 +177,11 @@ pub const Core = struct {
             );
         }
         log.info("- Initialized Connection Tracking Data.", .{});
+        if (config.serve_config) |serve_conf| {
+            serve_ctx.conf.* = serve_conf;
+            log.info("- Initialized File Serve Data.", .{});
+        }
         log.info("Initialized DisCo Core.", .{});
-        //time.sleep(3000 * time.ns_per_ms);
         return self;
     }
 
@@ -221,6 +235,7 @@ pub const Core = struct {
             },
         );
         log.info("- Started WiFi Network Tracking.", .{});
+        // Connection Tracking
         self._thread_pool.spawnWg(
             &self._wait_group,
             connections.trackConnections,
@@ -234,6 +249,19 @@ pub const Core = struct {
             },
         );
         log.info("- Started Connection Tracking.", .{});
+        // File Serving
+        if (self.config.serve_config) |_| {
+            self._thread_pool.spawnWg(
+                &self._wait_group,
+                serve.serveDir,
+                .{
+                    self._alloc,
+                    &self.serve_ctx,
+                    &self.active,
+                },
+            );
+            log.info("- Started File Serving.", .{});
+        }
         log.info("Started DisCo Core.", .{});
         self._thread_pool.waitAndWork(&self._wait_group);
         self._thread_pool.deinit();
@@ -277,6 +305,8 @@ pub const Core = struct {
         log.info("- Deinitialized Network Tracking.", .{});
         self.conn_ctx.deinit(self._alloc);
         log.info("- Deinitialized Connection Tracking.", .{});
+        self.serve_ctx.deinit(self._alloc);
+        log.info("- Deinitialized File Serving.", .{});
         self._arena.deinit();
         log.info("- Deinitialized All Contexts.", .{});
         log.info("Cleaned up DisCo Core.", .{});

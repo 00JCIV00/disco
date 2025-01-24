@@ -85,8 +85,8 @@ pub const Context = struct {
     scan_configs: *core.ThreadHashMap(i32, nl._80211.TriggerScanConfig),
     networks: *core.ThreadHashMap([6]u8, Network),
     scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
-    scan_pool: *std.Thread.Pool,
-    scan_group: *std.Thread.WaitGroup,
+    thread_pool: *std.Thread.Pool,
+    wait_group: *std.Thread.WaitGroup,
 
 
     /// Initialize all Maps.
@@ -177,8 +177,6 @@ pub fn updScan(
 ) !void {
     const _old_conf = network_ctx.scan_configs.get(scan_if.index);
     switch (scan_if.usage) {
-        //.available,
-        //.scanning => triggerScan: {
         .available => triggerScan: {
             var config = triggerConf: {
                 if (trigger_config) |new_conf| {
@@ -296,23 +294,23 @@ pub fn trackNetworks(
             if (scan_if.usage == .scanning) job_count += 1;
         }
         if_iter.unlock();
-        network_ctx.scan_pool.init(.{ .allocator = alloc, .n_jobs = job_count }) catch |err| {
+        network_ctx.thread_pool.init(.{ .allocator = alloc, .n_jobs = job_count }) catch |err| {
             log.err("WiFi Network Tracking Error: {s}", .{ @errorName(err) });
             err_count += 1;
             continue;
         };
         defer {
-            network_ctx.scan_pool.waitAndWork(network_ctx.scan_group);
-            network_ctx.scan_pool.deinit();
-            network_ctx.scan_group.reset();
+            network_ctx.thread_pool.waitAndWork(network_ctx.wait_group);
+            network_ctx.thread_pool.deinit();
+            network_ctx.wait_group.reset();
         }
         if_iter = interfaces.iterator();
         defer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const scan_if = if_entry.value_ptr;
             if (scan_if.usage != .scanning) continue;
-            network_ctx.scan_pool.spawnWg(
-                network_ctx.scan_group,
+            network_ctx.thread_pool.spawnWg(
+                network_ctx.wait_group,
                 trackNetworksIFNoErr,
                 .{
                     alloc,

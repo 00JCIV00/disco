@@ -113,8 +113,8 @@ pub const Context = struct {
     /// Active & Previous Connections.
     /// ID = 6B Network BSSID + 4B Interface Index
     connections: *core.ThreadHashMap([10]u8, Connection),
-    conn_pool: *std.Thread.Pool,
-    conn_group: *std.Thread.WaitGroup,
+    thread_pool: *std.Thread.Pool,
+    wait_group: *std.Thread.WaitGroup,
 
 
     /// Initialize all Maps.
@@ -169,7 +169,7 @@ pub fn trackConnections(
         if (conn_if.usage == .available) job_count += 10;
     }
     if_iter.unlock();
-    ctx.conn_pool.init(.{ .allocator = alloc, .n_jobs = job_count }) catch |err| {
+    ctx.thread_pool.init(.{ .allocator = alloc, .n_jobs = job_count }) catch |err| {
         log.err("Connection Tracking Error: {s}. Terminating Tracking!", .{ @errorName(err) });
         return;
     };
@@ -273,8 +273,8 @@ pub fn trackConnections(
                         err_count += 1;
                         continue;
                     };
-                    ctx.conn_pool.spawnWg(
-                        ctx.conn_group,
+                    ctx.thread_pool.spawnWg(
+                        ctx.wait_group,
                         handleConnectionNoErr,
                         .{
                             alloc,
@@ -293,9 +293,9 @@ pub fn trackConnections(
         }
     }
     defer {
-        ctx.conn_pool.waitAndWork(ctx.conn_group);
-        ctx.conn_pool.deinit();
-        ctx.conn_group.reset();
+        ctx.thread_pool.waitAndWork(ctx.wait_group);
+        ctx.thread_pool.deinit();
+        ctx.wait_group.reset();
     }
 }
 

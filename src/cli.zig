@@ -17,12 +17,12 @@ const time = std.time;
 
 const cova = @import("cova");
 const core = @import("core.zig");
+const serve = core.serve;
 const nl = @import("netlink.zig");
 const netdata = @import("netdata.zig");
 const address = netdata.address;
 const oui = netdata.oui;
 const proto = @import("protocols.zig");
-const serve = proto.serve;
 const wpa = proto.wpa;
 
 /// The Cova Command Type for DisCo.
@@ -45,6 +45,7 @@ pub const CommandT = cova.Command.Custom(.{
             address.RandomMACKind,
             core.profiles.Mask,
             core.connections.Config,
+            core.serve.Protocol,
             nl.route.IFF,
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
@@ -392,6 +393,16 @@ pub const setup_cmd = CommandT{
             .cmd_group = "ACTIVE",
             .opts = &.{
                 .{
+                    .name = "ip",
+                    .description = "IP Address to serve on. (Default: 0.0.0.0)",
+                    .long_name = "ip",
+                    .short_name = 'i',
+                    .val = ValueT.ofType(address.IPv4, .{
+                        .default_val = .{ .addr = .{ 0, 0, 0, 0 } },
+                        .parse_fn = parseIPv4,
+                    }),
+                },
+                .{
                     .name = "port",
                     .description = "Port to serve on. (Default: 12070)",
                     .long_name = "port",
@@ -415,6 +426,18 @@ pub const setup_cmd = CommandT{
                         }.validatePath,
                     }),
                 },
+                .{
+                    .name = "protocols",
+                    .description = "Protocols to serve on. (http, tftp, or all)",
+                    .long_name = "protocols",
+                    .short_name = 'P',
+                    .val = ValueT.ofType(core.serve.Protocol, .{
+                        .default_val = .all,
+                        .alias_child_type = "file_serve_protocol",
+                        .max_entries = 10,
+                        .set_behavior = .Multi,
+                    }),
+                }
             },
         },
         .{

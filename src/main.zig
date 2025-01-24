@@ -1,4 +1,5 @@
 const std = @import("std");
+const atomic = std.atomic;
 const crypto = std.crypto;
 const fmt = std.fmt;
 const fs = std.fs;
@@ -25,8 +26,8 @@ const proto = @import("protocols.zig");
 const sys = @import("sys.zig");
 const utils = @import("utils.zig");
 
+const serve = core.serve;
 const dhcp = proto.dhcp;
-const serve = proto.serve;
 const wpa = proto.wpa;
 const address = netdata.address;
 const oui = netdata.oui;
@@ -45,7 +46,7 @@ var panicking: bool = false;
 var _core_ctx: ?core.Core = null;
 // TODO: Pull these into Core context
 // Active
-var active: bool = false;
+var active: atomic.Value(bool) = atomic.Value(bool).init(false);
 // Connect
 var connected: bool = false;
 // DHCP Info
@@ -232,11 +233,27 @@ pub fn main() !void {
     // - File Serve
     if (main_cmd.matchSubCmd("serve")) |serve_cmd| {
         const serve_opts = try serve_cmd.getOpts(.{});
+        const ip = try serve_opts.get("ip").?.val.getAs(address.IPv4);
         const port = try serve_opts.get("port").?.val.getAs(u16);
         const dir = try serve_opts.get("directory").?.val.getAs([]const u8);
-        active = true;
-        try serve.serveDir(port, dir, &active);
-        while (active) {}
+        const protos = try serve_opts.get("protocols").?.val.getAllAs(core.serve.Protocol);
+        active.store(true, .seq_cst);
+        //try serve.serveDir(port, dir, &active);
+        const conf: core.serve.Config = .{
+            .ip = ip.addr,
+            .port = port,
+            .serve_path = dir,
+            .protocols = protos,
+        };
+        var ctx = try core.serve.Context.init(alloc);
+        defer ctx.deinit(alloc);
+        ctx.conf.* = conf;
+        serve.serveDir(
+            alloc,
+            &ctx,
+            &active,
+        );
+        while (active.load(.acquire)) {}
         return;
     }
 
@@ -924,7 +941,7 @@ fn cleanUp(_: i32) callconv(.C) void {
     else if (forcing_close) log.info("Forced close! Attempting to close gracefully...", .{})
     else log.info("Closing gracefully...\n(Force close w/ `ctrl + c`.)", .{});
     if (connected) cleanup: {
-        active = false;
+        active.store(false, .seq_cst);
         //const core_ctx = _core_ctx orelse break :cleanup;
         //raw_net_if = core_ctx.if_maps.interfaces.get(net_if.index);
         const net_if = raw_net_if orelse break :cleanup;
