@@ -5,6 +5,7 @@ const atomic = std.atomic;
 const enums = std.enums;
 const fmt = std.fmt;
 const fs = std.fs;
+const json = std.json;
 const log = std.log.scoped(.serve);
 const mem = std.mem;
 const net = std.net;
@@ -16,7 +17,8 @@ const utils = @import("../utils.zig");
 const c = utils.toStruct;
 
 const netdata = @import("../netdata.zig");
-const IPF = netdata.address.IPFormatter;
+const address = netdata.address;
+const IPF = address.IPFormatter;
 
 const err_max: usize = 10;
 
@@ -29,6 +31,8 @@ pub const Protocol = enum {
 pub const Config = struct {
     ip: [4]u8 = .{ 0, 0, 0, 0 },
     port: u16 = 12070,
+    /// This field is just for easier JSON parsing.
+    ip_port: ?[]const u8 = null,
     serve_path: []const u8 = ".",
     protocols: []const Protocol = &.{ .all },
 };
@@ -47,7 +51,6 @@ pub const Context = struct {
         };
         self.thread_pool = threadPool: {
             const pool = try alloc.create(std.Thread.Pool);
-            //pool.* = std.Thread.Pool{ .allocator = alloc, .threads = &[_]std.Thread };
             break :threadPool pool;
         };
         self.wait_group = waitGroup: {
@@ -80,8 +83,15 @@ pub fn serveDir(
     var http_thread_spawned: bool = false;
     var tftp_thread_spawned: bool = false;
     // Create TCP socket for HTTP
-    //const tcp_addr = try net.Address.parseIp("0.0.0.0", conf.port);
-    const tcp_addr = net.Address.initIp4(conf.ip, conf.port);
+    const tcp_addr = tcpAddr: {
+        if (conf.ip_port) |ip_port| {
+            break :tcpAddr parseIP(ip_port, conf) catch |err| {
+                log.warn("Could not parse Config 'IP:Port': {s}", .{ @errorName(err) });
+                break :tcpAddr net.Address.initIp4(conf.ip, conf.port);
+            };
+        }
+        break :tcpAddr net.Address.initIp4(conf.ip, conf.port);
+    };
     const tcp_sock = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch |err| {
         log.err("Could not create TCP Socket: {s}", .{ @errorName(err) });
         return;
@@ -96,8 +106,15 @@ pub fn serveDir(
         return;
     };
     // Create UDP socket for TFTP
-    //const udp_addr = try net.Address.parseIp("0.0.0.0", conf.port);
-    const udp_addr = net.Address.initIp4(conf.ip, conf.port);
+    const udp_addr = udpAddr: {
+        if (conf.ip_port) |ip_port| {
+            break :udpAddr parseIP(ip_port, conf) catch |err| {
+                log.warn("Could not parse Config 'IP:Port': {s}", .{ @errorName(err) });
+                break :udpAddr net.Address.initIp4(conf.ip, conf.port);
+            };
+        }
+        break :udpAddr net.Address.initIp4(conf.ip, conf.port);
+    };
     const udp_sock = posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0) catch |err| {
         log.err("Could not create UDP Socket: {s}", .{ @errorName(err) });
         return;
@@ -362,4 +379,18 @@ pub fn handleTFTP(
         },
         else => {},
     }
+}
+
+fn parseIP(addr: []const u8, conf: *Config) !net.Address {
+    var iter = mem.splitScalar(u8, addr, ':');
+    const ip = net.Address.parseIp(
+        iter.first(),
+        try fmt.parseInt(u16, iter.next() orelse "-", 10)
+    ) catch |err| {
+        log.err("The provided destination address '{s}' is invalid.", .{ addr });
+        return err;
+    };
+    conf.ip = mem.toBytes(ip.in.sa.addr);
+    conf.port = ip.in.getPort();
+    return ip;
 }
