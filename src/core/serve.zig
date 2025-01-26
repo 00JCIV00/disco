@@ -62,7 +62,7 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
-        self.thread_pool.deinit();
+        //self.thread_pool.deinit();
         alloc.destroy(self.thread_pool);
         alloc.destroy(self.wait_group);
         alloc.destroy(self.conf);

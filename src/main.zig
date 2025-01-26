@@ -419,8 +419,13 @@ pub fn main() !void {
         }
         //if (core_scan_confs.items.len > 0) config.scan_configs = try core_scan_confs.toOwnedSlice(alloc);
         if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
-        if (main_cmd.checkOpts(&.{ "gateway" }, .{})) {
-            for (core_conn_confs) |*conn_conf| conn_conf.add_gw = true;
+        for (core_conn_confs) |*conn_conf| {
+            if (main_cmd.checkOpts(&.{ "gateway" }, .{})) conn_conf.add_gw = true;
+            if (config.use_mask) setHostname: {
+                var dhcp_conf = &(conn_conf.dhcp orelse break :setHostname);
+                if (dhcp_conf.hostname) |_| break :setHostname;
+                dhcp_conf.hostname = config.profile_mask.hostname;
+            }
         }
         if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
         if (profile_mask) |pro_mask| config.profile_mask = pro_mask;

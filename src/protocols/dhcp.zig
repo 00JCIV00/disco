@@ -123,6 +123,8 @@ pub const LeaseConfig = struct {
     renewal_time: ?u32 = null,
     /// Requested rebinding time, T2, in seconds (default: 0.875 * lease_time)
     rebinding_time: ?u32 = null,
+    /// An Optional Hostname to send to the Server
+    hostname: ?[]const u8 = null,
     /// Error on Request/Offer Mismatch
     err_on_mismatch: bool = true,
 };
@@ -133,6 +135,7 @@ pub const Info = struct {
     subnet_mask: [4]u8,
     router: [4]u8,
     server_id: [4]u8,
+    dns_ips: [4]?[4]u8,
 };
 
 /// Handle the DHCP process
@@ -141,7 +144,7 @@ pub fn handleDHCP(
     if_index: i32,
     mac_addr: [6]u8,
     config: LeaseConfig,
-) !Info { // !struct { [4]u8, [4]u8, [4]u8 } {
+) !Info {
     log.debug("Starting DHCP...", .{});
     defer log.debug("Finished DHCP!", .{});
     const dhcp_sock = try posix.socket(posix.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(Eth.ETH_P).IPv4));
@@ -521,7 +524,18 @@ pub fn handleDHCP(
         }
         // -----------------------------
         // - Add Host Name if configured
-        // TODO: Add hostname from config
+        if (config.hostname) |hostname| {
+            start = end;
+            end += 2;
+            const hostname_hdr: l5.BOOTP.OptionHeader = .{
+                .code = c(l5.DHCP.OptionCode).HOSTNAME,
+                .len = @truncate(hostname.len),
+            };
+            @memcpy(req_buf[start..end], mem.asBytes(&hostname_hdr));
+            start = end;
+            end += hostname.len;
+            @memcpy(req_buf[start..end], hostname);
+        }
         // - End Option
         start = end;
         end += 1;
@@ -585,7 +599,7 @@ pub fn handleDHCP(
         var ack_lease_time_buf: ?u32 = null;
         var ack_subnet_mask_buf: ?[4]u8 = null;
         var ack_router_buf: ?[4]u8 = null;
-        var ack_dns_buf: ?[4]u8 = null;
+        var ack_dns_buf: [4]?[4]u8 = .{ null } ** 4;
         start = end;
         while (start < ack_len) {
             const opt_code = ack_buf[start];
@@ -597,7 +611,7 @@ pub fn handleDHCP(
                 continue;
             }
             const opt_len = ack_buf[start + 1];
-            const opt_data = ack_buf[start + 2 .. start + 2 + opt_len];
+            const opt_data = ack_buf[(start + 2)..(start + 2 + opt_len)];
             switch (opt_code) {
                 c(l5.DHCP.OptionCode).MESSAGE_TYPE => {
                     if (opt_len == 1) ack_msg_type_buf = opt_data[0];
@@ -614,9 +628,17 @@ pub fn handleDHCP(
                 c(l5.DHCP.OptionCode).ROUTER => {
                     if (opt_len == 4) ack_router_buf = opt_data[0..4].*;
                 },
-                // TODO Handle Better 
                 c(l5.DHCP.OptionCode).DNS => {
-                    if (opt_len == 4) ack_dns_buf = opt_data[0..4].*;
+                    //if (opt_len == 4) ack_dns_buf = opt_data[0..4].*;
+                    var dns_count: u8 = 0;
+                    dns: while (dns_count < opt_len) : (dns_count += 4) {
+                        for (ack_dns_buf[0..]) |*dns_ip| {
+                            if (dns_ip.*) |_| continue;
+                            dns_ip.* = opt_data[0..4].*;
+                            continue :dns;
+                        }
+                        break;
+                    }
                 },
                 else => {},
             }
@@ -643,7 +665,7 @@ pub fn handleDHCP(
             log.warn("No Lease Time in ACK", .{});
             continue;
         };
-        const ack_dns = ack_dns_buf orelse {
+        const ack_dns = ack_dns_buf[0] orelse {
             log.warn("No DNS in ACK", .{});
             continue;
         };
@@ -675,6 +697,7 @@ pub fn handleDHCP(
                     .subnet_mask = ack_subnet_mask,
                     .router = ack_router,
                     .server_id = ack_server_id,
+                    .dns_ips = ack_dns_buf,
                 };
             },
             c(l5.DHCP.MessageType).NAK => {

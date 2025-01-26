@@ -4,8 +4,10 @@ const builtin = @import("builtin");
 const std = @import("std");
 const fmt = std.fmt;
 const fs = std.fs;
+const io = std.io;
 const log = std.log;
 const mem = std.mem;
+const net = std.net;
 const os = std.os;
 const posix = std.posix;
 
@@ -78,3 +80,4 @@ pub fn getPIDs(alloc: mem.Allocator, proc_names: []const []const u8) ![]const u3
     }
     return try pids_list.toOwnedSlice(alloc);
 }
+

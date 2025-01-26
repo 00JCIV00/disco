@@ -156,7 +156,6 @@ pub const Core = struct {
             try self.network_ctx.scan_configs.put(
                 alloc,
                 nl.route.getIfIdx(scan_conf.if_name) catch continue,
-                //scan_conf_entry.conf,
                 .{
                     .ssids = scan_conf.ssids,
                     .freqs = freqs: {
