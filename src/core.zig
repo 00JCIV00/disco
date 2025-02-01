@@ -45,6 +45,8 @@ pub const Core = struct {
             "nmcli",
             "nmtui",
         },
+        /// Change System Hostname
+        change_sys_hostname: bool = false,
         /// Use Profile Mask
         use_mask: bool = true,
         /// Available Interface Indexes
@@ -130,10 +132,12 @@ pub const Core = struct {
             .serve_ctx = serve_ctx,
             .og_hostname = og_hostname,
         };
-        if (config.use_mask) {
+        if (config.use_mask and config.change_sys_hostname) {
             try sys.setHostName(config.profile_mask.hostname);
             log.info("- Set Hostname to '{s}'.", .{ config.profile_mask.hostname });
         }
+        else if (config.use_mask) 
+            log.info("- The masked Network Hostname is '{s}'. The System Hostname is still '{s}'.", .{ config.profile_mask.hostname, og_hostname });
         // Context Setup
         try interfaces.updInterfaces(
             alloc,
@@ -285,7 +289,7 @@ pub const Core = struct {
     /// (TODO) Improve this if it will be needed outise of closing DisCo.
     pub fn cleanUp(self: *@This()) void {
         log.info("Cleaning up DisCo Core...", .{});
-        if (self.config.use_mask) {
+        if (self.config.use_mask and self.config.change_sys_hostname) {
             if (sys.setHostName(self.og_hostname)) 
                 log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname })
             else |err|
