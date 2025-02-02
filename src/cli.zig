@@ -199,7 +199,7 @@ pub const setup_cmd = CommandT{
                 }.parseConnInfo,
             }),
         },
-        conn_gw,
+        conn_gw_opt,
         .{
             .name = "mask",
             .description = "Choose a Profile Mask to hide your system. (A list of masks can be viewed w/ `list --masks`)",
@@ -331,7 +331,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "dhcp",
                     .short_name = 'd',
                 },
-                conn_gw,
+                conn_gw_opt,
             },
         },
         .{
@@ -714,7 +714,7 @@ const ssids_val = ValueT.ofType([]const u8, .{
     }.validSSID,
 });
 /// Connection Gateway
-const conn_gw: OptionT = .{
+const conn_gw_opt: OptionT = .{
     .name = "gateway",
     .description = "Automatically set the Gateway after obtaining an IP Address.",
     .long_name = "gateway",

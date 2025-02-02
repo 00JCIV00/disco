@@ -20,6 +20,8 @@ const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const core = @import("../core.zig");
 const nl = @import("../netlink.zig");
+const protocols = @import("../protocols.zig");
+const dns = protocols.dns;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 
@@ -124,37 +126,51 @@ pub const Interface = struct {
 
     /// Restoration Kind
     pub const RestoreKind = enum {
-        all,
+        dns,
         ips,
         mac,
     };
     /// Restore the Interface.
-    pub fn restore(self: *@This(), alloc: mem.Allocator, kind: RestoreKind) void {
+    pub fn restore(self: *@This(), alloc: mem.Allocator, kinds: []const RestoreKind) void {
         log.info("- Restoring Interface '{s}'...", .{ self.name });
-        if (kind == .ips or kind == .all) {
-            for (self.ips, self.cidrs) |_ip, _cidr| {
-                const ip = _ip orelse continue;
-                const cidr = _cidr orelse 24;
-                nl.route.deleteIP(
-                    alloc,
-                    self.index,
-                    ip,
-                    cidr,
-                ) catch |err| {
-                    switch (err) {
-                        error.ADDRNOTAVAIL => {},
-                        else => log.warn("-- Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
+        for (kinds) |kind| {
+            //if (kind == .ips or kind == .all) {
+            switch (kind) {
+                .ips => {
+                    for (self.ips, self.cidrs) |_ip, _cidr| {
+                        const ip = _ip orelse continue;
+                        const cidr = _cidr orelse 24;
+                        nl.route.deleteIP(
+                            alloc,
+                            self.index,
+                            ip,
+                            cidr,
+                        ) catch |err| {
+                            switch (err) {
+                                error.ADDRNOTAVAIL => {},
+                                else => log.warn("-- Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
+                            }
+                            continue;
+                        };
+                        log.info("-- Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
                     }
-                    continue;
-                };
-                log.info("-- Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
+                },
+            //if (kind == .mac or kind == .all) {
+                .mac => {
+                    if (nl.route.setMAC(self.index, self.og_mac))
+                        log.info("-- Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
+                    else |_|
+                        log.warn("-- Could not restore Interface '{s}' to its orignal MAC '{s}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
+                },
+            //if (kind == .dns or kind == .all) resetDNS: {
+                .dns => resetDNS: {
+                    dns.updateDNS(.{ .if_index = self.index, .servers = &.{}, .set_route = false }) catch |err| {
+                        log.err("-- Could not reset DNS: {s}", .{ @errorName(err) });
+                        break :resetDNS;
+                    };
+                    log.info("-- Reset DNS.", .{});
+                },
             }
-        }
-        if (kind == .mac or kind == .all) {
-            if (nl.route.setMAC(self.index, self.og_mac))
-                log.info("-- Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
-            else |_|
-                log.warn("-- Could not restore Interface '{s}' to its orignal MAC '{s}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
         }
         //log.info("- Restored Interface '{s}'.", .{ self.name });
     }
@@ -204,7 +220,7 @@ pub const Context = struct {
         while (if_iter.next()) |if_entry| {
             const res_if = if_entry.value_ptr;
             if (res_if.usage == .unavailable) continue;
-            res_if.restore(alloc, .all);
+            res_if.restore(alloc, &.{ .ips, .mac, .dns });
         }
     }
 

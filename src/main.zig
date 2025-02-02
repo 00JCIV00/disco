@@ -417,7 +417,6 @@ pub fn main() !void {
                 });
             }
         }
-        //if (core_scan_confs.items.len > 0) config.scan_configs = try core_scan_confs.toOwnedSlice(alloc);
         if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
         for (core_conn_confs) |*conn_conf| {
             if (main_cmd.checkOpts(&.{ "gateway" }, .{})) conn_conf.add_gw = true;

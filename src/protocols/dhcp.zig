@@ -1,7 +1,6 @@
 //! DHCP Functions f/ DisCo.
 
 const std = @import("std");
-
 const crypto = std.crypto;
 const log = std.log.scoped(.dhcp);
 const mem = std.mem;
@@ -551,11 +550,11 @@ pub fn handleDHCP(
             \\
             \\-------------------------------------
             \\REQUEST:
-            \\ - Transaction ID:  0x{X:0>8}
-            \\ - Client MAC:      {s}
-            \\ - Server ID:       {s}
-            \\ - Requested IP:    {s}
-            \\ - Options Length:  {d}B
+            \\ - Transaction ID: 0x{X:0>8}
+            \\ - Client MAC:     {s}
+            \\ - Server ID:      {s}
+            \\ - Requested IP:   {s}
+            \\ - Options Length: {d}B
             \\
             , .{
                 transaction_id,

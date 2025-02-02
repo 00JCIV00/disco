@@ -21,6 +21,7 @@ const core = @import("../core.zig");
 const nl = @import("../netlink.zig");
 const proto = @import("../protocols.zig");
 const dhcp = proto.dhcp;
+const dns = proto.dns;
 const wpa = proto.wpa;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
@@ -392,7 +393,7 @@ pub fn handleConnection(
             defer if_ctx.interfaces.mutex.unlock();
             if (if_ctx.interfaces.getEntry(if_index)) |conn_if_entry| {
                 const set_conn_if = conn_if_entry.value_ptr;
-                set_conn_if.restore(alloc, .ips);
+                set_conn_if.restore(alloc, &.{ .ips, .dns });
                 set_conn_if.usage = .available;
                 log.debug("- Interface '({d}) {s}' made Available.", .{ conn_if_entry.key_ptr.*, conn_if_entry.value_ptr.name });
             }
@@ -686,9 +687,26 @@ pub fn handleConnection(
                         set_if.index,
                         set_if.name,
                     });
+                    var dns_ips_buf: [4][4]u8 = undefined;
+                    const dns_ips: []const [4]u8 = dnsIPs: {
+                        for (dhcp_info.dns_ips, 0..) |dns_ip, idx|
+                            dns_ips_buf[idx] = dns_ip orelse break :dnsIPs dns_ips_buf[0..idx];
+                        break :dnsIPs &.{};
+                    };
+                    if (dns_ips.len > 0) setDNS: {
+                        dns.updateDNS(.{ .if_index = if_index, .servers = dns_ips }) catch |err| {
+                            log.err("Could not set DNS: {s}", .{ @errorName(err) });
+                            break :setDNS;
+                        };
+                        log.info("Added DNS '{s}' to ({d}) {s}", .{ 
+                            IPF{ .bytes = dns_ips[0][0..] },
+                            set_if.index,
+                            set_if.name,
+                        });
+                    }
                 }
             }
-            log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
+            //log.debug("{s}: {s}", .{ conn_if.name, set_conn.state });
             ctx.connections.mutex.unlock();
             break;
         }

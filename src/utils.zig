@@ -15,3 +15,29 @@ pub fn toStruct(E: type) enums.EnumFieldStruct(E, @typeInfo(E).Enum.tag_type, nu
         @field(_struct, field.name) = @intFromEnum(@field(E, field.name));
     return _struct;
 }
+
+/// Format the provided `bytes` as readable Hexadecimal.
+pub const HexFormatter = struct {
+    bytes: []const u8,
+
+    pub fn format(
+        self: @This(),
+        _: []const u8,
+        _: fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        var fmt_idx: u16 = 0;
+        for (self.bytes[0..], 0..) |byte, idx| {
+            if (idx % 16 == 0) {
+                _ = try writer.print("\n", .{});
+                fmt_idx += 1;
+            }
+            if (idx % 8 == 0) {
+                _ = try writer.print("| ", .{});
+                fmt_idx += 2;
+            }
+            _ = try writer.print("{X:0>2} ", .{ byte });
+            fmt_idx += 3;
+        }
+    }
+};

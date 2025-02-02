@@ -185,6 +185,7 @@ pub const Core = struct {
             log.info("- Initialized File Serve Data.", .{});
         }
         log.info("Initialized DisCo Core.", .{});
+        //time.sleep(5 * time.ns_per_s);
         return self;
     }
 
@@ -298,6 +299,7 @@ pub const Core = struct {
         }
         self._alloc.free(self.og_hostname);
         if (self.forced_close) {
+            self.if_ctx.restore(self._alloc);
             log.warn("- Forced close. Leaving memory clean up to the OS.", .{});
             return;
         }

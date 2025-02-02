@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        //.sanitize_thread = if (optimize == .Debug) true else null,
     });
     exe.root_module.addImport("cova", cova_mod);
     exe.root_module.addImport("vaxis", vaxis_mod);
