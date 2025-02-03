@@ -38,13 +38,18 @@ pub const Core = struct {
         /// Conflicting Process Names
         conflict_proc_names: []const []const u8 = &.{
             "wpa_supplicant",
+            "nmcli",
+            "nmtui",
             "dhcpcd",
             "dhclient",
             "angryoxide",
+            "aircrack-ng",
+            "airodump-ng",
+            "aireplay-ng",
             "kismet",
-            "nmcli",
-            "nmtui",
         },
+        /// Require Conflict PIDs Acknowledgement.
+        require_conflicts_ack: bool = true,
         /// Change System Hostname
         change_sys_hostname: bool = false,
         /// Use Profile Mask
@@ -98,12 +103,26 @@ pub const Core = struct {
     /// Initialize the Core Context.
     pub fn init(alloc: mem.Allocator, config: Config) !@This() {
         log.info("Initializing DisCo Core...", .{});
-        try findConflictPIDs(
-            alloc, 
+        // Find Conflicting PIDs
+        const found_pids = try findConflictPIDs(
+            alloc,
             config.conflict_proc_names,
             null,
             "Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
         );
+        if (found_pids and config.require_conflicts_ack) {
+            const stdout = io.getStdOut().writer();
+            try stdout.print(
+                \\Conflict PIDs found! You may want to kill those processes.
+                \\Press ENTER to acknowledge and continue.
+                \\
+                , .{}
+            );
+            const stdin = io.getStdIn().reader();
+            const input = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
+            defer if (input) |in| alloc.free(in);
+        }
+        // Get Original Hostname
         var og_hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
         const og_hostname = try alloc.dupe(u8, try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX]));
         errdefer alloc.free(og_hostname);
@@ -247,6 +266,7 @@ pub const Core = struct {
                 self._alloc,
                 &self.active,
                 &self.interval,
+                &self.config,
                 &self.conn_ctx,
                 &self.if_ctx,
                 &self.network_ctx,
@@ -347,11 +367,13 @@ pub fn findConflictPIDs(
     proc_names: []const []const u8,
     writer: ?io.AnyWriter,
     comptime fmt: []const u8,
-) !void {
+) !bool {
+    var found_pids: bool = false;
     for (proc_names) |p_name| {
         const pids = try sys.getPIDs(alloc, &.{ p_name });
         defer alloc.free(pids);
         if (pids.len > 0) {
+            found_pids = true;
             if (writer) |w| {
                 try w.print(fmt, .{ p_name, pids.len, pids });
                 continue;
@@ -359,6 +381,7 @@ pub fn findConflictPIDs(
             log.warn(fmt, .{ p_name, pids.len, pids });
         }
     }
+    return found_pids;
 }
 
 /// Thread Safe ArrayList

@@ -6,7 +6,7 @@ const fs = std.fs;
 const heap = std.heap;
 const io = std.io;
 const json = std.json;
-const log = std.log;
+const log = std.log.scoped(.disco);
 const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
@@ -205,7 +205,7 @@ pub fn main() !void {
             );
             try stdout_bw.flush();
             const core_conf: core.Core.Config = .{};
-            try core.findConflictPIDs(
+            _ = try core.findConflictPIDs(
                 alloc, 
                 core_conf.conflict_proc_names,
                 stdout,

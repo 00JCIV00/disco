@@ -29,9 +29,9 @@ pub const DNSConfig = struct {
 
 /// Updates DNS Settings using DBus w/ `resolv.conf` as a failover.
 pub fn updateDNS(config: DNSConfig) !void {
-    log.debug("Updating DNS via DBus...", .{});
+    //log.debug("Updating DNS via DBus...", .{});
     updateDNSDBus(config) catch |err| {
-        log.debug("DBus Failed ({s}). Updating DNS via `resolv.conf`...", .{ @errorName(err) });
+        //log.debug("DBus Failed ({s}). Updating DNS via `resolv.conf`...", .{ @errorName(err) });
         //try updateDNSResConf(config);
         return err;
     };
@@ -48,7 +48,7 @@ pub fn updateDNSResConf(config: DNSConfig) !void {
     const res_conf_writer = res_conf_file.writer();
     try res_conf_writer.print("\n# DisCo Adds:", .{});
     for (config.servers) |server| {
-        log.debug("- Adding DNS: {s}", .{ IPF{ .bytes = server[0..] } });
+        //log.debug("- Adding DNS: {s}", .{ IPF{ .bytes = server[0..] } });
         try res_conf_writer.print(
             "\nnameserver '{s}'",
             IPF{ .bytes = server[0..] },

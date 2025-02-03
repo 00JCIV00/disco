@@ -40,7 +40,7 @@ pub const Context = struct {
 
 /// Create a Connection to System D-Bus.
 pub fn connectSysBus(uuid_buf: []u8) !Context {
-    log.debug("Creating DBus Socket.", .{});
+    //log.debug("Creating DBus Socket.", .{});
     // Default system bus address
     const bus_path: []const u8 = "/run/dbus/system_bus_socket";
     // Create Unix domain socket
@@ -54,13 +54,13 @@ pub fn connectSysBus(uuid_buf: []u8) !Context {
 
 /// Authenticate a D-Bus Connection.
 pub fn authenticateDBus(sock: net.Stream) !void {
-    log.debug("Authenticating DBus Socket...", .{});
+    //log.debug("Authenticating DBus Socket...", .{});
     // Send initial null byte
     try sock.writeAll(&[_]u8{ 0 });
     // Get UID string
     var uid_buf: [1024]u8 = .{ 0 } ** 1024;
     const uid_str = try fmt.bufPrint(uid_buf[0..], "{d}", .{ try sys.getUID() });
-    log.debug("UID: {s}", .{ uid_str });
+    //log.debug("UID: {s}", .{ uid_str });
     // Convert UID to hex
     var uid_hex_buf: [1024]u8 = .{ 0 } ** 1024;
     const uid_hex = try fmt.bufPrint(uid_hex_buf[0..], "{s}", .{ fmt.fmtSliceHexLower(uid_str) });
@@ -71,31 +71,31 @@ pub fn authenticateDBus(sock: net.Stream) !void {
         "AUTH EXTERNAL {s}\r\n",
         .{ uid_hex },
     );
-    log.debug("Auth Message:\n{s}", .{ auth_msg });
+    //log.debug("Auth Message:\n{s}", .{ auth_msg });
     // Send authentication message
     try sock.writeAll(auth_msg);
     // Read response
-    log.debug("Reading Auth Response", .{});
+    //log.debug("Reading Auth Response", .{});
     var response_buf: [4096]u8 = .{ 0 } ** 4096;
     const auth_read = try sock.read(response_buf[0..]);
-    log.debug("Auth Response:\n{s}", .{ response_buf[0..auth_read] });
+    //log.debug("Auth Response:\n{s}", .{ response_buf[0..auth_read] });
     if (!mem.startsWith(u8, response_buf[0..auth_read], "OK "))
         return error.AuthenticationFailed;
     // Negotiate Unix FD
-    log.debug("Negotiating Unix FD", .{});
+    //log.debug("Negotiating Unix FD", .{});
     try sock.writeAll("NEGOTIATE_UNIX_FD\r\n");
     const neg_read = try sock.read(response_buf[0..]);
-    log.debug("Negotiation Response:\n{s}", .{ response_buf[0..neg_read] });
+    //log.debug("Negotiation Response:\n{s}", .{ response_buf[0..neg_read] });
     if (!mem.startsWith(u8, response_buf[0..neg_read], "AGREE"))
         return error.NegotiationFailed;
     // Send BEGIN
     try sock.writeAll("BEGIN\r\n");
-    log.debug("Wrote DBus: 'BEGIN\\r\\n'", .{});
+    //log.debug("Wrote DBus: 'BEGIN\\r\\n'", .{});
 }
 
 /// Send a `hello` message to get a Unique Name (UUID).
 pub fn helloDBus(sock: net.Stream, uuid_buf: []u8) ![]const u8 {
-    log.debug("Getting Unique Name f/ DBus Socket...", .{});
+    //log.debug("Getting Unique Name f/ DBus Socket...", .{});
     // Set up Headers
     const header_fields = [_]HeaderField{
         .{
@@ -141,7 +141,7 @@ pub fn helloDBus(sock: net.Stream, uuid_buf: []u8) ![]const u8 {
     @memcpy(uuid_buf[0..uuid_len], response_buf[start..end]);
     const uuid = uuid_buf[0..uuid_len];
     //log.debug("Unique Name: ({d}-{d})\n{s}\n---\n{s}", .{ start, end, uuid, HexF{ .bytes = uuid } });
-    log.debug("Unique Name:\n{s}\n", .{ uuid });
+    //log.debug("Unique Name:\n{s}\n", .{ uuid });
     return uuid;
 }
 
@@ -239,20 +239,20 @@ pub fn sendMsg(
         .little,
     );
     // Send Message
-    log.debug(
-        \\Sending Message: (Total: {d}B | Headers: {d}B | Body: {d}B)
-        \\{s}
-        \\---
-        \\{s}
-        \\
-        , .{ 
-            offset,
-            array_size,
-            data.len,
-            msg_buf[0..offset],
-            HexF{ .bytes = msg_buf[0..offset] } 
-        },
-    );
+    //log.debug(
+    //    \\Sending Message: (Total: {d}B | Headers: {d}B | Body: {d}B)
+    //    \\{s}
+    //    \\---
+    //    \\{s}
+    //    \\
+    //    , .{ 
+    //        offset,
+    //        array_size,
+    //        data.len,
+    //        msg_buf[0..offset],
+    //        HexF{ .bytes = msg_buf[0..offset] } 
+    //    },
+    //);
     try sock.writeAll(msg_buf[0..offset]);
 }
 

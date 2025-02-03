@@ -524,6 +524,7 @@ pub fn handleDHCP(
         // -----------------------------
         // - Add Host Name if configured
         if (config.hostname) |hostname| {
+            log.debug("Using Hostname '{s}'.", .{ hostname });
             start = end;
             end += 2;
             const hostname_hdr: l5.BOOTP.OptionHeader = .{

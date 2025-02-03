@@ -155,6 +155,7 @@ pub fn trackConnections(
     alloc: mem.Allocator,
     active: *const atomic.Value(bool),
     interval: *const usize,
+    core_config: *const core.Core.Config,
     ctx: *Context,
     if_ctx: *const core.interfaces.Context,
     nw_ctx: *const core.networks.Context,
@@ -281,6 +282,7 @@ pub fn trackConnections(
                             alloc,
                             active,
                             interval,
+                            core_config,
                             ctx,
                             conn_id,
                             nw_ctx.scan_results,
@@ -306,6 +308,7 @@ pub fn handleConnectionNoErr(
     alloc: mem.Allocator,
     active: *const atomic.Value(bool),
     interval: *const usize,
+    core_config: *const core.Core.Config,
     ctx: *Context,
     conn_id: [10]u8,
     nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
@@ -316,6 +319,7 @@ pub fn handleConnectionNoErr(
         alloc,
         active,
         interval,
+        core_config,
         ctx,
         conn_id,
         nw_scan_results,
@@ -334,6 +338,7 @@ pub fn handleConnection(
     alloc: mem.Allocator,
     active: *const atomic.Value(bool),
     interval: *const usize,
+    core_config: *const core.Core.Config,
     ctx: *Context,
     conn_id: [10]u8,
     nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
@@ -632,11 +637,14 @@ pub fn handleConnection(
                 //return last_err;
                 break :tryDHCP;
             }
+            var dhcp_hn_conf = dhcp_conf;
+            if (core_config.use_mask)
+                dhcp_hn_conf.hostname = core_config.profile_mask.hostname;
             const dhcp_info = proto.dhcp.handleDHCP(
                 conn_if.name,
                 conn_if.index,
                 conn_if.mac,
-                dhcp_conf,
+                dhcp_hn_conf,
             ) catch |err| {
                 err_count += 1;
                 last_err = err;
@@ -717,7 +725,7 @@ pub fn handleConnection(
         return error.ConnectionNotFound;
     }).value_ptr;
     set_conn.state = .conn;
-    log.info("{s}: {s}", .{ conn_if.name, set_conn.state });
+    log.info("{s}: {s} '{s}'", .{ conn_if.name, set_conn.state, conn.ssid });
     ctx.connections.mutex.unlock();
     var no_carrier_count: usize = 0;
     while (
