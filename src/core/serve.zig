@@ -166,11 +166,6 @@ pub fn serveDir(
         tftp_thread_spawned = true;
     }
     ctx.thread_pool.waitAndWork(ctx.wait_group);
-    //const http_thread = try std.Thread.spawn(.{}, listenHTTP, .{ tcp_sock, serve_path, active });
-    //http_thread.detach();
-    //const tftp_thread = try std.Thread.spawn(.{}, listenTFTP, .{ udp_sock, serve_path, active });
-    //tftp_thread_spawned = true;
-    //tftp_thread.detach();
 }
 
 /// Listen f/ HTTP
@@ -250,7 +245,9 @@ pub fn handleHTTP(http_sock: posix.socket_t, serve_dir: []const u8, active: *con
     const full_path = try fmt.bufPrint(path_buf[0..], "{s}/{s}", .{ serve_dir, req_path });
     log.info("HTTP: Serving File '{s}'...", .{ full_path });
     // Try to read file
-    const file = fs.openFileAbsolute(full_path, .{}) catch {
+    const cwd = fs.cwd();
+    const file = cwd.openFile(full_path, .{}) catch {
+    //const file = fs.openFileAbsolute(full_path, .{}) catch {
         log.warn("HTTP: Could not find File '{s}'!", .{ full_path });
         // File not found response
         const not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found";
@@ -309,7 +306,9 @@ pub fn handleTFTP(
             const full_path = try fmt.bufPrint(path_buf[0..], "{s}/{s}", .{ serve_dir, filename });
             log.info("TFTP: Serving File '{s}'...", .{ full_path });
             // Try to open file
-            const file = fs.openFileAbsolute(full_path, .{}) catch {
+            const cwd = fs.cwd();
+            const file = cwd.openFile(full_path, .{}) catch {
+            //const file = fs.openFileAbsolute(full_path, .{}) catch {
                 log.warn("TFTP: Could not find File '{s}'!", .{ full_path });
                 // Send error packet
                 const error_packet = [_]u8{
