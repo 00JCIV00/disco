@@ -140,7 +140,7 @@ pub fn helloDBus(sock: net.Stream, uuid_buf: []u8) ![]const u8 {
     const uuid_len = end - start;
     @memcpy(uuid_buf[0..uuid_len], response_buf[start..end]);
     const uuid = uuid_buf[0..uuid_len];
-    //log.debug("Unique Name: ({d}-{d})\n{s}\n---\n{s}", .{ start, end, uuid, HexF{ .bytes = uuid } });
+    //log.debug("Unique Name: ({d}-{d} | {d}B)\n{s}\n---\n{s}", .{ start, end, uuid_len, uuid, HexF{ .bytes = uuid } });
     //log.debug("Unique Name:\n{s}\n", .{ uuid });
     return uuid;
 }

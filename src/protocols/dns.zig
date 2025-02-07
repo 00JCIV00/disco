@@ -87,7 +87,7 @@ pub fn updateDNSDBus(config: DNSConfig) !void {
         .{
             .code = 6,
             .variant_type = "s",
-            .value = ":1.0",
+            .value = "org.freedesktop.resolve1",
         },
         // SENDER
         .{
@@ -194,7 +194,7 @@ pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
         .{
             .code = 6,
             .variant_type = "s",
-            .value = ":1.0",
+            .value = "org.freedesktop.resolve1",
         },
         // SENDER
         .{
@@ -210,8 +210,8 @@ pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
         },
     };
     defer dbus_ctx.sock.close();
-    // Construct the DBus message to update DNS settings
-    //log.debug("Building DBus DNS Message.", .{});
+    // Construct the DBus Route message to update DNS settings
+    //log.debug("Building DBus DNS Route Message.", .{});
     var dns_msg: [8]u8 = .{ 0 } ** 8;
     mem.writeInt(
         i32,
@@ -225,7 +225,7 @@ pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
         if (set) 1 else 0,
         .little
     );
-    //log.debug("DBus DNS Message:\n{s}\n---\n{s}", .{ dns_msg, HexF{ .bytes = dns_msg } });
+    //log.debug("DBus DNS Route Message:\n{s}\n---\n{s}", .{ dns_msg, HexF{ .bytes = dns_msg } });
     // Send the message
     //log.debug("Sending DBus DNS Message.", .{});
     var msg_buf: [4096]u8 = .{ 0 } ** 4096;
@@ -243,5 +243,5 @@ pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
     const read = try dbus_ctx.sock.read(response_buf[0..]);
     if (read == 0) return error.MessageError;
     //log.debug("Verifying DBus DNS Response.", .{});
-    try dbus.verifyResponse(response_buf[0..read]);
+    //try dbus.verifyResponse(response_buf[0..read]);
 }
