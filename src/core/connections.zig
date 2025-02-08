@@ -198,6 +198,12 @@ pub fn trackConnections(
             defer nw_iter.unlock();
             checkNW: while (nw_iter.next()) |nw_entry| {
                 const nw = nw_entry.value_ptr;
+                const now = zeit.instant(.{}) catch {
+                    log.warn("Could not get current time!", .{});
+                    continue;
+                };
+                const diff_seen = @divFloor((now.timestamp -| nw.last_seen.timestamp), @as(i128, time.ns_per_ms));
+                if (diff_seen >= 10_000) continue;
                 if (mem.indexOf(u8, nw.ssid, conf.ssid) == null) continue;
                 {
                     var conns_iter = ctx.connections.iterator();
