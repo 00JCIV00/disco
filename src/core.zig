@@ -35,8 +35,8 @@ pub const Core = struct {
             channels: ?[]const usize = null,
         };
 
-        /// Conflicting Process Names
-        conflict_proc_names: []const []const u8 = &.{
+        /// Conflicting Processes
+        conflict_processes: []const []const u8 = &.{
             "wpa_supplicant",
             "nmcli",
             "nmtui",
@@ -106,7 +106,7 @@ pub const Core = struct {
         // Find Conflicting PIDs
         const found_pids = try findConflictPIDs(
             alloc,
-            config.conflict_proc_names,
+            config.conflict_processes,
             null,
             "Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
         );
@@ -151,6 +151,7 @@ pub const Core = struct {
             .serve_ctx = serve_ctx,
             .og_hostname = og_hostname,
         };
+        // Profile Mask
         if (config.use_mask and config.change_sys_hostname) {
             try sys.setHostName(config.profile_mask.hostname);
             log.info("- Set Hostname to '{s}'.", .{ config.profile_mask.hostname });
@@ -315,11 +316,10 @@ pub const Core = struct {
                 log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname })
             else |err|
                 log.warn("- Couldn't reset the Hostname: {s}", .{ @errorName(err) });
-            self.if_ctx.restore(self._alloc);
         }
+        self.if_ctx.restore(self._alloc);
         self._alloc.free(self.og_hostname);
         if (self.forced_close) {
-            self.if_ctx.restore(self._alloc);
             log.warn("- Forced close. Leaving memory clean up to the OS.", .{});
             return;
         }

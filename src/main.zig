@@ -72,7 +72,7 @@ pub fn main() !void {
     const stdout = stdout_bw.writer().any();
     try stdout_file.print("{s}\n", .{ art.logo });
 
-    var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true, .stack_trace_frames = 25 }){};
+    var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }){};
     defer {
         if (@import("builtin").mode == .Debug and gpa.detectLeaks()) 
             log.err("Memory leak detected!", .{})
@@ -207,7 +207,7 @@ pub fn main() !void {
             const core_conf: core.Core.Config = .{};
             _ = try core.findConflictPIDs(
                 alloc, 
-                core_conf.conflict_proc_names,
+                core_conf.conflict_processes,
                 stdout,
                 "- '{s}' process running {d} time(s) (PID(s): {d}).\n"
             );

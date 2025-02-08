@@ -28,7 +28,6 @@ pub fn build(b: *std.Build) void {
     };
     defer b.allocator.free(exe_name);
     const exe = b.addExecutable(.{
-        //.name = "disco",
         .name = exe_name,
         .root_source_file = b.path("src/main.zig"),
         .target = target,

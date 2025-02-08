@@ -156,7 +156,8 @@ pub const Interface = struct {
                     }
                 },
             //if (kind == .mac or kind == .all) {
-                .mac => {
+                .mac => resetMAC: {
+                    if (mem.eql(u8, self.og_mac[0..], self.mac[0..])) break :resetMAC;
                     if (nl.route.setMAC(self.index, self.og_mac))
                         log.info("-- Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
                     else |_|

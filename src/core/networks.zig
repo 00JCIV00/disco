@@ -365,10 +365,8 @@ fn trackNetworksIF(
     defer alloc.free(scan_results);
     var result_idx: usize = 0;
     errdefer {
-        for (scan_results, 0..) |result, idx| {
-            if (idx < result_idx) continue;
+        for (scan_results[result_idx..]) |result|
             nl.parse.freeBytes(alloc, nl._80211.ScanResults, result);
-        }
     }
     if (scan_results.len == 0) return;
     log.debug("Parsing {d} Scan Results...", .{ scan_results.len });

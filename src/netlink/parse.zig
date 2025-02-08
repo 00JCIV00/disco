@@ -94,9 +94,9 @@ pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
 
 /// Set an `instance` of a Pointer Type (`T`) from the given `bytes`.
 pub fn setPtrFromBytes(
-    alloc: mem.Allocator, 
-    T: type, 
-    instance: *T, 
+    alloc: mem.Allocator,
+    T: type,
+    instance: *T,
     bytes: []const u8
 ) !void {
     const raw_info = @typeInfo(T);
@@ -256,8 +256,12 @@ pub fn baseFromBytes(
         //log.debug(" - Start: {d}B, End: {d}B", .{ start, end + diff });
         start = end;
         end += diff;
+        var parsed_fields: std.StringHashMapUnmanaged(void) = .{};
+        defer parsed_fields.deinit(alloc);
         inline for (meta.fields(T)) |field| cont: {
             if (!mem.eql(u8, field.name, @tagName(tag)) or diff == 0) break :cont;
+            if (parsed_fields.get(field.name)) |_| break :cont;
+            try parsed_fields.put(alloc, field.name, {});
             const field_info = @typeInfo(field.type);
             defer if (field_info != .Optional) {
                 field_count += 1; 
