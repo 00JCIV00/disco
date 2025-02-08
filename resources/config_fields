@@ -1,8 +1,12 @@
 Config:
-* `avail_if_names`:  The list of Available WiFi Interfaces for DisCo to use.
-* `scan_configs`:    A list of Scan Configurations. (See Scan)
-* `connect_configs`: A list of Connection Configurations. (See Connect)
-* `profile_mask`:    A Profile Mask to hide your system details from fingerprinting. (See DHCP)
+* `avail_if_names`:        The list of Available WiFi Interfaces for DisCo to use.
+* `scan_configs`:          A list of Scan Configurations. (See Scan)
+* `connect_configs`:       A list of Connection Configurations. (See Connect)
+* `profile_mask`:          A Profile Mask to hide your system details from fingerprinting. (See DHCP)
+* `serve_config`:          File Server Config.     
+* `change_sys_hostname`:   Change System Hostname.
+* `require_conflicts_ack`: Require Conflict PIDs Acknowledgement.
+* `conflict_processes`:    A list of Processes that could Conflict w/ DisCo.
 
 Scan:
 * `if_name`: The Interface this Scan Config applies to.
@@ -15,6 +19,7 @@ Connect:
 * `security`:   Security Protocol of the Network (open, wep, wpa1, wpa2, wpa3t, wpa3).
 * `if_names`:   List of Interface Names that are allowed to connect to this Network.
 * `dhcp`:       DHCP Lease Config in JSON format. The DHCP Server may ignore these settings:
+* `add_gw`:     Add the Connecting Interface as a Default Route (Gateway) w/ DNS. (Requires `dhcp`).
 
 DHCP:
 * `ip_addr`:        Request an IP Address.
@@ -27,3 +32,9 @@ Profile:
 * `hostname`: The Hostname that will be sent over the Network.
 * `ttl`:      The Time-to-Live (TTL) setting for outgoing packets. (Currently unused.)
 * `ua_str`:   The User Agent (UA) String used for outgoing HTTP packets. (Currently unused.)
+
+Serve:
+* `ip_port`:    The IP & Port to serve on.
+* `serve_path`: The Path to serve from the local filesystem.
+* `protocols`:  The Protocols to serve on. (http, tftp)
+
