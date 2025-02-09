@@ -209,7 +209,7 @@ pub fn main() !void {
             const core_conf: core.Core.Config = .{};
             _ = try core.findConflictPIDs(
                 alloc, 
-                core_conf.conflict_processes,
+                core_conf.profile.conflict_processes,
                 stdout,
                 "- '{s}' process running {d} time(s) (PID(s): {d}).\n"
             );
@@ -224,7 +224,10 @@ pub fn main() !void {
         if (list_opts.get("config") != null or config_val_set) {
             try stdout.print(
                 \\These fields can be provided in a JSON file to configure DisCo using `-c` or `--config`.
-                \\You can also create the file `/root/.configs/disco/config.json` to provide a persistent config.
+                \\You can also create the following files to provide a persistent config:
+                \\ * /etc/disco/config.json
+                \\ * /root/.configs/disco/config.json
+                \\Config Fields:
                 \\{s}
                 , .{ config_fields }
             );
@@ -294,20 +297,16 @@ pub fn main() !void {
             mask.hostname = try posix.gethostname(hn_buf[0..]);
             break :getMask mask;
         }
-        if (!main_cmd.checkArgGroup(.Option, "MASK")) {
-            if (main_cmd.checkOpts(&.{ "config" }, .{})) break :getMask null;
-            //if (main_opts.get("config")) |_| break :getMask null;
-            const mask_idx = crypto.random.int(u16) % masks_map.keys().len;
-            for (masks_map.keys(), 0..) |key, idx| {
-                if (idx != mask_idx) continue;
-                const mask = masks_map.get(key).?;
-                log.info("No Profile Mask provided. Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
-                    try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
-                    mask,
-                });
-                break :getMask mask;
-            }
-        }
+        //if (!main_cmd.checkArgGroup(.Option, "MASK")) {
+        //    if (main_cmd.checkOpts(&.{ "config" }, .{})) break :getMask null;
+        //    const mask = core.profiles.Mask.getRandom();
+        //    log.info("No Profile Mask provided. Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
+        //        try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
+        //        mask,
+        //    });
+        //    break :getMask mask;
+        //}
+        if (!main_cmd.checkArgGroup(.Option, "MASK")) break :getMask null;
         if (main_opts.get("mask")) |mask_opt| {
             const mask = try mask_opt.val.getAs(core.profiles.Mask);
             log.info("Using the provided '{s}' Profile Mask:\n{s}", .{
@@ -428,16 +427,16 @@ pub fn main() !void {
             }
         }
         if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
+        if (profile_mask) |pro_mask| config.profile.mask = pro_mask;
         for (core_conn_confs) |*conn_conf| {
             if (main_cmd.checkOpts(&.{ "gateway" }, .{})) conn_conf.add_gw = true;
-            if (config.use_mask) setHostname: {
+            if (config.profile.mask) |pro_mask| setHostname: {
                 var dhcp_conf = &(conn_conf.dhcp orelse break :setHostname);
                 if (dhcp_conf.hostname) |_| break :setHostname;
-                dhcp_conf.hostname = config.profile_mask.hostname;
+                dhcp_conf.hostname = pro_mask.hostname;
             }
         }
         if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
-        if (profile_mask) |pro_mask| config.profile_mask = pro_mask;
         break :config config;
     };
     _core_ctx = try core.Core.init(alloc, core_config);

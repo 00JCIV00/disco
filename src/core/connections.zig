@@ -129,7 +129,8 @@ pub const Context = struct {
     configs: *core.ThreadHashMap([]const u8, Config),
     /// Active & Previous Connections.
     /// ID = 6B Network BSSID + 4B Interface Index
-    connections: *core.ThreadHashMap([10]u8, Connection),
+    //connections: *core.ThreadHashMap([10]u8, Connection),
+    connections: *core.ThreadHashMap([6]u8, Connection),
     thread_pool: *std.Thread.Pool,
     wait_group: *std.Thread.WaitGroup,
 
@@ -232,7 +233,7 @@ pub fn trackConnections(
                             conn.active.load(.acquire)
                         ) {
                             //log.debug("Found Connection SSID but ignoring: {s}, Active: {}", .{ nw.ssid, conn.active.load(.acquire) });
-                            time.sleep(interval.*);
+                            time.sleep(interval.* * 3);
                             continue :checkNW;
                         }
                     }
@@ -261,7 +262,8 @@ pub fn trackConnections(
                     log.debug("Using Interface: ({d}) {s}", .{ conn_if.index, conn_if.name });
                     var set_if = (if_ctx.interfaces.map.getEntry(conn_if.index) orelse continue).value_ptr;
                     set_if.usage = .connecting;
-                    const conn_id = nw.bssid ++ mem.toBytes(conn_if.index);
+                    //const conn_id = nw.bssid ++ mem.toBytes(conn_if.index);
+                    const conn_id = nw.bssid;
                     const psk = switch (conf.security) {
                         .wpa2, .wpa3t => wpa.genKey(conf.security, nw.ssid, conf.passphrase) catch |err| {
                             log.err("Connection Update Error: {s}", .{ @errorName(err) });
@@ -332,7 +334,8 @@ pub fn handleConnectionNoErr(
     interval: *const usize,
     core_config: *const core.Core.Config,
     ctx: *Context,
-    conn_id: [10]u8,
+    //conn_id: [10]u8,
+    conn_id: [6]u8,
     nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
@@ -362,7 +365,8 @@ pub fn handleConnection(
     interval: *const usize,
     core_config: *const core.Core.Config,
     ctx: *Context,
-    conn_id: [10]u8,
+    //conn_id: [10]u8,
+    conn_id: [6]u8,
     nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
@@ -661,8 +665,8 @@ pub fn handleConnection(
                 break :tryDHCP;
             }
             var dhcp_hn_conf = dhcp_conf;
-            if (core_config.use_mask)
-                dhcp_hn_conf.hostname = core_config.profile_mask.hostname;
+            if (core_config.profile.mask) |pro_mask|
+                dhcp_hn_conf.hostname = pro_mask.hostname;
             const dhcp_info = proto.dhcp.handleDHCP(
                 conn_if.name,
                 conn_if.index,

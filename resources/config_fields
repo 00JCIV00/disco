@@ -1,13 +1,24 @@
 Config:
+* `profile`:               The Profile for handling the Host System. (See Profile)
 * `avail_if_names`:        The list of Available WiFi Interfaces for DisCo to use.
 * `scan_configs`:          A list of Scan Configurations. (See Scan)
 * `global_connect_config`: The Global Connection Configuration. (See Global Connect)
 * `connect_configs`:       A list of Connection Configurations. (See Connect)
-* `profile_mask`:          A Profile Mask to hide your system details from fingerprinting. (See DHCP)
 * `serve_config`:          File Server Config.     
-* `change_sys_hostname`:   Change System Hostname.
-* `require_conflicts_ack`: Require Conflict PIDs Acknowledgement.
 * `conflict_processes`:    A list of Processes that could Conflict w/ DisCo.
+
+Profile:
+* `mask`:                  A Mask to hide your system details from fingerprinting. (See Mask)
+* `use_random_mask`:       Use a Random Mask if one isn't provided. 
+* `change_sys_hostname`:   Change System Hostname.
+* `conflict_processes`:    The List of Conflicting Processes to search for as DisCo initializes.
+* `require_conflicts_ack`: Require Conflict PIDs Acknowledgement.
+
+Mask:
+* `oui`:      The OUI your WiFi Interfaces will be set to. Remaining bytes will be random.
+* `hostname`: The Hostname that will be sent over the Network.
+* `ttl`:      The Time-to-Live (TTL) setting for outgoing packets. (Currently unused.)
+* `ua_str`:   The User Agent (UA) String used for outgoing HTTP packets. (Currently unused.)
 
 Scan:
 * `if_name`: The Interface this Scan Config applies to.
@@ -32,12 +43,6 @@ DHCP:
 * `lease_time`:     Request a Lease Time in seconds.
 * `renewal_time`:   Request a Renewal Time in seconds.
 * `rebinding_time`: Request a Rebinding Time in seconds.
-
-Profile:
-* `oui`:      The OUI your WiFi Interfaces will be set to. Remaining bytes will be random.
-* `hostname`: The Hostname that will be sent over the Network.
-* `ttl`:      The Time-to-Live (TTL) setting for outgoing packets. (Currently unused.)
-* `ua_str`:   The User Agent (UA) String used for outgoing HTTP packets. (Currently unused.)
 
 Serve:
 * `ip_port`:    The IP & Port to serve on.

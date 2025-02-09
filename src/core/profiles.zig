@@ -15,7 +15,32 @@ const netdata = @import("../netdata.zig");
 const address = netdata.address;
 const MACF = address.MACFormatter;
 
-/// Masking Information to obfuscate the host system.
+/// Profile for handling the Host System.
+pub const Profile = struct {
+    /// The Mask used to obfuscate the Host System.
+    mask: ?Mask = null,
+    /// Use a Random Mask if one isn't provided.
+    use_random_mask: bool = true,
+    /// Change the System's Hostname instead of just attempting to spoof it on each network.
+    change_sys_hostname: bool = false,
+    /// Conflicting Processes
+    conflict_processes: []const []const u8 = &.{
+        "wpa_supplicant",
+        "nmcli",
+        "nmtui",
+        "dhcpcd",
+        "dhclient",
+        "angryoxide",
+        "aircrack-ng",
+        "airodump-ng",
+        "aireplay-ng",
+        "kismet",
+    },
+    /// Require Conflict PIDs Acknowledgement.
+    require_conflicts_ack: bool = true,
+};
+
+/// Masking Information to obfuscate the Host System.
 pub const Mask = struct {
     /// Device OUI.
     /// If this is left `null` a Link-Local Random MAC Address will be assigned.
@@ -49,7 +74,14 @@ pub const Mask = struct {
         );
     }
 
-    // TODO Fill out a few common Masks
+    /// Get a Random Profile Mask.
+    pub fn getRandom() @This() {
+        const mask_idx = crypto.random.int(u16) % map.keys().len;
+        const mask_key = map.keys()[mask_idx];
+        return map.get(mask_key).?;
+    }
+
+    /// DisCo's built-in Masks.
     pub const map = std.StaticStringMap(@This()).initComptime(&.{
         .{ "google pixel 6 pro", google_pixel_6_pro },
         .{ "intel windows 11 pc", intel_windows_11_pc },

@@ -487,7 +487,7 @@ pub fn updInterfaces(
         //}
         //else
         if (_last_if_entry == null)
-            log.info("New Interface Found: ({d}) {s}", .{ wifi_if.key_ptr.*, wifi_if.value_ptr.IFNAME });
+            log.info("New Interface Seen: ({d}) {s}", .{ wifi_if.key_ptr.*, wifi_if.value_ptr.IFNAME });
         var add_if: Interface = if (_last_if_entry) |li_entry| li_entry.value_ptr.* else undefined;
         add_if._init = false;
         add_if.nl_sock =
@@ -562,13 +562,14 @@ pub fn updInterfaces(
             break :addr;
         }
         if (add_if.usage != .unavailable) {
-            if (if_ctx.interfaces.map.get(add_if.index) == null) newIF: {
+            if (if_ctx.interfaces.map.get(add_if.index) == null) {
                 log.info("Available Interface Found:\n{s}", .{ add_if });
-                if (!config.use_mask) break :newIF;
-                var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
-                if (config.profile_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
-                try nl.route.setMAC(add_if.index, mask_mac);
-                log.info("- Changed Interface '{s}' MAC to: {s}", .{ add_if.name, MACF{ .bytes = mask_mac[0..] } });
+                if (config.profile.mask) |pro_mask| {
+                    var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
+                    if (pro_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
+                    try nl.route.setMAC(add_if.index, mask_mac);
+                    log.info("- Changed Interface '{s}' MAC to: {s}", .{ add_if.name, MACF{ .bytes = mask_mac[0..] } });
+                }
             }
             if (add_if.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN) {
                 try nl.route.setState(add_if.index, c(nl.route.IFF).UP);

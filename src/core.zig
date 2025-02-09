@@ -11,6 +11,7 @@ const posix = std.posix;
 const time = std.time;
 
 const netdata = @import("netdata.zig");
+const oui = netdata.oui;
 const nl = @import("netlink.zig");
 const sys = @import("sys.zig");
 const utils = @import("utils.zig");
@@ -35,25 +36,8 @@ pub const Core = struct {
             channels: ?[]const usize = null,
         };
 
-        /// Conflicting Processes
-        conflict_processes: []const []const u8 = &.{
-            "wpa_supplicant",
-            "nmcli",
-            "nmtui",
-            "dhcpcd",
-            "dhclient",
-            "angryoxide",
-            "aircrack-ng",
-            "airodump-ng",
-            "aireplay-ng",
-            "kismet",
-        },
-        /// Require Conflict PIDs Acknowledgement.
-        require_conflicts_ack: bool = true,
-        /// Change System Hostname
-        change_sys_hostname: bool = false,
-        /// Use Profile Mask
-        use_mask: bool = true,
+        /// Profile Settings
+        profile: profiles.Profile = .{},
         /// Available Interface Indexes
         avail_if_indexes: []const i32 = &.{},
         /// Available Interface Names
@@ -64,8 +48,6 @@ pub const Core = struct {
         global_connect_config: connections.GlobalConfig = .{},
         /// Connection Configs
         connect_configs: []const connections.Config = &.{},
-        /// Profile Mask
-        profile_mask: profiles.Mask = profiles.Mask.google_pixel_6_pro,
         /// Serve Config
         serve_config: ?serve.Config = null,
     };
@@ -108,11 +90,11 @@ pub const Core = struct {
         // Find Conflicting PIDs
         const found_pids = try findConflictPIDs(
             alloc,
-            config.conflict_processes,
+            config.profile.conflict_processes,
             null,
             "- Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
         );
-        if (found_pids and config.require_conflicts_ack) {
+        if (found_pids and config.profile.require_conflicts_ack) {
             const stdout = io.getStdOut().writer();
             try stdout.print(
                 \\
@@ -155,12 +137,24 @@ pub const Core = struct {
             .og_hostname = og_hostname,
         };
         // Profile Mask
-        if (config.use_mask and config.change_sys_hostname) {
-            try sys.setHostName(config.profile_mask.hostname);
-            log.info("- Set Hostname to '{s}'.", .{ config.profile_mask.hostname });
+        if (config.profile.mask == null) setMask: {
+            log.info("- No Profile Mask provided.", .{}); 
+            if (!config.profile.use_random_mask) break :setMask;
+            const mask = profiles.Mask.getRandom();
+            self.config.profile.mask = mask;
+            log.info("- Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
+                try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
+                mask,
+            });
         }
-        else if (config.use_mask) 
-            log.info("- The masked Network Hostname is '{s}'. The System Hostname is still '{s}'.", .{ config.profile_mask.hostname, og_hostname });
+        if (config.profile.mask) |pro_mask| {
+            if (config.profile.change_sys_hostname) {
+                try sys.setHostName(pro_mask.hostname);
+                log.info("- Set Hostname to '{s}'.", .{ pro_mask.hostname });
+            }
+            else
+                log.info("- The masked Network Hostname is '{s}'. The System Hostname is still '{s}'.", .{ pro_mask.hostname, og_hostname });
+        }
         // Context Setup
         try interfaces.updInterfaces(
             alloc,
@@ -318,7 +312,7 @@ pub const Core = struct {
     /// (TODO) Improve this if it will be needed outise of closing DisCo.
     pub fn cleanUp(self: *@This()) void {
         log.info("Cleaning up DisCo Core...", .{});
-        if (self.config.use_mask and self.config.change_sys_hostname) {
+        if (self.config.profile.mask != null and self.config.profile.change_sys_hostname) {
             if (sys.setHostName(self.og_hostname)) 
                 log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname })
             else |err|
