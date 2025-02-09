@@ -289,10 +289,14 @@ pub fn trackInterfaces(
     if_maps: *Context,
     config: *core.Core.Config,
 ) void {
+    var track_count: u8 = 0;
     var err_count: usize = 0;
+    const err_max: usize = 10;
     while (active.load(.acquire)) {
         defer {
-            if (err_count > 10) @panic("Interface Tracking encountered too many errors to continue!");
+            track_count +%= 1;
+            if (track_count % err_max == 0) err_count -|= 1;
+            if (err_count > err_max) @panic("Interface Tracking encountered too many errors to continue!");
             time.sleep(interval.*);
         }
         updInterfaces(

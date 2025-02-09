@@ -210,10 +210,14 @@ pub fn trackScans(
     config: *core.Core.Config,
 ) void {
     log.debug("Tracking WiFi Scans!", .{});
+    var track_count: u8 = 0;
     var err_count: usize = 0;
+    const err_max: usize = 10;
     while (active.load(.acquire)) {
         defer {
-            if (err_count > 10) @panic("WiFi Scan Tracking encountered too many errors to continue.");
+            track_count +%= 1;
+            if (track_count % err_max == 0) err_count -|= 1;
+            if (err_count > err_max) @panic("WiFi Scan Tracking encountered too many errors to continue.");
             time.sleep(interval.*);
         }
         for (config.scan_configs) |scan_conf| {
@@ -279,10 +283,14 @@ pub fn trackNetworks(
     network_ctx: *Context,
 ) void {
     log.debug("Tracking WiFi Networks!", .{});
+    var track_count: u8 = 0;
     var err_count: usize = 0;
+    const err_max: usize = 10;
     while (active.load(.acquire)) {
         defer {
-            if (err_count >= 10) @panic("WiFi Network Tracking encountered too many errors to continue");
+            track_count +%= 1;
+            if (track_count % err_max == 0) err_count -|= 1;
+            if (err_count >= err_max) @panic("WiFi Network Tracking encountered too many errors to continue");
             time.sleep(interval.*);
         }
         //log.debug("Getting Scan Results...", .{});
@@ -354,6 +362,7 @@ fn trackNetworksIF(
 ) !void {
     const scan_if = interfaces.get(if_index) orelse return error.InterfaceNotFound;
     if (scan_if.usage != .scanning) return;
+    log.info("Scanning w/ ({d}) {s}", .{ scan_if.index, scan_if.name });
     var set_if = (interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
     defer set_if.usage = .available;
     interfaces.mutex.unlock();

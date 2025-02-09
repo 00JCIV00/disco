@@ -178,6 +178,7 @@ pub fn trackConnections(
     nw_ctx: *const core.networks.Context,
 ) void {
     log.debug("Searching for {d} Connection(s)...", .{ ctx.configs.count() });
+    var track_count: u8 = 0;
     const err_max: usize = 10;
     var err_count: usize = 0;
     var job_count: u32 = 0;
@@ -194,6 +195,8 @@ pub fn trackConnections(
     };
     while (active.load(.acquire)) {
         defer {
+            track_count +%= 1;
+            if (track_count % err_max == 0) err_count -|= 1;
             if (err_count > err_max) @panic("Connection Tracking encountered too many errors to continue!");
             time.sleep(interval.*);
         }
@@ -233,7 +236,7 @@ pub fn trackConnections(
                             conn.active.load(.acquire)
                         ) {
                             //log.debug("Found Connection SSID but ignoring: {s}, Active: {}", .{ nw.ssid, conn.active.load(.acquire) });
-                            time.sleep(interval.* * 3);
+                            time.sleep(interval.*);
                             continue :checkNW;
                         }
                     }
@@ -566,7 +569,7 @@ pub fn handleConnection(
             }
         }
         time.sleep(op_delay);
-        // EAPoL - TODO Make this stateful f/ different Security Types
+        // EAPoL
         if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         switch (conn.security) {
             .wpa2, .wpa3t => {
@@ -693,7 +696,7 @@ pub fn handleConnection(
                     dhcp_info.assigned_ip,
                     dhcp_cidr,
                 ) catch {
-                    log.warn("Couldn't Add IP '{s}/{d}' to Interface '({d}) {s}'", .{
+                    log.warn("Couldn't add IP '{s}/{d}' to Interface '({d}) {s}'", .{
                         IPF{ .bytes = dhcp_info.assigned_ip[0..] },
                         dhcp_cidr,
                         set_if.index,
@@ -706,8 +709,8 @@ pub fn handleConnection(
                     set_if.index,
                     set_if.name,
                 });
-                if (conn.add_gw) {
-                    try nl.route.addRoute(
+                if (conn.add_gw) addGW: {
+                    nl.route.addRoute(
                         alloc,
                         set_if.index,
                         address.IPv4.default.addr,
@@ -715,8 +718,18 @@ pub fn handleConnection(
                             .cidr = address.IPv4.default.cidr,
                             .gateway = dhcp_info.router,
                         },
-                    );
-                    log.info("Added Gateway '{s}/{d}' to ({d}) {s}", .{
+                    ) catch |err| {
+                        log.warn("Couldn't add Default Gateway '{s}/{d}' to Interface '({d}) {s}':\nError: {s}", .{
+                            IPF{ .bytes = dhcp_info.router[0..] },
+                            dhcp_cidr,
+                            set_if.index,
+                            set_if.name,
+                            if (err == error.EXIST) "There's already a Default Gateway."
+                            else @errorName(err),
+                        });
+                        break :addGW;
+                    };
+                    log.info("Added Default Gateway '{s}/{d}' to ({d}) {s}", .{
                         IPF{ .bytes = dhcp_info.router[0..] },
                         dhcp_cidr,
                         set_if.index,
@@ -774,7 +787,7 @@ pub fn handleConnection(
     //    \\- Active: {}
     //    \\- Conn Active: {}
     //    \\
-    //    , .{ 
+    //    , .{
     //        no_carrier_count,
     //        active.load(.acquire),
     //        conn_active.load(.acquire),
