@@ -133,6 +133,7 @@ pub const Interface = struct {
     /// Restore the Interface.
     pub fn restore(self: *@This(), alloc: mem.Allocator, kinds: []const RestoreKind) void {
         log.info("- Restoring Interface '{s}'...", .{ self.name });
+        const has_ip: bool = if (self.ips[0]) |_| true else false;
         for (kinds) |kind| {
             //if (kind == .ips or kind == .all) {
             switch (kind) {
@@ -165,6 +166,7 @@ pub const Interface = struct {
                 },
             //if (kind == .dns or kind == .all) resetDNS: {
                 .dns => resetDNS: {
+                    if (!has_ip) break :resetDNS;
                     dns.updateDNS(.{ .if_index = self.index, .servers = &.{}, .set_route = false }) catch |err| {
                         log.err("-- Could not reset DNS: {s}", .{ @errorName(err) });
                         break :resetDNS;
@@ -291,7 +293,7 @@ pub fn trackInterfaces(
     while (active.load(.acquire)) {
         defer {
             if (err_count > 10) @panic("Interface Tracking encountered too many errors to continue!");
-            time.sleep(interval.* * 5);
+            time.sleep(interval.*);
         }
         updInterfaces(
             alloc,

@@ -60,6 +60,8 @@ pub const Core = struct {
         avail_if_names: []const []const u8 = &.{},
         /// Scan Configs
         scan_configs: []const ScanConfig = &.{},
+        /// Global Connect Config
+        global_connect_config: connections.GlobalConfig = .{},
         /// Connection Configs
         connect_configs: []const connections.Config = &.{},
         /// Profile Mask
@@ -108,12 +110,13 @@ pub const Core = struct {
             alloc,
             config.conflict_processes,
             null,
-            "Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
+            "- Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
         );
         if (found_pids and config.require_conflicts_ack) {
             const stdout = io.getStdOut().writer();
             try stdout.print(
-                \\Conflict PIDs found! You may want to kill those processes.
+                \\
+                \\Conflict PIDs found! You may want to kill those processes or ensure you've deconflicted WiFi Interfaces.
                 \\Press ENTER to acknowledge and continue.
                 \\
                 , .{}
@@ -192,6 +195,7 @@ pub const Core = struct {
             );
         }
         log.info("- Initialized Network Tracking Data.", .{});
+        self.conn_ctx.global_config.* = config.global_connect_config;
         for (config.connect_configs) |conn_conf| {
             try self.conn_ctx.configs.put(
                 alloc,
@@ -211,10 +215,10 @@ pub const Core = struct {
 
     /// Start the Core Context.
     pub fn start(self: *@This()) !void {
-        log.info("Starting DisCo Core...", .{});
         self.active.store(true, .release);
         if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
         log.info("Core Locked!", .{});
+        log.info("Starting DisCo Core...", .{});
         defer {
             log.info("Core Unlocked!", .{});
             self._mutex.unlock();
@@ -294,6 +298,7 @@ pub const Core = struct {
 
     /// Stop the Core Context, (TODO) archive session data, and Clean Up as needed.
     pub fn stop(self: *@This()) void {
+        var stop_timer = time.Timer.start() catch null;
         log.info("Stopping DisCo Core...", .{});
         self.active.store(false, .seq_cst);
         self._mutex.lock();
@@ -304,6 +309,8 @@ pub const Core = struct {
         // TODO Archive Session Data
         self.cleanUp();
         log.info("Stopped DisCo Core.", .{});
+        if (stop_timer) |*st|
+            log.debug("Stop Time: {d}ms", .{ @divTrunc(st.read(), time.ns_per_ms) });
     }
 
     /// Clean Up.

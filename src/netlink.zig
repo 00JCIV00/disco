@@ -179,7 +179,7 @@ pub fn request(
     /// Attributes (Before Length Calculation) Array
     attrs_raw: []const Attribute,
 ) !posix.socket_t {
-    const timeout = posix.timeval{ .tv_sec = 3, .tv_usec = 0 };
+    const timeout = posix.timeval{ .tv_sec = 0, .tv_usec = 10_000 };
     const nl_sock = try initSock(nl_sock_kind, timeout);
     errdefer posix.close(nl_sock);
     try reqOnSock(alloc, nl_sock, RequestT, nl_req_raw, attrs_raw);

@@ -79,14 +79,16 @@ pub fn main() !void {
         else if (gpa.deinit() == .leak)
             log.err("Memory leak detected!", .{});
     }
-    const alloc = gpa.allocator();
+    const gpa_alloc = gpa.allocator();
+    var sfba = heap.stackFallback(100_000, gpa_alloc);
+    const alloc = sfba.get();
 
     // Get NL80211 Control Info
     try nl._80211.initCtrlInfo(alloc);
     defer nl._80211.deinitCtrlInfo(alloc);
 
     // Parse Args
-    var main_cmd = try cli.setup_cmd.init(alloc, .{});
+    var main_cmd = try cli.setup_cmd.init(gpa_alloc, .{});
     defer main_cmd.deinit();
     var args_iter = try cova.ArgIteratorGeneric.init(alloc);
     defer args_iter.deinit();
@@ -345,57 +347,65 @@ pub fn main() !void {
     };
     // Initialize Core Context
     const core_config: core.Core.Config = config: {
-        var config: core.Core.Config = .{};
         const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
-        defaultConf: {
-            var user_buf: [100]u8 = .{ 0 } ** 100;
-            const user = sys.getUser(user_buf[0..]) orelse break :defaultConf;
-            log.debug("Current User: {s}", .{ user });
-            var path_buf: [fs.max_path_bytes]u8 = .{ 0 } ** fs.max_path_bytes;
-            const default_conf_path = confPath: {
-                if (mem.eql(u8, user, "root")) break :confPath "/root/.config/disco/config.json";
-                break :confPath fmt.bufPrint(path_buf[0..], "/home/{s}/.config/disco/config.json", .{ user }) catch break :defaultConf;
-            };
-            var cwd = fs.cwd();
-            const default_conf = cwd.openFile(default_conf_path, .{}) catch {
-                log.info("No Default Config found at: '{s}'", .{ default_conf_path });
-                break :defaultConf;
-            };
-            const config_bytes = default_conf.readToEndAlloc(cova_alloc, 1_000_000) catch break :defaultConf;
-            config = json.parseFromSliceLeaky(
-                core.Core.Config,
-                cova_alloc,
-                config_bytes,
-                .{
-                    .duplicate_field_behavior = .use_first,
-                    .allocate = .alloc_always,
-                    //.ignore_unknown_fields = true,
-                },
-            ) catch |err| {
-                log.warn("There was an error with the Default Config: {s}", .{ @errorName(err) });
-                break :defaultConf;
-            };
-            log.info("Imported the Default Config at '{s}'!", .{ default_conf_path });
-        }
-        if (main_opts.get("config")) |config_opt| userConf: {
-            const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
-            defer config_file.close();
-            const config_bytes = config_file.readToEndAlloc(cova_alloc, 1_000_000) catch break :userConf;
-            config = json.parseFromSliceLeaky(
-                core.Core.Config,
-                cova_alloc,
-                config_bytes,
-                .{
-                    .duplicate_field_behavior = .use_first,
-                    .allocate = .alloc_always,
-                    //.ignore_unknown_fields = true,
-                },
-            ) catch |err| {
-                log.warn("There was an error with the provided Config: {s}", .{ @errorName(err) });
-                break :userConf;
-            };
-            log.info("Imported provided Config!", .{});
-        }
+        var config: core.Core.Config = importConf: {
+            var config: core.Core.Config = .{};
+            if (main_opts.get("config")) |config_opt| userConf: {
+                const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
+                defer config_file.close();
+                const config_bytes = config_file.readToEndAlloc(cova_alloc, 1_000_000) catch break :userConf;
+                config = json.parseFromSliceLeaky(
+                    core.Core.Config,
+                    cova_alloc,
+                    config_bytes,
+                    .{
+                        .duplicate_field_behavior = .use_first,
+                        .allocate = .alloc_always,
+                        //.ignore_unknown_fields = true,
+                    },
+                ) catch |err| {
+                    log.warn("There was an error with the provided Config: {s}", .{ @errorName(err) });
+                    break :userConf;
+                };
+                log.info("Imported provided Config!", .{});
+                break :importConf config;
+            }
+            defaultConf: {
+                var user_buf: [100]u8 = .{ 0 } ** 100;
+                const user = sys.getUser(user_buf[0..]) orelse break :defaultConf;
+                log.debug("Current User: {s}", .{ user });
+                var path_buf: [fs.max_path_bytes]u8 = .{ 0 } ** fs.max_path_bytes;
+                const user_conf_path = confPath: {
+                    if (mem.eql(u8, user, "root")) break :confPath "/root/.config/disco/config.json";
+                    break :confPath fmt.bufPrint(path_buf[0..], "/home/{s}/.config/disco/config.json", .{ user }) catch break :defaultConf;
+                };
+                var cwd = fs.cwd();
+                const default_conf_paths: []const []const u8 = &.{ "/etc/disco/config.json", user_conf_path };
+                for (default_conf_paths) |default_conf_path| {
+                    const default_conf = cwd.openFile(default_conf_path, .{}) catch {
+                        log.info("No Default Config found at: '{s}'", .{ default_conf_path });
+                        continue;
+                    };
+                    const config_bytes = default_conf.readToEndAlloc(cova_alloc, 1_000_000) catch break :defaultConf;
+                    config = json.parseFromSliceLeaky(
+                        core.Core.Config,
+                        cova_alloc,
+                        config_bytes,
+                        .{
+                            .duplicate_field_behavior = .use_first,
+                            .allocate = .alloc_always,
+                            //.ignore_unknown_fields = true,
+                        },
+                    ) catch |err| {
+                        log.warn("There was an error with the Default Config: {s}", .{ @errorName(err) });
+                        break :defaultConf;
+                    };
+                    log.info("Imported the Default Config at '{s}'!", .{ default_conf_path });
+                    break :importConf config;
+                }
+            }
+                break :importConf config;
+        };
         if (if_names.len > 0) config.avail_if_names = if_names;
         for (config.avail_if_names) |if_name| {
             const if_index = nl.route.getIfIdx(if_name) catch {

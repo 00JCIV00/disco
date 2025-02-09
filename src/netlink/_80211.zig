@@ -2837,7 +2837,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
             .data = ssid_attrs_bytes.?,
         });
     }
-    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 1, .tv_usec = 0 });
+    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = 10_000 });
     try nl.reqOnSock(
         alloc,
         nl_sock,
@@ -2964,7 +2964,7 @@ pub fn stopSchedScan(alloc: mem.Allocator, if_index: i32) !void {
 /// Request Scan Results from Netlink.
 pub fn getScan(alloc: mem.Allocator, if_index: ?i32, nl_sock: ?posix.socket_t) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const req_sock = nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 3, .tv_usec = 0 });
+    const req_sock = nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = 10_000 });
     try nl.reqOnSock(
         alloc,
         req_sock,
@@ -3616,7 +3616,7 @@ pub fn connectWPA2(
     time.sleep(config.delay * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).UP);
     time.sleep(config.delay * time.ns_per_ms);
-    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 3, .tv_usec = 0 });
+    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = 10_000 });
     try takeOwnership(nl_sock, if_index);
     try registerFrames(
         alloc,

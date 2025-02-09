@@ -70,7 +70,19 @@ pub const State = enum {
     }
 };
 
-/// Config
+/// Config for All Connections.
+pub const GlobalConfig = struct {
+    /// The Max Age, in milliseconds, of a Network that's allowed for Connection attempts.
+    network_max_age: usize = 10_000,
+    /// DHCP Config.
+    dhcp: ?proto.dhcp.LeaseConfig = null,
+    /// Add a Default Route Gateway & DNS.
+    add_gw: bool = false,
+    /// The Delay, in milliseconds, between specifc socket operations. (Generally can be left default)
+    op_delay: usize = 30,
+};
+
+/// Config for a Single Connection.
 pub const Config = struct {
     /// Interfaces that are allowed to Connect to the corresponding Network.
     /// If this is left empty, any Interface may connect to the Network.
@@ -79,8 +91,10 @@ pub const Config = struct {
     passphrase: []const u8 = "",
     security: nl._80211.SecurityType = .wpa2,
     auth: nl._80211.AuthType = .psk,
+    /// DHCP Config.
     dhcp: ?proto.dhcp.LeaseConfig = null,
-    add_gw: bool = false,
+    /// Add a Default Route Gateway & DNS.
+    add_gw: ?bool = null,
 };
 
 /// Connection Info
@@ -108,6 +122,8 @@ pub const Connection = struct {
 
 /// Connection Context
 pub const Context = struct {
+    /// Global Config for All Connections. (Used as a fallback for overlapping fields)
+    global_config: *GlobalConfig,
     /// Configs for Networks to Connect to.
     /// ID = Network SSID
     configs: *core.ThreadHashMap([]const u8, Config),
@@ -178,7 +194,7 @@ pub fn trackConnections(
     while (active.load(.acquire)) {
         defer {
             if (err_count > err_max) @panic("Connection Tracking encountered too many errors to continue!");
-            time.sleep(interval.* * 3);
+            time.sleep(interval.*);
         }
         checkIFs: {
             if_iter = if_ctx.interfaces.iterator();
@@ -203,7 +219,7 @@ pub fn trackConnections(
                     continue;
                 };
                 const diff_seen = @divFloor((now.timestamp -| nw.last_seen.timestamp), @as(i128, time.ns_per_ms));
-                if (diff_seen >= 10_000) continue;
+                if (diff_seen >= ctx.global_config.network_max_age) continue;
                 if (mem.indexOf(u8, nw.ssid, conf.ssid) == null) continue;
                 {
                     var conns_iter = ctx.connections.iterator();
@@ -216,7 +232,7 @@ pub fn trackConnections(
                             conn.active.load(.acquire)
                         ) {
                             //log.debug("Found Connection SSID but ignoring: {s}, Active: {}", .{ nw.ssid, conn.active.load(.acquire) });
-                            time.sleep(interval.* * 3);
+                            time.sleep(interval.*);
                             continue :checkNW;
                         }
                     }
@@ -273,8 +289,8 @@ pub fn trackConnections(
                             .psk = psk,
                             .security = conf.security,
                             .auth = conf.auth,
-                            .dhcp_conf = conf.dhcp,
-                            .add_gw = conf.add_gw,
+                            .dhcp_conf = conf.dhcp orelse ctx.global_config.dhcp,
+                            .add_gw = conf.add_gw orelse ctx.global_config.add_gw,
                         },
                     ) catch |err| {
                         log.err("Connection Update Error: {s}", .{ @errorName(err) });
@@ -351,6 +367,7 @@ pub fn handleConnection(
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
 ) !void {
+    const op_delay: usize = ctx.global_config.op_delay * time.ns_per_ms;
     const err_max = 3;
     var err_count: usize = 0;
     var last_err: anyerror = error.Unknown;
@@ -444,7 +461,7 @@ pub fn handleConnection(
         &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
         &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
     );
-    time.sleep(interval.*);
+    time.sleep(op_delay);
     // This block locks Scan Tracking.
     {
         // Scan Results
@@ -479,7 +496,7 @@ pub fn handleConnection(
                     ) catch |err| {
                         err_count += 1;
                         last_err = err;
-                        time.sleep(interval.* * err_count * err_count);
+                        time.sleep(op_delay * err_count * err_count);
                         continue;
                     };
                     break;
@@ -490,7 +507,7 @@ pub fn handleConnection(
                 },
             }
         }
-        time.sleep(interval.*);
+        time.sleep(op_delay);
         // Associacate
         if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         log.debug("Connection {X}: Associating", .{ conn_id });
@@ -544,7 +561,7 @@ pub fn handleConnection(
                 },
             }
         }
-        time.sleep(interval.*);
+        time.sleep(op_delay);
         // EAPoL - TODO Make this stateful f/ different Security Types
         if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         switch (conn.security) {
@@ -582,7 +599,7 @@ pub fn handleConnection(
                     break :keys proto.wpa.handle4WHS(if_index, conn.psk, rsn_bytes) catch |err| {
                         err_count += 1;
                         last_err = err;
-                        time.sleep(interval.* * err_count * err_count);
+                        time.sleep(op_delay * err_count * err_count);
                         continue;
                     };
                 }
@@ -654,7 +671,7 @@ pub fn handleConnection(
             ) catch |err| {
                 err_count += 1;
                 last_err = err;
-                time.sleep(interval.*);
+                time.sleep(op_delay);
                 continue;
             };
             set_conn = (ctx.connections.getEntry(conn_id) orelse {
@@ -759,5 +776,5 @@ pub fn handleConnection(
     //        conn_active.load(.acquire),
     //    }
     //);
-    time.sleep(3 * time.ns_per_s);
+    //time.sleep(3 * time.ns_per_s);
 }

@@ -1,6 +1,7 @@
 Config:
 * `avail_if_names`:        The list of Available WiFi Interfaces for DisCo to use.
 * `scan_configs`:          A list of Scan Configurations. (See Scan)
+* `global_connect_config`: The Global Connection Configuration. (See Global Connect)
 * `connect_configs`:       A list of Connection Configurations. (See Connect)
 * `profile_mask`:          A Profile Mask to hide your system details from fingerprinting. (See DHCP)
 * `serve_config`:          File Server Config.     
@@ -20,6 +21,11 @@ Connect:
 * `if_names`:   List of Interface Names that are allowed to connect to this Network.
 * `dhcp`:       DHCP Lease Config in JSON format. The DHCP Server may ignore these settings:
 * `add_gw`:     Add the Connecting Interface as a Default Route (Gateway) w/ DNS. (Requires `dhcp`).
+
+Global Connect:
+* `network_max_age`: The Max Age, in milliseconds, of a Network that's allowed for Connection attempts.
+* `dhcp`:            DHCP Lease Config in JSON format. The DHCP Server may ignore these settings:
+* `add_gw`:          Add the Connecting Interface as a Default Route (Gateway) w/ DNS. (Requires `dhcp`).
 
 DHCP:
 * `ip_addr`:        Request an IP Address.
