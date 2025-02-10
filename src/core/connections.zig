@@ -78,8 +78,9 @@ pub const GlobalConfig = struct {
     dhcp: ?proto.dhcp.LeaseConfig = null,
     /// Add a Default Route Gateway & DNS.
     add_gw: bool = false,
-    /// The Delay, in milliseconds, between specifc socket operations. (Generally can be left default)
-    op_delay: usize = 30,
+    /// The Delay, in milliseconds, between specifc socket operations.
+    /// If this is left `null` a dynamic delay will be calculated based on RSSI.
+    op_delay: ?usize = null,
 };
 
 /// Config for a Single Connection.
@@ -374,7 +375,6 @@ pub fn handleConnection(
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
 ) !void {
-    const op_delay: usize = ctx.global_config.op_delay * time.ns_per_ms;
     const err_max = 3;
     var err_count: usize = 0;
     var last_err: anyerror = error.Unknown;
@@ -468,13 +468,20 @@ pub fn handleConnection(
         &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
         &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
     );
-    time.sleep(op_delay);
     // This block locks Scan Tracking.
+    var op_delay: u64 = 50;
     {
         // Scan Results
         const scan_results = (nw_scan_results.getEntry(conn.bssid) orelse return error.ScanResultsNotFound).value_ptr.*;
         defer nw_scan_results.mutex.unlock();
         const bss = scan_results.BSS orelse return error.MissingBSS;
+        op_delay = opDelay: { 
+            if (ctx.global_config.op_delay) |delay| 
+                break :opDelay delay * time.ns_per_ms;
+            break :opDelay calcOpDelay(bss);
+        };
+        log.debug("Op Delay: {d}ms (RSSI: {d}dB)", .{ @divFloor(op_delay, time.ns_per_ms), @divFloor(bss.SIGNAL_MBM orelse -10_000, 100) });
+        time.sleep(op_delay);
         const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
         const ie_bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements, ies);
         defer alloc.free(ie_bytes);
@@ -795,3 +802,25 @@ pub fn handleConnection(
     //);
     //time.sleep(3 * time.ns_per_s);
 }
+
+/// Use the provided Basic Service Set (`bss`) to Calculate a Delay, in milliseconds, between WiFi Connection Operations to make the connection process more resilient.
+fn calcOpDelay(bss: nl._80211.BasicServiceSet) u64 {
+    // Initial delay based on RSSI
+    var delay: u64 = rssiDelay: {
+        const rssi = @divFloor(bss.SIGNAL_MBM orelse -10_000, 100);
+        if (rssi > -50) break :rssiDelay 30;
+        if (rssi > -65) break :rssiDelay 40;
+        if (rssi > -80) break :rssiDelay 80;
+        if (rssi > -90) break :rssiDelay 160;
+        break :rssiDelay 300;
+    };
+    // Adjust for unstable beacon interval
+    const beacon_interval = bss.BEACON_INTERVAL orelse 100;
+    if (beacon_interval > 105 or beacon_interval < 95)
+        delay += 50;
+    // Adjust for high frequency bands (5GHz, 6GHz)
+    if (bss.FREQUENCY > 5000)
+        delay += 20;
+    return delay * time.ns_per_ms;
+}
+
