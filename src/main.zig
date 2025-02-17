@@ -297,16 +297,7 @@ pub fn main() !void {
             mask.hostname = try posix.gethostname(hn_buf[0..]);
             break :getMask mask;
         }
-        //if (!main_cmd.checkArgGroup(.Option, "MASK")) {
-        //    if (main_cmd.checkOpts(&.{ "config" }, .{})) break :getMask null;
-        //    const mask = core.profiles.Mask.getRandom();
-        //    log.info("No Profile Mask provided. Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
-        //        try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
-        //        mask,
-        //    });
-        //    break :getMask mask;
-        //}
-        if (!main_cmd.checkArgGroup(.Option, "MASK")) break :getMask null;
+        if (!main_cmd.checkArgGroup(.Option, "MASK") or main_cmd.checkFlag("no_mask")) break :getMask null;
         if (main_opts.get("mask")) |mask_opt| {
             const mask = try mask_opt.val.getAs(core.profiles.Mask);
             log.info("Using the provided '{s}' Profile Mask:\n{s}", .{
@@ -428,6 +419,7 @@ pub fn main() !void {
         }
         if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
         if (profile_mask) |pro_mask| config.profile.mask = pro_mask;
+        config.profile.use_random_mask = !main_cmd.checkFlag("no_mask");
         for (core_conn_confs) |*conn_conf| {
             if (main_cmd.checkOpts(&.{ "gateway" }, .{})) conn_conf.add_gw = true;
             if (config.profile.mask) |pro_mask| setHostname: {

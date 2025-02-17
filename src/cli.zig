@@ -224,6 +224,12 @@ pub const setup_cmd = CommandT{
             }),
         },
         .{
+            .name = "no_mask",
+            .description = "Explicitly opt out of using a Profile Mask. (By default, a random mask will be used if one isn't set.)",
+            .opt_group = "MASK",
+            .long_name = "no-mask",
+        },
+        .{
             .name = "mask_oui",
             .description = "Provide an OUI or Manufacturer to hide your WiFi Interfaces. (This will provide a Link Local Random OUI if one can't be found.)",
             .opt_group = "MASK",

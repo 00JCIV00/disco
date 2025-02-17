@@ -139,7 +139,10 @@ pub const Core = struct {
         // Profile Mask
         if (config.profile.mask == null) setMask: {
             log.info("- No Profile Mask provided.", .{}); 
-            if (!config.profile.use_random_mask) break :setMask;
+            if (!config.profile.use_random_mask) {
+                log.info("- Profile Mask explicitly NOT used.", .{});
+                break :setMask;
+            }
             const mask = profiles.Mask.getRandom();
             self.config.profile.mask = mask;
             log.info("- Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
