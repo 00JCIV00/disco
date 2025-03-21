@@ -23,7 +23,7 @@ const l2 = netdata.l2;
 pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
     var key: [32]u8 = .{ 0 } ** 32;
     switch (protocol) {
-        .wpa2, .wpa3t => {
+        .wpa2, .wpa3t, .wpa3 => {
             // PBKDF2 HMAC-SHA1 Key Derivation
             try crypto.pwhash.pbkdf2(
                 key[0..],
@@ -261,7 +261,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
         hs_sock,
         posix.SOL.SOCKET,
         posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .tv_sec = 3, .tv_usec = 0 })[0..],
+        mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
     );
     try posix.setsockopt(
         hs_sock,

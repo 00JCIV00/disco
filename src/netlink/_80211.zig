@@ -969,6 +969,14 @@ pub const SchedScanPlan = struct {
     DURATION: ?u16 = null,
 };
 
+/// Authentication Data
+pub const AuthData = struct {
+    pub const AttrE = ATTR;
+
+    /// Authentication Data
+    AUTH_DATA: []const u8,
+};
+
 /// Security Types
 pub const SecurityType = enum {
     open,
@@ -979,7 +987,7 @@ pub const SecurityType = enum {
     wpa3,
 };
 
-// Authentication types
+/// Authentication Types
 pub const AuthType = enum {
     open,
     /// Pre-shared key
@@ -990,6 +998,7 @@ pub const AuthType = enum {
     sae,
 };
 
+/// Security Info
 pub const SecurityInfo = struct {
     type: SecurityType,
     auth: AuthType,
@@ -3220,7 +3229,7 @@ pub fn authenticate(
     if_index: i32,
     ssid: []const u8,
     scan_results: ScanResults,
-    //wep_key: ?[16]u8, 
+    auth_data: ?[]const u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const auth_type = determineAuthAlg(scan_results);
@@ -3234,37 +3243,44 @@ pub fn authenticate(
             .hdr = .{ .type = c(ATTR).IFINDEX },
             .data = mem.toBytes(if_index)[0..],
         },
+        .{
+            .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+            .data = bssid[0..],
+        },
         .{ 
             .hdr = .{ .type = c(ATTR).SSID, .len = @intCast(ssid.len + 4) },
             .data = ssid,
-        },
-        .{ 
-            .hdr = .{ .type = c(ATTR).AUTH_TYPE },
-            .data = mem.toBytes(@intFromEnum(auth_type))[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).WIPHY_FREQ },
             .data = mem.toBytes(wiphy_freq)[0..],
         },
-        .{
-            .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
-            .data = bssid[0..],
+        .{ 
+            .hdr = .{ .type = c(ATTR).AUTH_TYPE },
+            .data = mem.toBytes(@intFromEnum(auth_type))[0..],
         },
     });
-    // TODO WEP
-    //const security: SecurityType = (try bss.getSecurityInfo()).type;
-    //switch (security) {
-    //    .wep => {
-    //        const key = wep_key orelse return error.WEPKeyNotProvided;
-    //        try attr_list.append(alloc, .{
-    //            .{
-    //                .hdr = .{ .type = c(ATTR.KE }
-    //            },
-    //        });
-    //    }
-    //}
+    switch (auth_type) {
+        .SAE => {
+            const sae_data = auth_data orelse {
+                log.err("Scan Results are for an SAE Authentication but no Authentication Data was provided.", .{});
+                return error.AuthenticationDataNotProvided;
+            };
+            try attr_list.appendSlice(alloc, &.{
+                .{
+                    .hdr = .{ .type = c(ATTR).AUTH_DATA, .len = @truncate(nl.attr_hdr_len + sae_data.len) },
+                    .data = sae_data,
+                },
+                //.{
+                //    .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE, .len = 6 },
+                //    .data = mem.toBytes(@as(u16, @intCast(0x888E)))[0..],
+                //},
+            });
+        },
+        else => {},
+    }
     try nl.reqOnSock(
-        alloc, 
+        alloc,
         nl_sock,
         nl.generic.Request,
         .{
@@ -3283,6 +3299,27 @@ pub fn authenticate(
         attr_list.items[0..],
     );
     try nl.handleAck(nl_sock);
+}
+
+/// Handle a CMD_AUTHENTICATE response.
+pub fn handleAuthData(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const AuthData {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleType(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        AuthData,
+        parseAuthData,
+        .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_WIPHY,
+        },
+    );
+}
+
+/// Parse the provided `bytes` to an AuthData instance.
+pub fn parseAuthData(alloc: mem.Allocator, bytes: []const u8) !AuthData {
+    return try nl.parse.fromBytes(alloc, AuthData, bytes[@sizeOf(nl.generic.Header)..]);
 }
 
 /// Associate to the provided Network `ssid`.
@@ -3650,7 +3687,14 @@ pub fn connectWPA2(
     var attempts: usize = 0;
     while (attempts < config.retries) : (attempts += 1) {
         time.sleep(config.delay * time.ns_per_ms);
-        authenticate(alloc, nl_sock, if_index, ssid, scan_results) catch |err| {
+        authenticate(
+            alloc, 
+            nl_sock, 
+            if_index, 
+            ssid, 
+            scan_results,
+            null
+        ) catch |err| {
             aa_err = err;
             continue;
         };

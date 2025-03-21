@@ -297,8 +297,8 @@ pub const HandleConfig = struct {
 
 /// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`).
 pub fn handleType(
-    alloc: mem.Allocator, 
-    nl_sock: posix.socket_t, 
+    alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
     /// This must be a derivative of the `Request()` Type.
     ResponseHdrT: type,
     ResponseT: type,
@@ -308,9 +308,9 @@ pub fn handleType(
 ) ![]const ResponseT {
     const buf_size: u32 = 64_000;
     try posix.setsockopt(
-        nl_sock, 
-        posix.SOL.SOCKET, 
-        NETLINK_OPT.RX_RING, 
+        nl_sock,
+        posix.SOL.SOCKET,
+        NETLINK_OPT.RX_RING,
         mem.toBytes(buf_size)[0..],
     );
     const FamHdrT = comptime famHdrT: {

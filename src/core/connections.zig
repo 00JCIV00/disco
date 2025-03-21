@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const atomic = std.atomic;
+const crypto = std.crypto;
+const Ed25519 = crypto.ecc.Edwards25519;
 const fmt = std.fmt;
 const linux = std.os.linux;
 const log = std.log.scoped(.connections);
@@ -22,9 +24,11 @@ const nl = @import("../netlink.zig");
 const proto = @import("../protocols.zig");
 const dhcp = proto.dhcp;
 const dns = proto.dns;
+const sae = proto.sae;
 const wpa = proto.wpa;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
+const HexF = utils.HexFormatter;
 
 
 /// The Current State of a Connection.
@@ -130,8 +134,8 @@ pub const Context = struct {
     configs: *core.ThreadHashMap([]const u8, Config),
     /// Active & Previous Connections.
     /// ID = 6B Network BSSID + 4B Interface Index
-    //connections: *core.ThreadHashMap([10]u8, Connection),
-    connections: *core.ThreadHashMap([6]u8, Connection),
+    connections: *core.ThreadHashMap([10]u8, Connection),
+    //connections: *core.ThreadHashMap([6]u8, Connection),
     thread_pool: *std.Thread.Pool,
     wait_group: *std.Thread.WaitGroup,
 
@@ -266,15 +270,15 @@ pub fn trackConnections(
                     log.debug("Using Interface: ({d}) {s}", .{ conn_if.index, conn_if.name });
                     var set_if = (if_ctx.interfaces.map.getEntry(conn_if.index) orelse continue).value_ptr;
                     set_if.usage = .connecting;
-                    //const conn_id = nw.bssid ++ mem.toBytes(conn_if.index);
-                    const conn_id = nw.bssid;
+                    const conn_id = nw.bssid ++ mem.toBytes(conn_if.index);
+                    //const conn_id = nw.bssid;
                     const psk = switch (conf.security) {
                         .wpa2, .wpa3t => wpa.genKey(conf.security, nw.ssid, conf.passphrase) catch |err| {
                             log.err("Connection Update Error: {s}", .{ @errorName(err) });
                             err_count += 1;
                             continue;
                         },
-                        .open => .{ 0 } ** 32,
+                        .open, .wpa3 => .{ 0 } ** 32,
                         else => continue,
                     };
                     if (ctx.connections.getEntry(conn_id)) |conn_entry| {
@@ -338,8 +342,8 @@ pub fn handleConnectionNoErr(
     interval: *const usize,
     core_config: *const core.Core.Config,
     ctx: *Context,
-    //conn_id: [10]u8,
-    conn_id: [6]u8,
+    conn_id: [10]u8,
+    //conn_id: [6]u8,
     nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
@@ -369,8 +373,7 @@ pub fn handleConnection(
     interval: *const usize,
     core_config: *const core.Core.Config,
     ctx: *Context,
-    //conn_id: [10]u8,
-    conn_id: [6]u8,
+    conn_id: [10]u8,
     nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
@@ -402,7 +405,8 @@ pub fn handleConnection(
     conn_if.phy_name = try alloc.dupe(u8, conn_if.phy_name);
     defer {
         log.info("Cleaning Connection (ssid: {s}, if: {s})...", .{ conn.ssid, conn_if.name });
-        if (ctx.connections.get(conn_id)) |get_conn| relDHCP: {
+        const cur_conn = ctx.connections.get(conn_id);
+        if (cur_conn) |get_conn| relDHCP: {
             alloc.free(conn_if.name);
             alloc.free(conn_if.phy_name);
             conn_if = if_ctx.interfaces.get(if_index) orelse break :relDHCP;
@@ -420,10 +424,10 @@ pub fn handleConnection(
             };
             log.info("- Released DHCP lease.", .{});
         }
-        else {
+        defer if (cur_conn == null) {
             alloc.free(conn_if.name);
             alloc.free(conn_if.phy_name);
-        }
+        };
         {
             defer if_ctx.interfaces.mutex.unlock();
             if (if_ctx.interfaces.getEntry(if_index)) |conn_if_entry| {
@@ -448,7 +452,7 @@ pub fn handleConnection(
         \\- if:  ({d}) {s}
         \\- ch:  ({d} MHz) {d}
         \\- sec: {s} {s}
-        , .{ 
+        , .{
             MACF{ .bytes = conn.bssid[0..] },
             conn.ssid,
             conn_if.index,
@@ -507,12 +511,97 @@ pub fn handleConnection(
                         conn_if.index,
                         conn.ssid,
                         scan_results,
+                        null,
                     ) catch |err| {
                         err_count += 1;
                         last_err = err;
                         time.sleep(op_delay * err_count * err_count);
                         continue;
                     };
+                    break;
+                },
+                .wpa3 => {
+                    //try posix.setsockopt(
+                    //    conn_if.nl_sock,
+                    //    posix.SOL.SOCKET,
+                    //    posix.SO.RCVTIMEO,
+                    //    mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
+                    //);
+                    const sae_ctx = sae.genCommit(conn.passphrase, conn.bssid, conn_if.mac) catch |err| {
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    };
+                    const sae_commit: [102]u8 =
+                        // Commit
+                        mem.toBytes(@as(u32, 1)) ++
+                        // Group
+                        mem.toBytes(@as(u16, 19)) ++
+                        sae_ctx.commit.scalar ++
+                        sae_ctx.commit.element.x.toBytes() ++
+                        sae_ctx.commit.element.y.toBytes();
+                    log.debug("SAE Commit Data:{s}\n", .{ HexF{ .bytes = sae_commit[0..] } });
+                    log.debug("WPA3 Auth SAE Commit...", .{});
+                    nl._80211.authenticate(
+                        alloc,
+                        conn_if.nl_sock,
+                        conn_if.index,
+                        conn.ssid,
+                        scan_results,
+                        sae_commit[0..],
+                    ) catch |err| {
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    };
+                    log.debug("WPA3 Auth SAE Commit done.", .{});
+                    const sae_commit_resp_data = nl._80211.handleAuthData(alloc, conn_if.nl_sock) catch |err| {
+                        log.warn("Issue hanlding WPA3 SAE Commit response data: {s}", .{ @errorName(err) });
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    };
+                    defer {
+                        for (sae_commit_resp_data) |scr_data|
+                            nl.parse.freeBytes(alloc, nl._80211.AuthData, scr_data);
+                        alloc.free(sae_commit_resp_data);
+                    }
+                    const sae_commit_resp = sae_commit_resp_data[0].AUTH_DATA[0..];
+                    const peer: sae.Commit = .{
+                        .scalar = sae_commit_resp[0..32].*,
+                        .element = Ed25519.fromBytes(sae_commit_resp[6..38].*) catch |err| {
+                            log.warn("Issue hanlding WPA3 SAE Commit response Peer: {s}", .{ @errorName(err) });
+                            err_count += 1;
+                            last_err = err;
+                            time.sleep(op_delay * err_count * err_count);
+                            continue;
+                        },
+                    };
+                    const sae_confirm = sae.genConfirm(sae_ctx, peer) catch |err| {
+                        log.warn("Issue generating WPA3 SAE Confirm data: {s}", .{ @errorName(err) });
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    };
+                    log.debug("WPA3 Auth SAE Confirm...", .{});
+                    nl._80211.authenticate(
+                        alloc,
+                        conn_if.nl_sock,
+                        conn_if.index,
+                        conn.ssid,
+                        scan_results,
+                        sae_confirm[0..],
+                    ) catch |err| {
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    };
+                    log.debug("WPA3 Auth SAE Confirm done.", .{});
                     break;
                 },
                 else => |sec_proto| {
@@ -522,7 +611,7 @@ pub fn handleConnection(
             }
         }
         time.sleep(op_delay);
-        // Associacate
+        // Associate
         if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         log.debug("Connection {X}: Associating", .{ conn_id });
         set_conn = (ctx.connections.getEntry(conn_id) orelse {
@@ -585,7 +674,7 @@ pub fn handleConnection(
                     conn_if.nl_sock,
                     posix.SOL.SOCKET,
                     posix.SO.RCVTIMEO,
-                    mem.toBytes(posix.timeval{ .tv_sec = 3, .tv_usec = 0 })[0..],
+                    mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
                 );
                 set_conn = (ctx.connections.getEntry(conn_id) orelse {
                     ctx.connections.mutex.unlock();
@@ -671,7 +760,6 @@ pub fn handleConnection(
         while (active.load(.acquire) and conn_active.load(.acquire)) {
             if (err_count >= err_max) {
                 log.err("DHCP Error: {s}", .{ @errorName(last_err) });
-                //return last_err;
                 break :tryDHCP;
             }
             var dhcp_hn_conf = dhcp_conf;
@@ -744,12 +832,23 @@ pub fn handleConnection(
                     });
                     var dns_ips_buf: [4][4]u8 = undefined;
                     const dns_ips: []const [4]u8 = dnsIPs: {
-                        for (dhcp_info.dns_ips, 0..) |dns_ip, idx|
-                            dns_ips_buf[idx] = dns_ip orelse break :dnsIPs dns_ips_buf[0..idx];
+                        //log.debug("DNS IPs: {s}", .{ if (dhcp_info.dns_ips[0]) |_| "" else "none" });
+                        var total_dns: usize = 0;
+                        defer log.debug("- Total DNS: {d}", .{ total_dns });
+                        dnsLoop: for (dhcp_info.dns_ips, 0..) |dns_ip, idx| {
+                            const next_dns = dns_ip orelse break :dnsIPs dns_ips_buf[0..total_dns];
+                            for (dns_ips_buf[0..idx]) |prev_dns| {
+                                if (mem.eql(u8, prev_dns[0..], next_dns[0..])) continue :dnsLoop;
+                            }
+                            //log.debug("- {s}", .{ IPF{ .bytes = next_dns[0..] } });
+                            dns_ips_buf[idx] = next_dns;
+                            total_dns += 1;
+                        }
                         break :dnsIPs &.{};
                     };
                     if (dns_ips.len > 0) setDNS: {
                         dns.updateDNS(.{ .if_index = if_index, .servers = dns_ips }) catch |err| {
+                        //dns.updateDNS(.{ .if_index = if_index, .servers = dns_ips[0..1] }) catch |err| {
                             log.err("Could not set DNS: {s}", .{ @errorName(err) });
                             break :setDNS;
                         };
