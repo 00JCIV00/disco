@@ -249,12 +249,6 @@ pub fn initIFSock(
     if_index: i32,
     interval: *const usize,
 ) !posix.socket_t {
-    const info = nl._80211.ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const group_id = info.MCAST_GROUPS.get("scan").?;
-    const nl_addr: posix.sockaddr.nl = .{
-        .pid = 0,
-        .groups = @as(u32, 1) << @intCast(group_id - 1),
-    };
     const nl_sock = nlSock: {
         if (interval.* >= 1000 * time.ns_per_ms) {
             const timeout: i32 = @intCast(@divFloor(interval.*, time.ns_per_s));
@@ -264,12 +258,13 @@ pub fn initIFSock(
         break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = timeout });
     };
     errdefer posix.close(nl_sock);
-    try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
+    const info = nl._80211.ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const scan_id = info.MCAST_GROUPS.get("scan").?;
     try posix.setsockopt(
         nl_sock,
         posix.SOL.NETLINK,
         nl.NETLINK_OPT.ADD_MEMBERSHIP,
-        mem.toBytes(group_id)[0..],
+        mem.toBytes(scan_id)[0..],
     );
     try posix.setsockopt(
         nl_sock,

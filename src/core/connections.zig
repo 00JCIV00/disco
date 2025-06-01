@@ -4,6 +4,7 @@ const std = @import("std");
 const atomic = std.atomic;
 const crypto = std.crypto;
 const Ed25519 = crypto.ecc.Edwards25519;
+const P256 = crypto.ecc.P256;
 const fmt = std.fmt;
 const linux = std.os.linux;
 const log = std.log.scoped(.connections);
@@ -470,7 +471,7 @@ pub fn handleConnection(
         conn_if.nl_sock,
         if_index,
         &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
-        &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
+        &.{ &.{ 0x00, 0x03 }, &.{ 0x00, 0x05 }, &.{ 0x00, 0x06 }, &.{ 0x00, 0x08 }, &.{ 0x00, 0x0c } },
     );
     // This block locks Scan Tracking.
     var op_delay: u64 = 50;
@@ -490,6 +491,13 @@ pub fn handleConnection(
         const ie_bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements, ies);
         defer alloc.free(ie_bytes);
         // Authenticate
+        var conn_psk: [32]u8 = connPSK: {
+            defer ctx.connections.mutex.unlock();
+            if (ctx.connections.getEntry(conn_id)) |conn_entry|
+                break :connPSK conn_entry.value_ptr.psk
+            else
+                break :connPSK .{ 0 } ** 32;
+        };
         if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         log.debug("Connection {X}: Authenticating", .{ conn_id });
         set_conn = (ctx.connections.getEntry(conn_id) orelse {
@@ -521,13 +529,31 @@ pub fn handleConnection(
                     break;
                 },
                 .wpa3 => {
-                    //try posix.setsockopt(
-                    //    conn_if.nl_sock,
-                    //    posix.SOL.SOCKET,
-                    //    posix.SO.RCVTIMEO,
-                    //    mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
-                    //);
-                    const sae_ctx = sae.genCommit(conn.passphrase, conn.bssid, conn_if.mac) catch |err| {
+                    try posix.setsockopt(
+                        conn_if.nl_sock,
+                        posix.SOL.SOCKET,
+                        posix.SO.RCVTIMEO,
+                        mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
+                    );
+                    const nl80211_info = nl._80211.ctrl_info orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
+                    const nl80211_mlme = nl80211_info.MCAST_GROUPS.get("mlme") orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
+                    try posix.setsockopt(
+                        conn_if.nl_sock,
+                        posix.SOL.NETLINK,
+                        nl.NETLINK_OPT.ADD_MEMBERSHIP,
+                        mem.toBytes(nl80211_mlme)[0..],
+                    );
+                    nl._80211.registerFrames(
+                        alloc,
+                        conn_if.nl_sock,
+                        conn_if.index,
+                        &.{ 0x00b0 },
+                        &.{ &.{ 0xb0, 0x00, 0x03, 0x00 } },
+                    ) catch |err| {
+                        log.warn("Issue Registering Frames for Authentication Response: {s}", .{ @errorName(err) });
+                    };
+                    time.sleep(op_delay * 10);
+                    var sae_ctx = sae.genCommit(conn.passphrase, conn.bssid, conn_if.mac) catch |err| {
                         err_count += 1;
                         last_err = err;
                         time.sleep(op_delay * err_count * err_count);
@@ -539,8 +565,8 @@ pub fn handleConnection(
                         // Group
                         mem.toBytes(@as(u16, 19)) ++
                         sae_ctx.commit.scalar ++
-                        sae_ctx.commit.element.x.toBytes() ++
-                        sae_ctx.commit.element.y.toBytes();
+                        sae_ctx.commit.element.x.toBytes(.big) ++
+                        sae_ctx.commit.element.y.toBytes(.big);
                     log.debug("SAE Commit Data:{s}\n", .{ HexF{ .bytes = sae_commit[0..] } });
                     log.debug("WPA3 Auth SAE Commit...", .{});
                     nl._80211.authenticate(
@@ -551,14 +577,15 @@ pub fn handleConnection(
                         scan_results,
                         sae_commit[0..],
                     ) catch |err| {
+                        log.warn("Issue sending WPA3 SAE Commit data: {s}", .{ @errorName(err) });
                         err_count += 1;
                         last_err = err;
                         time.sleep(op_delay * err_count * err_count);
                         continue;
                     };
-                    log.debug("WPA3 Auth SAE Commit done.", .{});
-                    const sae_commit_resp_data = nl._80211.handleAuthData(alloc, conn_if.nl_sock) catch |err| {
-                        log.warn("Issue hanlding WPA3 SAE Commit response data: {s}", .{ @errorName(err) });
+                    //log.debug("WPA3 Auth SAE Commit done.", .{});
+                    const sae_commit_resp_data = nl._80211.handleAuthResponse(alloc, conn_if.nl_sock) catch |err| {
+                        log.warn("Issue handling WPA3 SAE Commit response data: {s}", .{ @errorName(err) });
                         err_count += 1;
                         last_err = err;
                         time.sleep(op_delay * err_count * err_count);
@@ -566,21 +593,36 @@ pub fn handleConnection(
                     };
                     defer {
                         for (sae_commit_resp_data) |scr_data|
-                            nl.parse.freeBytes(alloc, nl._80211.AuthData, scr_data);
+                            nl.parse.freeBytes(alloc, nl._80211.AuthResponse, scr_data);
                         alloc.free(sae_commit_resp_data);
                     }
-                    const sae_commit_resp = sae_commit_resp_data[0].AUTH_DATA[0..];
+                    if (sae_commit_resp_data.len == 0) {
+                        log.warn("Issue handling WPA3 SAE Commit response data: EmptyCommitResponse", .{});
+                        err_count += 1;
+                        last_err = error.EmptyCommitResponse;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    }
+                    log.debug("SAE Commit Response Data: {d}B{s}", .{ sae_commit_resp_data[0].FRAME.len, HexF{ .bytes = sae_commit_resp_data[0].FRAME } });
+                    if (sae_commit_resp_data[0].FRAME.len < 96) {
+                        log.warn("Issue handling WPA3 SAE Commit response data: InvalidCommitResponse (Len = {d}B)", .{ sae_commit_resp_data[0].FRAME.len });
+                        err_count += 1;
+                        last_err = error.InvalidCommitResponse;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    }
+                    const sae_commit_resp = sae_commit_resp_data[0].FRAME[32..];
                     const peer: sae.Commit = .{
                         .scalar = sae_commit_resp[0..32].*,
-                        .element = Ed25519.fromBytes(sae_commit_resp[6..38].*) catch |err| {
-                            log.warn("Issue hanlding WPA3 SAE Commit response Peer: {s}", .{ @errorName(err) });
+                        .element = P256.fromSerializedAffineCoordinates(sae_commit_resp[32..64].*, sae_commit_resp[64..96].*, .big) catch |err| {
+                            log.warn("Issue handling WPA3 SAE Commit response Peer: {s}", .{ @errorName(err) });
                             err_count += 1;
                             last_err = err;
                             time.sleep(op_delay * err_count * err_count);
                             continue;
                         },
                     };
-                    const sae_confirm = sae.genConfirm(sae_ctx, peer) catch |err| {
+                    sae.genConfirm(&sae_ctx, peer) catch |err| {
                         log.warn("Issue generating WPA3 SAE Confirm data: {s}", .{ @errorName(err) });
                         err_count += 1;
                         last_err = err;
@@ -588,6 +630,12 @@ pub fn handleConnection(
                         continue;
                     };
                     log.debug("WPA3 Auth SAE Confirm...", .{});
+                    const sae_confirm: [38]u8 =
+                        // Confirm
+                        mem.toBytes(@as(u32, 2)) ++
+                        // Send Confirm
+                        sae_ctx.send_confirm ++
+                        sae_ctx.confirm.?[0..32].*;
                     nl._80211.authenticate(
                         alloc,
                         conn_if.nl_sock,
@@ -601,7 +649,57 @@ pub fn handleConnection(
                         time.sleep(op_delay * err_count * err_count);
                         continue;
                     };
+                    const sae_confirm_resp_data = nl._80211.handleAuthResponse(alloc, conn_if.nl_sock) catch |err| {
+                        log.warn("Issue handling WPA3 SAE Confirm response data: {s}", .{ @errorName(err) });
+                        err_count += 1;
+                        last_err = err;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    };
+                    defer {
+                        for (sae_confirm_resp_data) |scr_data|
+                            nl.parse.freeBytes(alloc, nl._80211.AuthResponse, scr_data);
+                        alloc.free(sae_confirm_resp_data);
+                    }
+                    log.debug("SAE Confirm Response Data: {d}B{s}", .{ sae_confirm_resp_data[0].FRAME.len, HexF{ .bytes = sae_confirm_resp_data[0].FRAME } });
+                    const resp_type: u16 = mem.readInt(u16, sae_confirm_resp_data[0].FRAME[26..28], .little);
+                    if (resp_type != 2) {
+                        log.warn("Issue handling WPA3 SAE Confirm response data: Non-Confirm Response ({d})", .{ resp_type });
+                        err_count += 1;
+                        last_err = error.NonConfirmResponse;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    }
+                    const resp_code: u16 = mem.readInt(u16, sae_confirm_resp_data[0].FRAME[28..30], .little);
+                    if (resp_code != 0) {
+                        log.warn("Issue handling WPA3 SAE Confirm response data: Confirm Response Error ({X:0>4})", .{ resp_code });
+                        err_count += 1;
+                        last_err = error.ConfirmResponseError;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    }
+                    const peer_ctx: sae.Context = .{
+                        .kck = sae_ctx.kck,
+                        .send_confirm = sae_confirm_resp_data[0].FRAME[30..32].*,
+                        .confirm = sae_confirm_resp_data[0].FRAME[32..64].*,
+                        .commit = peer,
+                        .pwe = P256.basePoint,
+                        .private = .{ 0 } ** 32,
+                    }; 
+                    sae.checkConfirm(peer_ctx.confirm.?, sae_ctx.commit, peer_ctx) catch {
+                        log.warn("Issue handling WPA3 SAE Confirm response: Confirm Token Verification Mismatch", .{});
+                        err_count += 1;
+                        last_err = error.ConfirmResponseError;
+                        time.sleep(op_delay * err_count * err_count);
+                        continue;
+                    };
+                    conn_psk = sae_ctx.pmk.?;
                     log.debug("WPA3 Auth SAE Confirm done.", .{});
+                    set_conn = (ctx.connections.getEntry(conn_id) orelse {
+                        ctx.connections.mutex.unlock();
+                        return error.ConnectionNotFound;
+                    }).value_ptr;
+                    ctx.connections.mutex.unlock();
                     break;
                 },
                 else => |sec_proto| {
@@ -642,7 +740,7 @@ pub fn handleConnection(
             }).value_ptr.*;
             //log.debug("WIPHY:\n{}", .{ conn_wiphy });
             switch (conn.security) {
-                .open, .wpa2, .wpa3t => {
+                .open, .wpa2, .wpa3t, .wpa3 => {
                     nl._80211.associate(
                         alloc,
                         conn_if.nl_sock,
@@ -668,7 +766,7 @@ pub fn handleConnection(
         // EAPoL
         if (!active.load(.acquire) or !conn_active.load(.acquire)) return;
         switch (conn.security) {
-            .wpa2, .wpa3t => {
+            .wpa2, .wpa3t, .wpa3 => {
                 log.debug("Connection {X}: Handling EAPoL", .{ conn_id });
                 try posix.setsockopt(
                     conn_if.nl_sock,
@@ -699,7 +797,12 @@ pub fn handleConnection(
                         log.err("EAPoL Error: {s}", .{ @errorName(last_err) });
                         return last_err;
                     }
-                    break :keys proto.wpa.handle4WHS(if_index, conn.psk, rsn_bytes) catch |err| {
+                    break :keys proto.wpa.handle4WHS(
+                        if_index, 
+                        conn_psk, 
+                        rsn_bytes,
+                        conn.security,
+                    ) catch |err| {
                         err_count += 1;
                         last_err = err;
                         time.sleep(op_delay * err_count * err_count);
@@ -907,7 +1010,7 @@ fn calcOpDelay(bss: nl._80211.BasicServiceSet) u64 {
     // Initial delay based on RSSI
     var delay: u64 = rssiDelay: {
         const rssi = @divFloor(bss.SIGNAL_MBM orelse -10_000, 100);
-        if (rssi > -50) break :rssiDelay 30;
+        //if (rssi > -50) break :rssiDelay 30;
         if (rssi > -65) break :rssiDelay 40;
         if (rssi > -80) break :rssiDelay 80;
         if (rssi > -90) break :rssiDelay 160;

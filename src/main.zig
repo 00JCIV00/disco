@@ -11,6 +11,7 @@ const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
 const process = std.process;
+const testing = std.testing;
 const time = std.time;
 
 const cova = @import("cova");
@@ -1004,4 +1005,9 @@ pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ret_addr: ?usize)
     if (@import("builtin").mode == .Debug)
         std.builtin.default_panic(msg, trace, ret_addr)
     else posix.exit(1);
+}
+
+test "disco" {
+    @setEvalBranchQuota(10_000);
+    testing.refAllDeclsRecursive(@This());
 }

@@ -4,14 +4,17 @@ const std = @import("std");
 const crypto = std.crypto;
 const Ed25519 = crypto.ecc.Edwards25519;
 const hmac256 = crypto.auth.hmac.sha2.HmacSha256;
-const pbkdf2 = crypto.pwhash.pbkdf2;
+//const pbkdf2 = crypto.pwhash.pbkdf2;
+const hkdf = crypto.kdf.hkdf.HkdfSha256;
+const P256 = crypto.ecc.P256;
 const math = std.math;
 const mem = std.mem;
 const log = std.log.scoped(.sae);
-
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
 const MACF = address.MACFormatter;
+const utils = @import("../utils.zig");
+const HexF = utils.HexFormatter;
 
 /// SAE Errors
 pub const SAEError = error{
@@ -26,166 +29,137 @@ pub const SAEError = error{
 /// SAE Context
 pub const Context = struct {
     private: [32]u8,
-    password_element: Ed25519,
+    pwe: P256,
     commit: Commit,
+    send_confirm: [2]u8 = sendConfirm: {
+        var buf: [2]u8 = undefined;
+        mem.writeInt(u16, buf[0..], 1, .big);
+        break :sendConfirm buf;
+    },
+    confirm: ?[32]u8 = null,
+    kck: ?[32]u8 = null,
+    pmk: ?[32]u8 = null,
 };
 
 /// Result of SAE Commit Generation.
 pub const Commit = struct {
     scalar: [32]u8,
-    element: Ed25519,
+    element: P256,
 };
+
+/// P256 Order
+const p256_order: u256 = mem.readInt(
+    u256,
+    &[_]u8{
+        0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84,
+        0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+    },
+    .big,
+);
 
 /// Generate SAE Commit Message Data within overall SAE Context.
 pub fn genCommit(password: []const u8, addr1: [6]u8, addr2: [6]u8) !Context {
     log.debug("Generating SAE Commit...", .{});
-    // Generate random mask and private values
-    var mask: [32]u8 = undefined;
-    var private: [32]u8 = undefined;
-    crypto.random.bytes(mask[0..]);
-    crypto.random.bytes(private[0..]);
+    // Generate random private and mask values
+    const private: [32]u8 = P256.scalar.random(.big);
+    var mask: [32]u8 = P256.scalar.random(.big);
+    defer @memset(mask[0..], 0);
+    // Calculate commit-scalar = (private + mask) mod r
+    const scalar: [32]u8 = scalar: {
+        const priv_int: u512 = mem.readInt(u256, private[0..], .big);
+        const mask_int: u512 = mem.readInt(u256, mask[0..], .big);
+        const scalar_int: u256 = @truncate((priv_int + mask_int) % p256_order);
+        if (scalar_int < 2 or scalar_int >= p256_order) {
+            log.err("Scalar is invalid: {d}", .{ scalar_int });
+            return error.InvalidScalar;
+        }
+        break :scalar mem.toBytes(mem.nativeTo(u256, scalar_int, .big));
+    };
     // Calculate password element through hunting-and-pecking
     const pe = try hashToElement(password, addr1, addr2);
-    // Calculate commit-scalar = (private + mask) mod r
-    var scalar: [32]u8 = undefined;
-    const kp1 = Ed25519.scalar.mul(Ed25519.basePoint.toBytes(), private);
-    const kp2 = Ed25519.scalar.mul(Ed25519.basePoint.toBytes(), mask);
-    for (scalar[0..], 0..) |*s, i| 
-        s.* = kp1[i] +% kp2[i];
     // Calculate commit-element = inverse(scalar-op(mask, PE))
-    const element = try Ed25519.fromBytes(Ed25519.scalar.mul(pe.toBytes(), mask));
-    log.debug("Generated SAE Commit.", .{});
+    const ce: P256 = ce: {
+        const masked_pe = maskedPE: {
+            const raw = try pe.mul(mask, .big);
+            log.debug(
+                "Raw Masked CE:\n- X:{s}\n- Y:{s}"
+                , .{
+                    HexF{ .bytes = raw.x.toBytes(.big)[0..] },
+                    HexF{ .bytes = raw.y.toBytes(.big)[0..] },
+                },
+            );
+            break :maskedPE try P256.fromAffineCoordinates(raw.affineCoordinates());
+        };
+        log.debug(
+            "Affine Masked PE:\n- X:{s}\n- Y:{s}"
+            , .{
+                HexF{ .bytes = masked_pe.x.toBytes(.big)[0..] },
+                HexF{ .bytes = masked_pe.y.toBytes(.big)[0..] },
+            },
+        );
+        //const masked_pe = try pe.mul(mask, .big);
+        masked_pe.rejectIdentity() catch |err| {
+            log.err("Masked PE Identity Rejected.", .{});
+            return err;
+        };
+        break :ce try P256.fromAffineCoordinates(.{
+            .x = masked_pe.x,
+            .y = masked_pe.y.neg(),
+        });
+    };
+    log.debug(
+        \\Generated SAE Commit.
+        \\ - PE X:   {X:0>2}
+        \\ - PE Y:   {X:0>2}
+        \\ - Scalar: {X:0>2}
+        \\ - CE X:   {X:0>2}
+        \\ - CE Y:   {X:0>2}
+        , .{
+            pe.x.toBytes(.big),
+            pe.y.toBytes(.big),
+            scalar,
+            ce.x.toBytes(.big),
+            ce.y.toBytes(.big),
+        },
+    );
     return .{
         .private = private,
-        .password_element = pe,
+        .pwe = pe,
         .commit = .{
             .scalar = scalar,
-            .element = element,
+            .element = ce,
         },
     };
 }
 
-/// Generate SAE Confirm Message Data.
-pub fn genConfirm(ctx: Context, peer: Commit) ![32]u8 {
-    log.debug("Generating SAE Confirm...", .{});
-    // Calculate k
-    const k = try deriveK(ctx, peer);
-    // Generate confirm token
-    var confirm: [32]u8 = undefined;
-    var h = crypto.hash.sha2.Sha256.init(.{});
-    h.update(k[0..]);
-    h.update(ctx.commit.scalar[0..]);
-    h.update(peer.scalar[0..]);
-    h.update(ctx.commit.element.toBytes()[0..]);
-    h.update(peer.element.toBytes()[0..]);
-    h.final(confirm[0..]);
-    log.debug("Generated SAE Confirm.", .{});
-    return confirm;
+pub fn genScalarRand() ![32]u8 {
+    while (true) {
+        var buf: [32]u8 = P256.scalar.random(.big);
+        const s: u256 = mem.readInt(u256, buf[0..], .big);
+        if (s > 1 and s < p256_order)
+            return buf;
+    }
 }
 
-///// Hash Password to Element (Hunting-and-Pecking Technique; 256-bit Hashing f/ ECC Group 19)
-//pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !Ed25519 {
-//    log.debug("Generating Password Element Hash...", .{});
-//    var counter: u8 = 1;
-//    const max_tries = 40;
-//    var found: bool = false;
-//    const max_addr, const min_addr =
-//        if (mem.lessThan(u8, addr1[0..], addr2[0..])) .{ addr2, addr1 }
-//        else .{ addr1, addr2 };
-//    log.debug("- max addr (1): {s}, min addr (2): {s}", .{ MACF{ .bytes = max_addr[0..] }, MACF{ .bytes = min_addr[0..] } });
-//    while (counter <= max_tries or !found) : (counter += 1) {
-//        // Generate pwd-seed = H(max(addrs) || min(addrs) || password || counter)
-//        var pwd_seed: [32]u8 = undefined;
-//        var h = crypto.hash.sha2.Sha256.init(.{});
-//        h.update(max_addr[0..]);
-//        h.update(min_addr[0..]);
-//        h.update(password);
-//        h.update(&[_]u8{ counter });
-//        h.final(pwd_seed[0..]);
-//        // Generate pwd-value = KDF-z(pwd-seed, "SAE Hunting and Pecking", p)
-//        var pwd_value: [32]u8 = undefined;
-//        h = crypto.hash.sha2.Sha256.init(.{});
-//        h.update("SAE Hunting and Pecking");
-//        h.update(pwd_seed[0..]);
-//        h.final(pwd_value[0..]);
-//        // Check if pwd-value < p (prime)
-//        const prime = [_]u8{ 0x7f } ++ [_]u8{ 0xff } ** 30 ++ [_]u8{ 0xed };
-//        const in_range = mem.lessThan(u8, pwd_value[0..], prime[0..]);
-//        const point = if (in_range) Ed25519.fromBytes(pwd_value) catch null else null;
-//        found = point != null;
-//        log.debug(
-//            \\- Counter {d}:
-//            \\  - Found = {}
-//            \\  - Result = {X:0<2}
-//            \\  - Seed = {X:0<2}
-//            \\
-//            , .{ 
-//                counter,
-//                found,
-//                pwd_value[0..],
-//                pwd_seed[0..],
-//            }
-//        );
-//        if (found and counter >= 40) {
-//            log.debug("Generated Password Element Hash in {d} Iterations.", .{ counter });
-//            return point.?;
-//        }
-//    }
-//    return SAEError.HashToElementFailed;
-//}
-
-/// Edwards25519 curve constant: d = -(121665/121666) mod p
-const CURVE_D = [32]u8{
-    0xa3, 0x78, 0x59, 0x13, 0xca, 0x4d, 0xeb, 0x75,
-    0xab, 0xd8, 0x41, 0x41, 0x4d, 0x0a, 0x70, 0x00,
-    0x98, 0xe8, 0x79, 0x77, 0x79, 0x40, 0xc7, 0x8c,
-    0x73, 0xfe, 0x6f, 0x2b, 0xee, 0x6c, 0x03, 0x52,
-};
-
-/// Calculate Y coordinate from X using curve equation: -x^2 + y^2 = 1 + dx^2y^2
-fn solveForY(x: [32]u8) ?[32]u8 {
-    // 1. Calculate x^2
-    const x_fe = Ed25519.Fe.fromBytes(x);
-    const x2 = x_fe.sq();
-    // 2. Calculate u = 1 + dx^2
-    const d_fe = Ed25519.Fe.fromBytes(CURVE_D);
-    const dx2 = d_fe.mul(x2);
-    const u = Ed25519.Fe.one.add(dx2);
-    // 3. Calculate v = 1 - x^2
-    const v = Ed25519.Fe.one.sub(x2);
-    // 4. Calculate y = sqrt(u/v) if it exists
-    // y^2 = u/v, so y = sqrt(u * v^-1)
-    const v_inv = v.invert();
-    const uv = u.mul(v_inv);
-    // Check if uv is a square
-    if (!uv.isSquare()) return null;
-    // Get square root
-    const y_fe = uv.sqrt() catch return null;
-    const y = y_fe.toBytes();
-    return y;
-}
-
-/// Create point from X,Y coordinates in compressed Ed25519 format
-fn pointFromCoordinates(x: [32]u8, y: [32]u8) !Ed25519 {
-    var point_bytes = y;  // Start with Y coordinate
-    // Set the sign bit (highest bit of last byte) based on sign of X
-    const x_negative = (x[31] & 0x80) != 0;
-    point_bytes[31] &= 0x7f;  // Clear top bit
-    point_bytes[31] |= @as(u8, @intFromBool(x_negative)) << 7;  // Set based on X sign
-    return Ed25519.fromBytes(point_bytes) catch return error.InvalidPoint;
-}
-
-/// Hash Password to Element for ECC Group 19 (Curve25519)
-pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !Ed25519 {
+/// Hash Password to Element for ECC Group 19 (P-256 NIST)
+pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !P256 {
     log.debug("Generating Password Element Hash...", .{});
+    const prime: [32]u8 = [_]u8{
+        0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    };
     var counter: u8 = 1;
     const max_tries = 40;
     const max_addr, const min_addr =
-        if (mem.lessThan(u8, addr1[0..], addr2[0..])) .{ addr2, addr1 }
+        if (mem.lessThan(u8, addr1[0..], addr2[0..])) .{ addr2, addr1 } 
         else .{ addr1, addr2 };
     const addrs: [12]u8 = max_addr ++ min_addr;
     log.debug("- max addr (1): {s}, min addr (2): {s}", .{ MACF{ .bytes = max_addr[0..] }, MACF{ .bytes = min_addr[0..] } });
-    var found_point: ?Ed25519 = null;
+    var found_point: ?P256 = null;
     var found_iter: ?u8 = null;
     var x_coord: [32]u8 = undefined;
     while (counter <= max_tries) : (counter += 1) {
@@ -194,50 +168,246 @@ pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !Ed25519 
         h.update(password);
         h.update(&[_]u8{ counter });
         h.final(pwd_seed[0..]);
-        var pwd_value: [32]u8 = undefined;
-        try pbkdf2(
-            pwd_value[0..],
+        try sha256PRFBits(
             pwd_seed[0..],
             "SAE Hunting and Pecking",
-            96,
-            hmac256,
+            prime[0..],
+            256,
+            x_coord[0..],
         );
-        x_coord = pwd_value;
-        const prime = [_]u8{0x7f} ++ [_]u8{0xff} ** 30 ++ [_]u8{0xed};
         const x_valid = mem.lessThan(u8, x_coord[0..], prime[0..]);
-        const y_coord = if (x_valid) solveForY(x_coord) else null;
-        log.debug(
-            \\- Counter {d:0>2}:
-            \\  - Found: {}
-            \\  - Seed:  {X:0>2}
-            \\  - Value: {X:0>2}
-            \\
-            , .{
-                counter,
-                y_coord != null,
-                pwd_seed[0..],
-                x_coord[0..],
-            }
-        );
-        if (y_coord != null and found_point == null) {
-            found_point = pointFromCoordinates(x_coord, y_coord.?) catch continue;
+        if (x_valid and found_point == null) findPoint: {
+            const x_candidate = P256.Fe.fromBytes(x_coord, .big) catch break :findPoint;
+            const is_odd = @as(u1, @truncate(x_coord[0])) == 1;
+            const y_coord = P256.recoverY(x_candidate, is_odd) catch break :findPoint;
+            found_point = P256.fromAffineCoordinates(.{ .x = x_candidate, .y = y_coord }) catch break :findPoint;
             found_iter = counter;
         }
+        //log.debug(
+        //    \\- Counter {d:0>2}:
+        //    \\  - Valid: {}
+        //    \\  - Found: {}
+        //    \\  - Seed:  {X:0>2}
+        //    \\  - Value: {X:0>2}
+        //    \\
+        //, .{
+        //    counter,
+        //    x_valid,
+        //    found_point != null,
+        //    pwd_seed[0..],
+        //    x_coord[0..],
+        //});
     }
     if (found_point) |point| {
-        log.debug("Generated Password Element Hash on Iteration {?d}.", .{ found_iter });
+        log.debug(
+            "Generated Password Element Hash on Iteration {?d}.\nX: {s}\nY: {s}", 
+            .{ 
+                found_iter,
+                HexF{ .bytes = point.x.toBytes(.big)[0..] },
+                HexF{ .bytes = point.y.toBytes(.big)[0..] },
+            },
+        );
         return point;
     }
     return SAEError.HashToElementFailed;
 }
 
-/// Derive Shared Key `k`.
-fn deriveK(ctx: Context, peer: Commit) ![32]u8 {
-    log.debug("Deriving K...", .{});
-    // Calculate: k = F(scalar-op(private, element-op(peer-element, scalar-op(peer-scalar, PE))))
-    const t1 = Ed25519.scalar.mul(ctx.password_element.toBytes(), peer.scalar);
-    const t2 = Ed25519.scalar.mul(peer.element.toBytes(), t1);
-    const k = Ed25519.scalar.mul(t2, ctx.private);
-    log.debug("Derived K.", .{});
-    return k;
+/// Generate SAE Confirm Message Data.
+pub fn genConfirm(ctx: *Context, peer: Commit) !void {
+    log.debug("Generating SAE Confirm...", .{});
+    log.debug(
+        \\Peer Commit:
+        \\ - scalar: {s}
+        \\ - x:      {s}
+        \\ - y:      {s}
+        \\
+        , .{
+            HexF{ .bytes = peer.scalar[0..] },
+            HexF{ .bytes = peer.element.x.toBytes(.big)[0..] },
+            HexF{ .bytes = peer.element.y.toBytes(.big)[0..] },
+        },
+    ); 
+    // Check for basic Reflection Attack
+    if (
+        mem.eql(u8, ctx.commit.scalar[0..], peer.scalar[0..]) and
+        ctx.commit.element.equivalent(peer.element)
+    ) return error.PeerIsReflected;
+    // Derive Shared Secret (k = F(K))
+    const k: [32]u8 = K: {
+        const pwe_mul = try ctx.pwe.mul(peer.scalar, .big);
+        const peer_add = pwe_mul.add(peer.element);
+        const private_mul = try peer_add.mul(ctx.private, .big);
+        try private_mul.rejectIdentity();
+        const shared_pt = private_mul.affineCoordinates();
+        break :K shared_pt.x.toBytes(.big);
+    };
+    // Derive Keyseed
+    const keyseed: [32]u8 = keyseed: {
+        const ks_salt: [32]u8 = .{ 0 } ** 32;
+        var ks_h = hmac256.init(ks_salt[0..]);
+        ks_h.update(k[0..]);
+        var ks_buf: [32]u8 = undefined;
+        ks_h.final(ks_buf[0..]);
+        break :keyseed ks_buf;
+    };
+    // Derive KCK & PMK Context / PMKID
+    const pk_ctx: [32]u8 = pkCtx: {
+        const commit_scalar_int: u512 = mem.readInt(u256, ctx.commit.scalar[0..], .big);
+        const peer_scalar_int: u512 = mem.readInt(u256, peer.scalar[0..], .big);
+        const context_int: u256 = @truncate((commit_scalar_int + peer_scalar_int) % p256_order);
+        break :pkCtx mem.toBytes(mem.nativeTo(u256, context_int, .big));
+    };
+    const pmkid: [16]u8 = pk_ctx[0..16].*;
+    // Derive KCK & PMK
+    var kck_pmk: [64]u8 = undefined;
+    try sha256PRFBits(
+        keyseed[0..],
+        "SAE KCK and PMK",
+        pk_ctx[0..],
+        512,
+        kck_pmk[0..],
+    );
+    ctx.kck = kck_pmk[0..32].*;
+    ctx.pmk = kck_pmk[32..64].*;
+    // Generate confirm token
+    ctx.confirm = makeConfirm(peer, ctx.*);
+    log.debug(
+        \\Confirm Data:
+        \\ - Secret (k): {s}
+        \\ - Keyseed:    {s}
+        \\ - PMKID:      {s}
+        \\ - KCK:        {s}
+        \\ - PMK:        {s}
+        \\ - Confirm:    {s}
+        , .{
+            HexF{ .bytes = k[0..] },
+            HexF{ .bytes = keyseed[0..] },
+            HexF{ .bytes = pmkid[0..] },
+            HexF{ .bytes = ctx.kck.?[0..] },
+            HexF{ .bytes = ctx.pmk.?[0..] },
+            HexF{ .bytes = ctx.confirm.?[0..] },
+        }
+    );
+    log.debug("Generated SAE Confirm.", .{});
 }
+
+/// Make the Confirm Token.
+fn makeConfirm(peer: Commit, ctx: Context) [32]u8 {
+    var confirm: [32]u8 = undefined;
+    var h = hmac256.init(ctx.kck.?[0..]);
+    h.update(ctx.send_confirm[0..]);
+    h.update(ctx.commit.scalar[0..]);
+    h.update(ctx.commit.element.x.toBytes(.big)[0..]);
+    h.update(ctx.commit.element.y.toBytes(.big)[0..]);
+    h.update(peer.scalar[0..]);
+    h.update(peer.element.x.toBytes(.big)[0..]);
+    h.update(peer.element.y.toBytes(.big)[0..]);
+    h.final(confirm[0..]);
+    return confirm;
+}
+
+/// Check if a Peer's Confirm is Valid.
+pub fn checkConfirm(received: [32]u8, peer: Commit, ctx: Context) !void {
+    const expected = makeConfirm(peer, ctx);
+    if (!std.mem.eql(u8, expected[0..], received[0..])) {
+        log.warn(
+            \\Confirm Mismatch:
+            \\- Expected: {s}
+            \\- Received: {s}
+            \\
+            , .{
+                HexF{ .bytes = expected[0..] },
+                HexF{ .bytes = received[0..] },
+            }
+        );
+        return error.ConfirmMismatch;
+    }
+}
+
+test "commit & confirm" {
+    std.testing.log_level = .debug;
+    const mac1: [6]u8 = .{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
+    const mac2: [6]u8 = .{ 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F };
+    const password: []const u8 = "test passw0rd!";
+
+    var client_ctx: Context = try genCommit(password, mac1, mac2);
+    var router_ctx: Context = try genCommit(password, mac2, mac1);
+
+    try genConfirm(&client_ctx, router_ctx.commit);
+    try genConfirm(&router_ctx, client_ctx.commit);
+
+    log.info(
+        \\Confirm
+        \\- Client: {s}
+        \\- Router: {s}
+        \\
+        , .{
+            HexF{ .bytes = client_ctx.confirm.?[0..] },
+            HexF{ .bytes = router_ctx.confirm.?[0..] },
+        },
+    );
+
+    try checkConfirm(client_ctx.confirm.?, router_ctx.commit, client_ctx);
+    try checkConfirm(router_ctx.confirm.?, client_ctx.commit, router_ctx);
+}
+
+/// Derives a key using IEEE 802.11 PRF (not HKDF).
+/// 
+/// `key` – The base key for the PRF (e.g., PMK).  
+/// `label` – Purpose-specific ASCII string.  
+/// `data` – Context-specific data (e.g., nonces, MAC addresses).  
+/// `output_bits` – Desired output length in **bits**.
+///
+/// Writes output to `out`, returns error if PRF fails.
+pub fn sha256PRFBits(
+    key: []const u8,
+    label: []const u8,
+    data: []const u8,
+    output_bits: u16,
+    out: []u8,
+) !void {
+    const sha256_mac_len = 32;
+    var counter: u16 = 1;
+    const output_len = (output_bits + 7) / 8;
+    if (out.len < output_len) return error.OutputBufferTooSmall;
+    var pos: usize = 0;
+    var hash: [sha256_mac_len]u8 = undefined;
+    var length_bytes: [2]u8 = undefined;
+    var counter_bytes: [2]u8 = undefined;
+    mem.writeInt(u16, length_bytes[0..], output_bits, .little);
+    while (pos < output_len) {
+        const remaining = output_len - pos;
+        mem.writeInt(u16, counter_bytes[0..], counter, .little);
+        var vec_array: [256]u8 = undefined;
+        var vec_counter: usize = 0;
+        inline for (&.{
+            counter_bytes[0..],
+            label,
+            data,
+            length_bytes[0..],
+        }) |vec_bytes| {
+            @memcpy(vec_array[vec_counter..(vec_counter + vec_bytes.len)], vec_bytes);
+            vec_counter += vec_bytes.len;
+        }
+        const vec = vec_array[0..vec_counter];
+        if (remaining >= sha256_mac_len) {
+            hmac256.create(out[pos..(pos + sha256_mac_len)][0..sha256_mac_len], vec, key);
+            pos += sha256_mac_len;
+        }
+        else {
+            hmac256.create(hash[0..sha256_mac_len], vec, key);
+            @memcpy(out[pos..(pos + remaining)], hash[0..remaining]);
+            pos += remaining;
+            break;
+        }
+        counter += 1;
+    }
+    // Mask final bits if output_bits isn't byte-aligned
+    //if (output_bits % 8 != 0) {
+    //    const mask: u8 = 0xff << (8 - (output_bits % 8));
+    //    out[output_len - 1] &= mask;
+    //}
+    // Clear sensitive material
+    @memset(hash[0..], 0);
+}
+
