@@ -148,10 +148,21 @@ pub const NLMSG = enum(u32) {
     OVERRUN = 4,
 };
 
+/// Current Unique PID f/ new Netlink Sockets
+var unique_pid: u32 = 12321;
 /// Initialize a Netlink Socket
 pub fn initSock(nl_sock_kind: comptime_int, timeout: posix.timeval) !posix.socket_t {
+    defer {
+        unique_pid +%= 1;
+        if (unique_pid < 12321) unique_pid = 12321;
+    }
     const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_kind);
     errdefer posix.close(nl_sock);
+    const nl_addr: posix.sockaddr.nl = .{
+        .pid = unique_pid,
+        .groups = 0,
+    };
+    try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
     try posix.setsockopt(
         nl_sock,
         posix.SOL.SOCKET,
@@ -218,6 +229,11 @@ pub fn reqOnSock(
     defer if (attrs.len > 0) alloc.free(@as([]align(8)const Attribute, @alignCast(attrs)));
     var nl_req = nl_req_raw;
     const msg_len = mem.alignForward(u32, @intCast(req_len + attrs_len), 4);
+    var nl_sock_info: posix.sockaddr.nl = undefined;
+    var nl_sock_size: u32 = @sizeOf(posix.sockaddr.nl);
+    try posix.getsockname(nl_sock, @ptrCast(&nl_sock_info), &nl_sock_size);
+    nl_req.nlh.pid = nl_sock_info.pid;
+    //log.debug("PID: {d}", .{ nl_req.nlh.pid });
     nl_req.nlh.len = msg_len;
     var req_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, msg_len);
     defer req_buf.deinit(alloc);
@@ -316,7 +332,8 @@ pub fn handleType(
     const FamHdrT = comptime famHdrT: {
         for (meta.fields(ResponseHdrT)) |field| {
             if (mem.eql(u8, field.name, "msg")) break :famHdrT field.type;
-        } else @compileError(fmt.comptimePrint("The Type `{s}` is not a `Request` Type.", .{ @typeName(ResponseHdrT) }));
+        }
+        else @compileError(fmt.comptimePrint("The Type `{s}` is not a `Request` Type.", .{ @typeName(ResponseHdrT) }));
     };
     const fam_hdr_len = @sizeOf(FamHdrT);
     // Parse Links
@@ -326,7 +343,8 @@ pub fn handleType(
         resp_list.deinit(alloc);
     }
     // - Handle Multi-part
-    multiPart: while (true) {
+    var done: bool = false;
+    multiPart: while (!done or resp_list.items.len == 0) {
         var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
         const resp_len = try posix.recv(
             nl_sock,
@@ -337,6 +355,10 @@ pub fn handleType(
         // Handle Dump
         var msg_iter: parse.Iterator(MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
         while (msg_iter.next()) |msg| {
+            defer {
+                if (msg.hdr.flags & c(NLM_F).MULTI != c(NLM_F).MULTI)
+                    done = true;
+            }
             if (msg.hdr.type == c(NLMSG).DONE) break :multiPart;
             const match_hdr = msg.hdr.type == config.nl_type;
             const match_cmd = matchCmd: {
@@ -360,7 +382,6 @@ pub fn handleType(
             //log.debug("Parsed {d} '{s}'", .{ resp_list.items.len, @typeName(ResponseT) });
         }
     }
-
     return try resp_list.toOwnedSlice(alloc);
 }
 

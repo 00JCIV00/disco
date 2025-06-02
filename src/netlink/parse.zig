@@ -10,6 +10,8 @@ const mem = std.mem;
 const meta = std.meta;
 
 const nl = @import("../netlink.zig");
+const utils = @import("../utils.zig");
+const HexF = utils.HexFormatter;
 
 /// Get an Instance of a Primitive Type (`T`) from the given `bytes`.
 pub fn primFromBytes(T: type, bytes: []const u8) !T {
@@ -264,7 +266,7 @@ pub fn baseFromBytes(
             try parsed_fields.put(alloc, field.name, {});
             const field_info = @typeInfo(field.type);
             defer if (field_info != .Optional) {
-                field_count += 1; 
+                field_count += 1;
             };
             const in_field = &@field(instance, field.name);
             switch (field_info) {
@@ -280,7 +282,15 @@ pub fn baseFromBytes(
     }
     //log.debug("---", .{});
     if (field_count < req_fields) {
-        //log.err("Error converting to Type '{s}'. Required Fields: {d}. Provided Fields: {d}.", .{ @typeName(T), req_fields, field_count });
+        log.err(
+            "Error converting to Type '{s}'. Required Fields: {d}. Provided Fields: {d}.\n{s}", 
+            .{ 
+                @typeName(T), 
+                req_fields, 
+                field_count, 
+                HexF{ .bytes = bytes }, 
+            },
+        );
         return error.IncompleteTypeData;
     }
     return instance;

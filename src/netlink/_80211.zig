@@ -969,13 +969,52 @@ pub const SchedScanPlan = struct {
     DURATION: ?u16 = null,
 };
 
-/// Authentication Data
-pub const AuthData = struct {
+///// Authentication Data
+//pub const AuthData = struct {
+//    pub const AttrE = ATTR;
+//
+//    /// Authentication Data
+//    AUTH_DATA: []const u8,
+//};
+
+/// `CMD_AUTHENTICATION` Request data
+pub const AuthRequest = struct {
     pub const AttrE = ATTR;
 
-    /// Authentication Data
-    AUTH_DATA: []const u8,
+    /// Interface index
+    IFINDEX: u32,
+    /// MAC address
+    MAC: [6]u8,
+    /// Authentication type
+    AUTH_TYPE: u32,
+    /// Information Elements
+    IE: ?[]const u8,
+    /// Key Management Suite
+    KEY_MGMT_SUITE: ?u32,
+    /// SAE Authentication Data (like commit/confirm)
+    SAE_DATA: ?[]const u8,
+    /// Optional SAE password
+    SAE_PASSWORD: ?[]const u8,
+    /// Optional PMK
+    PMK: ?[]const u8,
+    /// Optional PMKID
+    PMKID: ?[]const u8,
+    /// Optional BSSID
+    BSSID: ?[6]u8,
 };
+
+/// `CMD_AUTHENTICATION` Response data
+pub const AuthResponse = struct {
+    pub const AttrE = ATTR;
+
+    /// Wireless PHY index
+    WIPHY: u32,
+    /// Interface index
+    IFINDEX: u32,
+    /// Frame contents
+    FRAME: []const u8,
+};
+
 
 /// Security Types
 pub const SecurityType = enum {
@@ -3058,12 +3097,50 @@ pub fn registerFrames(
     nl_sock: posix.socket_t,
     if_index: i32,
     types: []const ?u16,
-    matches: []const u16,
+    matches: []const ?[]const u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     if (types.len == 0) return error.NoFramesForRegistrationProvided;
     if (matches.len != types.len) return error.FramesAndMatchesLengthMismatch;
     for (types, matches) |f_type, match| {
+        if (f_type == null and match == null) continue;
+        const attrs: []const nl.Attribute = attrs: {
+            var attr_list: std.ArrayListUnmanaged(nl.Attribute) = .{};
+            errdefer {
+                for (attr_list.items) |attr| alloc.free(attr.data);
+                attr_list.deinit(alloc);
+            }
+            try attr_list.append(
+                alloc,
+                .{
+                    .hdr = .{ .type = c(ATTR).IFINDEX },
+                    .data = try alloc.dupe(u8, mem.toBytes(if_index)[0..]),
+                },
+            );
+            if (f_type) |_type| {
+                try attr_list.append(
+                    alloc,
+                    .{
+                        .hdr = .{ .type = c(ATTR).FRAME_TYPE, .len = 6 },
+                        .data = try alloc.dupe(u8, mem.toBytes(_type)[0..]),
+                    },
+                );
+            }
+            if (match) |_match| {
+                try attr_list.append(
+                    alloc,
+                    .{
+                        .hdr = .{ .type = c(ATTR).FRAME_MATCH, .len = @intCast(4 + _match.len) },
+                        .data = try alloc.dupe(u8, _match),
+                    },
+                );
+            }
+            break :attrs try attr_list.toOwnedSlice(alloc);
+        };
+        defer {
+            for (attrs) |attr| alloc.free(attr.data);
+            alloc.free(attrs);
+        }
         try nl.reqOnSock(
             alloc,
             nl_sock,
@@ -3081,33 +3158,10 @@ pub fn registerFrames(
                     .version = 1,
                 },
             },
-            if (f_type) |_type| &.{
-                .{
-                    .hdr = .{ .type = c(ATTR).IFINDEX },
-                    .data = mem.toBytes(if_index)[0..],
-                },
-                .{
-                    .hdr = .{ .type = c(ATTR).FRAME_TYPE, .len = 6 },
-                    .data = mem.toBytes(_type)[0..],
-                },
-                .{
-                    .hdr = .{ .type = c(ATTR).FRAME_MATCH, .len = 6 },
-                    .data = mem.toBytes(match)[0..],
-                },
-            }
-            else &.{
-                .{
-                    .hdr = .{ .type = c(ATTR).IFINDEX },
-                    .data = mem.toBytes(if_index)[0..],
-                },
-                .{
-                    .hdr = .{ .type = c(ATTR).FRAME_MATCH, .len = 6 },
-                    .data = mem.toBytes(match)[0..],
-                },
-            }
+            attrs,
         );
         nl.handleAck(nl_sock) catch |err| switch (err) {
-            error.ALREADY => log.debug("Frame Match {d} w/ Type {?d} is already registered.", .{ match, f_type }),
+            error.ALREADY => log.debug("Frame Match 0x{?X:0>4} w/ Type {?X:0>2} is already registered.", .{ match, f_type }),
             else => return err,
         };
         time.sleep(100 * time.ns_per_ms);
@@ -3287,9 +3341,10 @@ pub fn authenticate(
             .nlh = .{
                 .len = 0,
                 .type = info.FAMILY_ID,
-                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                //.flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .flags = c(nl.NLM_F).REQUEST,
                 .seq = 12321,
-                .pid = 0,
+                .pid = 1,
             },
             .msg = .{
                 .cmd = c(CMD).AUTHENTICATE,
@@ -3298,28 +3353,29 @@ pub fn authenticate(
         },
         attr_list.items[0..],
     );
-    try nl.handleAck(nl_sock);
+    //try nl.handleAck(nl_sock);
 }
 
 /// Handle a CMD_AUTHENTICATE response.
-pub fn handleAuthData(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const AuthData {
+pub fn handleAuthResponse(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const AuthResponse {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     return try nl.handleType(
         alloc,
         nl_sock,
         nl.generic.Request,
-        AuthData,
-        parseAuthData,
+        AuthResponse,
+        parseAuthResponse,
         .{
             .nl_type = info.FAMILY_ID,
-            .fam_cmd = c(CMD).NEW_WIPHY,
+            .fam_cmd = c(CMD).AUTHENTICATE,
+            .warn_parse_err = true,
         },
     );
 }
 
-/// Parse the provided `bytes` to an AuthData instance.
-pub fn parseAuthData(alloc: mem.Allocator, bytes: []const u8) !AuthData {
-    return try nl.parse.fromBytes(alloc, AuthData, bytes[@sizeOf(nl.generic.Header)..]);
+/// Parse the provided `bytes` to an AuthResponse instance.
+pub fn parseAuthResponse(alloc: mem.Allocator, bytes: []const u8) !AuthResponse {
+    return try nl.parse.fromBytes(alloc, AuthResponse, bytes[@sizeOf(nl.generic.Header)..]);
 }
 
 /// Associate to the provided Network `ssid`.
@@ -3396,7 +3452,7 @@ pub fn associate(
     var ie_bytes: []const u8 = try nl.parse.toBytes(alloc, InformationElements, ies);
     defer alloc.free(ie_bytes);
     switch (security) {
-        .wpa2, .wpa3t => {
+        .wpa2, .wpa3t, .wpa3 => {
             const rsn = ies.RSN orelse return error.MissingRSN;
             const ext_capa = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10);
             const new_ies: InformationElements = .{
@@ -3635,14 +3691,20 @@ pub const ConnectConfig = struct {
     /// Scan Results if done separately.
     scan_results: ?ScanResults = null,
 };
-/// Connect to a WPA2 Network
+/// Connect to a WPA2 Network.
+/// This mostly serves as a small demo of the nl80211 features.
 pub fn connectWPA2(
     alloc: mem.Allocator, 
     if_index: i32, 
     ssid: []const u8, 
     pmk: [32]u8,
     /// A function to handle the 4-way Handshake and return both the PTK (`[48]u8`) and GTK (`[16]u8`).
-    handle4WHS: *const fn(i32, [32]u8, []const u8) anyerror!EAPoLKeys,
+    handle4WHS: *const fn(
+        i32, 
+        [32]u8, 
+        []const u8, 
+        SecurityType,
+    ) anyerror!EAPoLKeys,
     config: ConnectConfig,
 ) !posix.socket_t {
     //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
@@ -3660,7 +3722,7 @@ pub fn connectWPA2(
         nl_sock,
         if_index,
         &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
-        &.{ 0x0003, 0x0005, 0x0006, 0x0008, 0x000c },
+        &.{ &.{ 0x00, 0x03 }, &.{ 0x00, 0x05 }, &.{ 0x00, 0x06 }, &.{ 0x00, 0x08 }, &.{ 0x00, 0x0c } },
     );
     time.sleep(config.delay * time.ns_per_ms);
     const scan_results = config.scan_results orelse try scanSSID(
@@ -3719,7 +3781,12 @@ pub fn connectWPA2(
     defer alloc.free(rsn_bytes);
     const keys = keys: {
         while (attempts < config.retries) : (attempts += 1)
-            break :keys handle4WHS(if_index, pmk, rsn_bytes) catch continue;
+            break :keys handle4WHS(
+                if_index,
+                pmk,
+                rsn_bytes,
+                .wpa2,
+            ) catch continue;
         return error.Unsuccessful4WHS;
     };
     inline for (&.{ keys.ptk[32..], keys.gtk[0..] }, 0..) |key, idx| {

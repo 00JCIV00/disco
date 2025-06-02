@@ -88,18 +88,19 @@ pub const CtrlInfo = struct {
                         hdr = @alignCast(@ptrCast(bytes[start..end]));
                         start = end;
                         end += hdr.len - nl.attr_hdr_len;
-                        const id: *const u32 = @alignCast(@ptrCast(bytes[start..end]));
+                        //const id: *const u32 = @alignCast(@ptrCast(bytes[start..end]));
+                        const id: u32 = mem.bytesToValue(u32, bytes[start..end]);
                         start = end;
                         end += nl.attr_hdr_len;
                         hdr = @alignCast(@ptrCast(bytes[start..end]));
                         start = end;
                         end += hdr.len - nl.attr_hdr_len;
                         const name = try alloc.dupe(u8, mem.trim(u8, bytes[start..end], (ascii.whitespace ++ .{ 0 })[0..]));
-                        try grp_map.put(alloc, name, id.*);
+                        try grp_map.put(alloc, name, id);
                         end = mem.alignForward(usize, end, 4);
                         start = end;
                         end += nl.attr_hdr_len;
-                        log.debug("Name: '{s}' ({d}B), ID: {d}", .{ name, name.len, id.* });
+                        log.debug("Name: '{s}' ({d}B), ID: {d}", .{ name, name.len, id });
                     }
                     info.MCAST_GROUPS = grp_map;
                 },
