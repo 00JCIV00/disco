@@ -1,6 +1,7 @@
 //! Basic Netlink Functions
 
 const std = @import("std");
+const atomic = std.atomic;
 const fmt = std.fmt;
 const json = std.json;
 const log = std.log.scoped(.netlink);
@@ -149,17 +150,20 @@ pub const NLMSG = enum(u32) {
 };
 
 /// Current Unique PID f/ new Netlink Sockets
-var unique_pid: u32 = 12321;
+var unique_pid = atomic.Value(u32).init(12321);
 /// Initialize a Netlink Socket
 pub fn initSock(nl_sock_kind: comptime_int, timeout: posix.timeval) !posix.socket_t {
     defer {
-        unique_pid +%= 1;
-        if (unique_pid < 12321) unique_pid = 12321;
+        //unique_pid +%= 1;
+        //if (unique_pid < 12321) unique_pid = 12321;
+        _ = unique_pid.fetchAdd(1, .acquire);
+        if (unique_pid.load(.acquire) >= math.maxInt(u32)) unique_pid.store(12321, .monotonic);
     }
     const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_kind);
     errdefer posix.close(nl_sock);
     const nl_addr: posix.sockaddr.nl = .{
-        .pid = unique_pid,
+        //.pid = unique_pid,
+        .pid = unique_pid.load(.acquire),
         .groups = 0,
     };
     try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
@@ -177,6 +181,16 @@ pub fn initSock(nl_sock_kind: comptime_int, timeout: posix.timeval) !posix.socke
     );
     return nl_sock;
 }
+
+/// Current Unique Sequence ID f/ new Netlink Requests
+var unique_seq_id = atomic.Value(u32).init(1000);
+/// Get a Unique Netlink Sequence ID
+pub fn getSeqID() u32 {
+    defer if (unique_seq_id.load(.acquire) >= math.maxInt(u32) - 5)
+        unique_seq_id.store(1000, .monotonic);
+    return unique_seq_id.fetchAdd(1, .acquire);
+}
+
 
 /// Send a Netlink Request
 pub fn request(
@@ -234,6 +248,8 @@ pub fn reqOnSock(
     try posix.getsockname(nl_sock, @ptrCast(&nl_sock_info), &nl_sock_size);
     nl_req.nlh.pid = nl_sock_info.pid;
     //log.debug("PID: {d}", .{ nl_req.nlh.pid });
+    if (nl_req.nlh.seq == 0) nl_req.nlh.seq = getSeqID();
+    //log.debug("SID: {d}", .{ nl_req.nlh.seq });
     nl_req.nlh.len = msg_len;
     var req_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, msg_len);
     defer req_buf.deinit(alloc);

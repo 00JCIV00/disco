@@ -805,7 +805,7 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
                 .len = 0,
                 .type = c(RTM).GETLINK,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -884,7 +884,7 @@ pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
                 .len = 0,
                 .type = c(RTM).GETLINK,
                 .flags = c(nl.NLM_F).REQUEST,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -957,7 +957,7 @@ pub fn getAllIFLinks(alloc: mem.Allocator) ![]const IFInfoAndLink {
                 .len = 20,
                 .type = c(RTM).GETLINK,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = 0,
@@ -1006,7 +1006,7 @@ pub fn getIFAddr(alloc: mem.Allocator, if_index: i32) ![]const IFInfoAndAddr {
                 .len = 0,
                 .type = c(RTM).GETADDR,
                 .flags = c(nl.NLM_F).REQUEST,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -1035,7 +1035,7 @@ pub fn getAllIFAddrs(alloc: mem.Allocator) ![]const IFInfoAndAddr {
                 .len = 20,
                 .type = c(RTM).GETADDR,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = 0,
@@ -1110,7 +1110,7 @@ pub fn setState(if_index: i32, state: u32) !void {
                 .len = 0,
                 .type = c(RTM).SETLINK,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -1142,7 +1142,7 @@ pub fn setMAC(if_index: i32, mac: [6]u8) !void {
             .nlh = .{
                 .type = c(RTM).NEWLINK,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -1177,7 +1177,7 @@ pub fn addIP(
                 .len = 0,
                 .type = c(RTM).NEWADDR,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).EXCL,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -1219,7 +1219,7 @@ pub fn deleteIP(
                 .len = 0,
                 .type = c(RTM).DELADDR,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -1281,7 +1281,7 @@ pub fn addRoute(
                 .len = 0,
                 .type = c(RTM).NEWROUTE,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).CREATE | c(nl.NLM_F).EXCL,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -1337,7 +1337,7 @@ pub fn deleteRoute(
                 .len = 0,
                 .type = c(RTM).DELROUTE,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -1383,7 +1383,7 @@ pub const DeviceInfo = struct {
                     .len = 0,
                     .type = c(RTM).GETLINK,
                     .flags = c(nl.NLM_F).REQUEST,
-                    .seq = 12321,
+                    .seq = 0,
                     .pid = 0,
                 },
                 .msg = .{
@@ -1468,7 +1468,7 @@ pub const DeviceInfo = struct {
                     .len = 0,
                     .type = c(RTM).GETADDR,
                     .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
-                    .seq = 12321,
+                    .seq = 0,
                     .pid = 0,
                 },
                 .msg = .{

@@ -243,7 +243,6 @@ pub fn baseFromBytes(
     //log.debug("T: {s}, E: {s}", .{ @typeName(T), @typeName(E) });
     const hdr_len = @sizeOf(HdrT);
     //log.debug("---\nConverting to '{s}'. Hdr Len: {d}. Align: '{}'", .{ @typeName(T), hdr_len, HdrT.nl_align });
-
     var field_count: usize = 0;
     var start: usize = 0;
     var end: usize = hdr_len;
@@ -263,6 +262,7 @@ pub fn baseFromBytes(
         inline for (meta.fields(T)) |field| cont: {
             if (!mem.eql(u8, field.name, @tagName(tag)) or diff == 0) break :cont;
             if (parsed_fields.get(field.name)) |_| break :cont;
+            // TODO: Figure out the potential segfault here
             try parsed_fields.put(alloc, field.name, {});
             const field_info = @typeInfo(field.type);
             defer if (field_info != .Optional) {

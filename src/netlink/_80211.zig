@@ -2163,7 +2163,7 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -2204,7 +2204,7 @@ pub fn takeOwnership(nl_sock: posix.socket_t, if_index: i32) !void {
                 .type = fam_id,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
                 .pid = 0,
-                .seq = 12321,
+                .seq = 0,
             },
             .msg = .{
                 .cmd = c(CMD).SET_INTERFACE,
@@ -2236,7 +2236,7 @@ pub fn setMode(if_index: i32, mode: u32) !void {
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
                 .pid = 0,
-                .seq = 12321,
+                .seq = 0,
             },
             .msg = .{
                 .cmd = c(CMD).SET_INTERFACE,
@@ -2264,7 +2264,7 @@ pub fn getStation(alloc: mem.Allocator, if_index: i32, bssid: [6]u8) !StationInf
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -2354,8 +2354,8 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
-                .pid = 12321,
+                .seq = 0,
+                .pid = 0,
             },
             .msg = .{
                 .cmd = c(CMD).GET_INTERFACE,
@@ -2432,8 +2432,8 @@ pub fn getAllInterfaces(alloc: mem.Allocator) ![]const Interface {
                 .type = info.FAMILY_ID,
                 //.flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                .seq = 12321,
-                .pid = 12321,
+                .seq = 0,
+                .pid = 0,
             },
             .msg = .{
                 .cmd = c(CMD).GET_INTERFACE,
@@ -2478,8 +2478,8 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
                     .len = 0,
                     .type = info.FAMILY_ID,
                     .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                    .seq = 12321,
-                    .pid = 12321,
+                    .seq = 0,
+                    .pid = 0,
                 },
                 .msg = .{
                     .cmd = c(CMD).GET_WIPHY,
@@ -2567,8 +2567,8 @@ pub fn getAllWIPHY(alloc: mem.Allocator) ![]const Wiphy {
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                .seq = 12321,
-                .pid = 12321,
+                .seq = 0,
+                .pid = 0,
             },
             .msg = .{
                 .cmd = c(CMD).GET_WIPHY,
@@ -2675,7 +2675,7 @@ pub fn scanSSID(
                     .len = 0,
                     .type = info.FAMILY_ID,
                     .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                    .seq = 12321,
+                    .seq = 0,
                     .pid = 0,
                 },
                 .msg = .{
@@ -2746,7 +2746,7 @@ pub fn scanSSID(
                                 .len = 0,
                                 .type = info.FAMILY_ID,
                                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
-                                .seq = 12321,
+                                .seq = 0,
                                 .pid = 0,
                             },
                             .msg = .{
@@ -2895,7 +2895,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -2968,7 +2968,7 @@ pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConf
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK, // | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -2994,7 +2994,7 @@ pub fn stopSchedScan(alloc: mem.Allocator, if_index: i32) !void {
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -3022,7 +3022,7 @@ pub fn getScan(alloc: mem.Allocator, if_index: ?i32, nl_sock: ?posix.socket_t) !
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -3150,7 +3150,7 @@ pub fn registerFrames(
                     .len = 0,
                     .type = info.FAMILY_ID,
                     .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                    .seq = 12321,
+                    .seq = 0,
                     .pid = 0,
                 },
                 .msg = .{
@@ -3184,7 +3184,7 @@ pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
                     .len = 0,
                     .type = info.FAMILY_ID,
                     .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                    .seq = 12321,
+                    .seq = 0,
                     .pid = 0,
                 },
                 .msg = .{
@@ -3220,7 +3220,7 @@ pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -3325,10 +3325,6 @@ pub fn authenticate(
                     .hdr = .{ .type = c(ATTR).AUTH_DATA, .len = @truncate(nl.attr_hdr_len + sae_data.len) },
                     .data = sae_data,
                 },
-                //.{
-                //    .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE, .len = 6 },
-                //    .data = mem.toBytes(@as(u16, @intCast(0x888E)))[0..],
-                //},
             });
         },
         else => {},
@@ -3343,7 +3339,7 @@ pub fn authenticate(
                 .type = info.FAMILY_ID,
                 //.flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
                 .flags = c(nl.NLM_F).REQUEST,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 1,
             },
             .msg = .{
@@ -3502,7 +3498,7 @@ pub fn associate(
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -3513,6 +3509,49 @@ pub fn associate(
         attr_list.items[0..],
     );
     //errdefer posix.close(nl_sock);
+    try nl.handleAck(nl_sock);
+}
+
+/// Disconnect the corresponding Interface (`if_index`)
+pub fn disconnect(
+    alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
+    if_index: i32,
+    mac: [6]u8,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.reqOnSock(
+        alloc, 
+        nl_sock,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).DISASSOCIATE,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = mac[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).REASON_CODE },
+                .data = mem.toBytes(@as(u16, 1))[0..],
+            },
+        },
+    );
     try nl.handleAck(nl_sock);
 }
 
@@ -3534,7 +3573,7 @@ pub fn sendControlFrame(
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -3589,7 +3628,7 @@ pub fn authPort(
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{
@@ -3635,7 +3674,7 @@ pub fn addKey(
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 12321,
+                .seq = 0,
                 .pid = 0,
             },
             .msg = .{

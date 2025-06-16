@@ -140,7 +140,7 @@ pub const CtrlInfo = struct {
                     .len = 0,
                     .type = c(GENL).ID_CTRL,
                     .flags = c(nl.NLM_F).REQUEST,
-                    .seq = 12321,
+                    .seq = 0,
                     .pid = 0,
                 },
                 .msg = .{
