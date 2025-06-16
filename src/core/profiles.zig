@@ -26,6 +26,7 @@ pub const Profile = struct {
     /// Conflicting Processes
     conflict_processes: []const []const u8 = &.{
         "wpa_supplicant",
+        "hostapd",
         "nmcli",
         "nmtui",
         "dhcpcd",
