@@ -1,19 +1,20 @@
 .{
-    .name = "shaggy",
+    .name = .disco,
     .version = "0.1.0",
+    .fingerprint = 0x29d40cbdfe991cb5,
 
     .dependencies = .{
         .cova = .{
-            .url = "https://github.com/00jciv00/cova/archive/zig-v0.13.tar.gz",
-            .hash = "12209bb5cb0d5f9afda835620e7cbdc9221ffd0682a7c3a1b2aa0bf9516396dc663a",
+            .url = "https://github.com/00JCIV00/cova/archive/e8c25e57ca9c3dba6de32406168c717845812a71.tar.gz",
+            .hash = "cova-0.10.1-_OE4RyGdBADih7u14KZ3A9f07MJCqg8cBV0gTnZFFgtd",
         },
         //.vaxis = .{
         //    .url = "https://github.com/00JCIV00/libvaxis/archive/main.tar.gz",
         //    .hash = "1220b9cf102d73e0dbf7de594dcd7847fec09732fd4470736d060c40531b799ea643",
         //},
         .zeit = .{
-            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.4.4.tar.gz",
-            .hash = "12204b653c90b503f89e2f1a73c4754b83fb7275c100c81872deaca12c9f17e334ec",
+            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.6.0.tar.gz",
+            .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
         },
     },
 

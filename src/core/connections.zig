@@ -147,10 +147,10 @@ pub const Context = struct {
         inline for (meta.fields(@This())) |field| {
             switch (field.type) {
                 inline else => |f_ptr_type| {
-                    const f_type = @typeInfo(f_ptr_type).Pointer.child;
+                    const f_type = @typeInfo(f_ptr_type).pointer.child;
                     const ctx_field = try alloc.create(f_type);
                     ctx_field.* = switch (f_type) {
-                        std.Thread.Pool => .{ .threads = &[_]std.Thread{}, .allocator = alloc },
+                        std.Thread.Pool => .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
                         inline else => .{},
                     };
                     @field(self, field.name) = ctx_field;
@@ -541,7 +541,7 @@ pub fn handleConnection(
                         conn_if.nl_sock,
                         posix.SOL.SOCKET,
                         posix.SO.RCVTIMEO,
-                        mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
+                        mem.toBytes(posix.timeval{ .sec = 1, .usec = 0 })[0..],
                     );
                     const nl80211_info = nl._80211.ctrl_info orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
                     const nl80211_mlme = nl80211_info.MCAST_GROUPS.get("mlme") orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
@@ -780,7 +780,7 @@ pub fn handleConnection(
                     conn_if.nl_sock,
                     posix.SOL.SOCKET,
                     posix.SO.RCVTIMEO,
-                    mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
+                    mem.toBytes(posix.timeval{ .sec = 1, .usec = 0 })[0..],
                 );
                 set_conn = (ctx.connections.getEntry(conn_id) orelse {
                     ctx.connections.mutex.unlock();
@@ -851,7 +851,7 @@ pub fn handleConnection(
         conn_if.nl_sock,
         posix.SOL.SOCKET,
         posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
+        mem.toBytes(posix.timeval{ .sec = math.maxInt(u32), .usec = 0 })[0..],
     );
     var set_if = setIF: {
         defer if_ctx.interfaces.mutex.unlock();

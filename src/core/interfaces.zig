@@ -206,7 +206,7 @@ pub const Context = struct {
         inline for (meta.fields(@This())) |field| {
             switch (field.type) {
                 inline else => |f_ptr_type| {
-                    const f_type = @typeInfo(f_ptr_type).Pointer.child;
+                    const f_type = @typeInfo(f_ptr_type).pointer.child;
                     const ctx_field = try alloc.create(f_type);
                     ctx_field.* = f_type{};
                     @field(self, field.name) = ctx_field;
@@ -253,10 +253,10 @@ pub fn initIFSock(
     const nl_sock = nlSock: {
         if (interval.* >= 1000 * time.ns_per_ms) {
             const timeout: i32 = @intCast(@divFloor(interval.*, time.ns_per_s));
-            break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = timeout, .tv_usec = 0 });
+            break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = timeout, .usec = 0 });
         }
         const timeout: i32 = @intCast(@divFloor(interval.*, time.ns_per_us));
-        break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = timeout });
+        break :nlSock try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = timeout });
     };
     errdefer posix.close(nl_sock);
     const info = nl._80211.ctrl_info orelse return error.NL80211ControlInfoNotInitialized;

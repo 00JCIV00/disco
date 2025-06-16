@@ -17,10 +17,10 @@ const HexF = utils.HexFormatter;
 pub fn primFromBytes(T: type, bytes: []const u8) !T {
     if (T == []const u8) return bytes;
     return switch (@typeInfo(T)) {
-        .Array => |ary| bytes[0..ary.len].*,
-        .Optional => |optl| try primFromBytes(bytes, optl.child),
-        .Int, .Float => @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
-        .Bool => if (bytes.len == 0) true else @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
+        .array => |ary| bytes[0..ary.len].*,
+        .optional => |optl| try primFromBytes(bytes, optl.child),
+        .int, .float => @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
+        .bool => if (bytes.len == 0) true else @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
         else => error.NonPrimitiveType,
     };
 }
@@ -30,31 +30,31 @@ pub fn primFromBytes(T: type, bytes: []const u8) !T {
 pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
     if (T == []const u8) return try alloc.dupe(u8, bytes);
     const raw_info = @typeInfo(T);
-    if (raw_info != .Pointer) return error.NotAPointer;
-    const info = raw_info.Pointer;
+    if (raw_info != .pointer) return error.NotAPointer;
+    const info = raw_info.pointer;
     switch (info.size) {
-        .One => {
+        .one => {
             const new = try alloc.create(info.child);
             errdefer alloc.destroy(new);
             new.* = switch (@typeInfo(info.child)) {
-                .Pointer => try ptrFromBytes(alloc, info.child, bytes),
-                .Optional => try optFromBytes(alloc, info.child, bytes),
-                .Struct => try fromBytes(alloc, info.child, bytes),
+                .pointer => try ptrFromBytes(alloc, info.child, bytes),
+                .optional => try optFromBytes(alloc, info.child, bytes),
+                .@"struct" => try fromBytes(alloc, info.child, bytes),
                 else => try primFromBytes(info.child, bytes),
             };
             return new;
         },
-        .Slice => {
+        .slice => {
             const child_info = @typeInfo(info.child);
             if (grouped: {
-                if (child_info != .Struct) break :grouped false;
-                for (child_info.Struct.decls) |decl| {
+                if (child_info != .@"struct") break :grouped false;
+                for (child_info.@"struct".decls) |decl| {
                     if (mem.eql(u8, decl.name, "_grouped_attr")) break :grouped true;
                 }
                 break :grouped false;
             }) {
                 //log.debug("*****Handling grouped slice!", .{});
-                const HdrT: type = inline for (child_info.Struct.decls) |decl| {
+                const HdrT: type = inline for (child_info.@"struct".decls) |decl| {
                     comptime if (mem.eql(u8, decl.name, "AttrHdrT")) break @field(info.child, "AttrHdrT");
                 } else nl.AttributeHeader;
                 const hdr_len = @sizeOf(HdrT);
@@ -80,9 +80,9 @@ pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
             const new = try alloc.alloc(info.child, 1);
             errdefer alloc.free(new);
             new[0] = switch (@typeInfo(info.child)) {
-                .Pointer => try ptrFromBytes(alloc, info.child, bytes),
-                .Optional => try optFromBytes(alloc, info.child, bytes),
-                .Struct => try fromBytes(alloc, info.child, bytes),
+                .pointer => try ptrFromBytes(alloc, info.child, bytes),
+                .optional => try optFromBytes(alloc, info.child, bytes),
+                .@"struct" => try fromBytes(alloc, info.child, bytes),
                 else => try primFromBytes(info.child, bytes),
             };
             return new;
@@ -102,11 +102,11 @@ pub fn setPtrFromBytes(
     bytes: []const u8
 ) !void {
     const raw_info = @typeInfo(T);
-    if (raw_info != .Pointer) return error.NotAPointer;
-    const info = raw_info.Pointer;
+    if (raw_info != .pointer) return error.NotAPointer;
+    const info = raw_info.pointer;
     switch (info.size) {
-        .One => instance.* = try ptrFromBytes(alloc, T, bytes),
-        .Slice => {
+        .one => instance.* = try ptrFromBytes(alloc, T, bytes),
+        .slice => {
             if (T == []const u8) {
                 instance.* = try alloc.dupe(u8, bytes);
                 return;
@@ -129,12 +129,12 @@ pub fn setPtrFromBytes(
 /// Get an Instance of an Optional Type (`T`) from the given `bytes`.
 pub fn optFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
     const raw_info = @typeInfo(T);
-    if (raw_info != .Optional) return error.NotAnOptional;
-    const info = raw_info.Optional;
+    if (raw_info != .optional) return error.NotAnOptional;
+    const info = raw_info.optional;
     return switch (@typeInfo(info.child)) {
-        .Optional => try optFromBytes(alloc, T, bytes),
-        .Pointer => try ptrFromBytes(alloc, T, bytes),
-        .Struct => try fromBytes(alloc, T, bytes),
+        .optional => try optFromBytes(alloc, T, bytes),
+        .pointer => try ptrFromBytes(alloc, T, bytes),
+        .@"struct" => try fromBytes(alloc, T, bytes),
         else => try primFromBytes(T, bytes),
     };
 }
@@ -147,23 +147,23 @@ pub fn setOptFromBytes(
     bytes: []const u8,
 ) !void {
     const raw_info = @typeInfo(T);
-    if (raw_info != .Optional) return error.NotAnOptional;
-    const info = raw_info.Optional;
+    if (raw_info != .optional) return error.NotAnOptional;
+    const info = raw_info.optional;
     const child_info = @typeInfo(info.child);
     errdefer freeOptBytes(alloc, T, instance.*);
     if (instance.*) |*_instance| {
-        if (child_info == .Pointer and child_info.Pointer.size == .Slice)
+        if (child_info == .pointer and child_info.pointer.size == .slice)
             return try setPtrFromBytes(alloc, info.child, _instance, bytes)
         else return;
     }
     switch (child_info) {
-        .Optional => try setOptFromBytes(alloc, info.child, instance, bytes),
-        .Pointer => {
+        .optional => try setOptFromBytes(alloc, info.child, instance, bytes),
+        .pointer => {
             if (instance.*) |*_instance|
                 try setPtrFromBytes(alloc, info.child, _instance, bytes)
             else instance.* = try ptrFromBytes(alloc, info.child, bytes);
         },
-        .Struct => instance.* = try fromBytes(alloc, info.child, bytes),
+        .@"struct" => instance.* = try fromBytes(alloc, info.child, bytes),
         else => instance.* = try primFromBytes(info.child, bytes),
     }
 }
@@ -189,9 +189,9 @@ pub fn fromBytes(
     errdefer freeBytes(alloc, T, instance);
     inline for (meta.fields(T)) |field| {
         const field_info = @typeInfo(field.type);
-        if (field_info == .Optional) @field(instance, field.name) = null;
-        if (field.default_value) |val| @field(instance, field.name) = @as(*const field.type, @alignCast(@ptrCast(val))).*;
-        if (field_info == .Pointer and field_info.Pointer.size == .Slice)
+        if (field_info == .optional) @field(instance, field.name) = null;
+        if (field.default_value_ptr) |val| @field(instance, field.name) = @as(*const field.type, @alignCast(@ptrCast(val))).*;
+        if (field_info == .pointer and field_info.pointer.size == .slice)
             @field(instance, field.name) = &.{};
     }
     return try baseFromBytes(alloc, T, bytes, instance);
@@ -218,20 +218,20 @@ pub fn baseFromBytes(
 ) !T {
     if (meta.hasFn(T, "fromBytes")) return try T.fromBytes(alloc, bytes);
     const info = @typeInfo(T);
-    if (info == .Struct and (info.Struct.layout == .@"extern" or info.Struct.layout == .@"packed"))
+    if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed"))
         return try rawFromBytes(T, bytes);
     var instance = base_instance;
     errdefer freeBytes(alloc, T, instance);
     comptime var req_fields = 0;
     inline for (meta.fields(T)) |field| {
         const field_info = @typeInfo(field.type);
-        if (field_info != .Optional and field.default_value == null) req_fields += 1;
+        if (field_info != .optional and field.default_value_ptr == null) req_fields += 1;
     }
     const E, 
     const HdrT = comptime consts: {
         var E: ?type = null;
         var HdrT: ?type = null;
-        for (@typeInfo(T).Struct.decls) |decl| {
+        for (@typeInfo(T).@"struct".decls) |decl| {
             if (mem.eql(u8, decl.name, "AttrE")) E = @field(T, "AttrE");
             if (mem.eql(u8, decl.name, "AttrHdrT")) HdrT = @field(T, "AttrHdrT");
         }
@@ -265,14 +265,14 @@ pub fn baseFromBytes(
             // TODO: Figure out the potential segfault here
             try parsed_fields.put(alloc, field.name, {});
             const field_info = @typeInfo(field.type);
-            defer if (field_info != .Optional) {
+            defer if (field_info != .optional) {
                 field_count += 1;
             };
             const in_field = &@field(instance, field.name);
             switch (field_info) {
-                .Optional => try setOptFromBytes(alloc, field.type, in_field, bytes[start..end]),
-                .Pointer => try setPtrFromBytes(alloc, field.type, in_field, bytes[start..end]),
-                .Struct => in_field.* = try fromBytes(alloc, field.type, bytes[start..end]),
+                .optional => try setOptFromBytes(alloc, field.type, in_field, bytes[start..end]),
+                .pointer => try setPtrFromBytes(alloc, field.type, in_field, bytes[start..end]),
+                .@"struct" => in_field.* = try fromBytes(alloc, field.type, bytes[start..end]),
                 else => in_field.* = try primFromBytes(field.type, bytes[start..end]),
             }
         }
@@ -303,24 +303,24 @@ pub fn freePtrBytes(alloc: mem.Allocator, T: type, instance: T) void {
         return;
     }
     const raw_info = @typeInfo(T);
-    if (raw_info != .Pointer) return;
-    const info = raw_info.Pointer;
+    if (raw_info != .pointer) return;
+    const info = raw_info.pointer;
     const child_info = @typeInfo(info.child);
     switch (info.size) {
-        .One => {
+        .one => {
             switch (child_info) {
-                .Optional => freeOptBytes(alloc, info.child, instance),
-                .Pointer => freePtrBytes(alloc, info.child, instance),
-                .Struct => freeBytes(alloc, info.child, instance),
+                .optional => freeOptBytes(alloc, info.child, instance),
+                .pointer => freePtrBytes(alloc, info.child, instance),
+                .@"struct" => freeBytes(alloc, info.child, instance),
                 else => {},
             }
         },
-        .Slice => {
+        .slice => {
             for (instance) |in_field| {
                 switch (child_info) {
-                    .Optional => freeOptBytes(alloc, info.child, in_field),
-                    .Pointer => freePtrBytes(alloc, info.child, in_field),
-                    .Struct => freeBytes(alloc, info.child, in_field),
+                    .optional => freeOptBytes(alloc, info.child, in_field),
+                    .pointer => freePtrBytes(alloc, info.child, in_field),
+                    .@"struct" => freeBytes(alloc, info.child, in_field),
                     else => {},
                 }
             }
@@ -334,13 +334,13 @@ pub fn freePtrBytes(alloc: mem.Allocator, T: type, instance: T) void {
 pub fn freeOptBytes(alloc: mem.Allocator, T: type, instance: T) void {
     const _instance = instance orelse return;
     const raw_info = @typeInfo(T);
-    if (raw_info != .Optional) return;
-    const info = raw_info.Optional;
+    if (raw_info != .optional) return;
+    const info = raw_info.optional;
     const child_info = @typeInfo(info.child);
     switch (child_info) {
-        .Optional => freeOptBytes(alloc, info.child, _instance),
-        .Pointer => freePtrBytes(alloc, info.child, _instance),
-        .Struct => freeBytes(alloc, info.child, _instance),
+        .optional => freeOptBytes(alloc, info.child, _instance),
+        .pointer => freePtrBytes(alloc, info.child, _instance),
+        .@"struct" => freeBytes(alloc, info.child, _instance),
         else => {},
     }
 }
@@ -351,9 +351,9 @@ pub fn freeBytes(alloc: mem.Allocator, T: type, instance: T) void {
     inline for (meta.fields(T)) |field| {
         const in_field = @field(instance, field.name);
         switch (@typeInfo(field.type)) {
-            .Optional => freeOptBytes(alloc, field.type, in_field),
-            .Pointer => freePtrBytes(alloc, field.type, in_field),
-            .Struct => freeBytes(alloc, field.type, in_field),
+            .optional => freeOptBytes(alloc, field.type, in_field),
+            .pointer => freePtrBytes(alloc, field.type, in_field),
+            .@"struct" => freeBytes(alloc, field.type, in_field),
             else => {},
             //else => log.debug("__NOT FREED: {s} ({s})", .{ field.name, @typeName(field.type) }),
         }
@@ -370,7 +370,7 @@ pub fn rawToBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
 pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
     if (meta.hasMethod(T, "toBytes")) return try instance.toBytes(alloc);
     const info = @typeInfo(T);
-    if (info == .Struct and (info.Struct.layout == .@"extern" or info.Struct.layout == .@"packed"))
+    if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed"))
         return try rawToBytes(alloc, T, instance);
     var buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
     errdefer buf.deinit(alloc);
@@ -378,7 +378,7 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
     const HdrT = comptime consts: {
         var E: ?type = null;
         var HdrT: ?type = null;
-        for (@typeInfo(T).Struct.decls) |decl| {
+        for (@typeInfo(T).@"struct".decls) |decl| {
             if (mem.eql(u8, decl.name, "AttrE")) E = @field(T, "AttrE");
             if (mem.eql(u8, decl.name, "AttrHdrT")) HdrT = @field(T, "AttrHdrT");
         }
@@ -399,9 +399,9 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
         const in_field = @field(instance, field.name);
         const field_info = @typeInfo(field.type);
         const bytes = switch (field_info) {
-            .Pointer => try ptrToBytes(alloc, field.type, in_field, HdrT, E, field.name),
-            .Optional => try optToBytes(alloc, field.type, in_field orelse break :cont, HdrT, E, field.name),
-            .Struct => try toBytes(alloc, field.type, in_field),
+            .pointer => try ptrToBytes(alloc, field.type, in_field, HdrT, E, field.name),
+            .optional => try optToBytes(alloc, field.type, in_field orelse break :cont, HdrT, E, field.name),
+            .@"struct" => try toBytes(alloc, field.type, in_field),
             else => try primToBytes(alloc, field.type, in_field),
         };
         defer alloc.free(bytes);
@@ -409,10 +409,10 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
         const add_hdr = addHdr: {
             const hdr_child,
             const hdr_info =
-                if (field_info == .Optional) .{ field_info.Optional.child, @typeInfo(field_info.Optional.child) } 
+                if (field_info == .optional) .{ field_info.optional.child, @typeInfo(field_info.optional.child) } 
                 else .{ field.type, field_info };
-            if (hdr_child == []const u8 or hdr_info != .Pointer) break :addHdr true;
-            if (hdr_info.Pointer.size != .Slice) break :addHdr true;
+            if (hdr_child == []const u8 or hdr_info != .pointer) break :addHdr true;
+            if (hdr_info.pointer.size != .slice) break :addHdr true;
             break :addHdr false;
         };
         if (add_hdr)
@@ -433,12 +433,12 @@ fn ptrToBytes(
     field_name: []const u8,
 ) ![]const u8 {
     const raw_info = @typeInfo(T);
-    if (raw_info != .Pointer) return error.NotAPointer;
-    const info = raw_info.Pointer;
+    if (raw_info != .pointer) return error.NotAPointer;
+    const info = raw_info.pointer;
     const child_info = @typeInfo(info.child);
     switch (info.size) {
-        .One => return try primToBytes(alloc, info.child, instance.*),
-        .Slice => {
+        .one => return try primToBytes(alloc, info.child, instance.*),
+        .slice => {
             if (T == []const u8) return try alloc.dupe(u8, instance);
             var buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
             //if (T == []const []const u8) log.debug("Slice of Strings: {s}", .{ field_name });
@@ -448,9 +448,9 @@ fn ptrToBytes(
                     .type = @intFromEnum(meta.stringToEnum(E, field_name) orelse return error.UnknownEnum),
                 };
                 const bytes = switch (child_info) {
-                    .Pointer => try ptrToBytes(alloc, info.child, in_item, HdrT, E, field_name),
-                    .Optional => try optToBytes(alloc, info.child, in_item, HdrT, E, field_name),
-                    .Struct => try toBytes(alloc, info.child, in_item),
+                    .pointer => try ptrToBytes(alloc, info.child, in_item, HdrT, E, field_name),
+                    .optional => try optToBytes(alloc, info.child, in_item, HdrT, E, field_name),
+                    .@"struct" => try toBytes(alloc, info.child, in_item),
                     else => try primToBytes(alloc, info.child, in_item),
                 };
                 defer alloc.free(bytes);
@@ -477,14 +477,14 @@ fn optToBytes(
     field_name: []const u8,
 ) ![]const u8 {
     const raw_info = @typeInfo(T);
-    if (raw_info != .Optional) return;
-    const info = raw_info.Optional;
+    if (raw_info != .optional) return;
+    const info = raw_info.optional;
     const child_info = @typeInfo(info.child);
     const _instance = instance orelse return try alloc.alloc(u8, 0);
     return switch (child_info) {
-        .Optional => try optToBytes(alloc, info.child, _instance, HdrT, E, field_name),
-        .Pointer => try ptrToBytes(alloc, info.child, _instance, HdrT, E, field_name),
-        .Struct => try toBytes(alloc, info.child, _instance),
+        .optional => try optToBytes(alloc, info.child, _instance, HdrT, E, field_name),
+        .pointer => try ptrToBytes(alloc, info.child, _instance, HdrT, E, field_name),
+        .@"struct" => try toBytes(alloc, info.child, _instance),
         else => try primToBytes(alloc, info.child, _instance),
     };
 }
@@ -492,14 +492,14 @@ fn optToBytes(
 /// Write an `instance` of a Primitive Type (`T`) to Bytes.
 fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
     switch (@typeInfo(T)) {
-        .Pointer => {
+        .pointer => {
             if (T != []const u8) {
                 log.err("Unsupported Pointer Type: '{s}'", .{ @typeName(T) });
                 return error.UnsupportedType;
             }
             return try alloc.dupe(u8, instance);
         },
-        .Int, .Float, .Bool, .Array => {
+        .int, .float, .bool, .array => {
             const bytes = mem.toBytes(instance)[0..];
             return try alloc.dupe(u8, bytes);
         },

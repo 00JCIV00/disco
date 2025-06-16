@@ -95,10 +95,10 @@ pub const Context = struct {
         inline for (meta.fields(@This())) |field| {
             switch (field.type) {
                 inline else => |f_ptr_type| {
-                    const f_type = @typeInfo(f_ptr_type).Pointer.child;
+                    const f_type = @typeInfo(f_ptr_type).pointer.child;
                     const ctx_field = try alloc.create(f_type);
                     ctx_field.* = switch (f_type) {
-                        std.Thread.Pool => .{ .threads = &[_]std.Thread{}, .allocator = alloc },
+                        std.Thread.Pool => .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
                         inline else => .{},
                     };
                     @field(self, field.name) = ctx_field;

@@ -234,14 +234,14 @@ pub fn handleHTTP(http_sock: posix.socket_t, serve_dir: []const u8, active: *con
     const bytes_read = try posix.recv(http_sock, http_buf[0..], 0);
     const request = http_buf[0..bytes_read];
     // Parse HTTP request (simple implementation)
-    var lines = mem.split(u8, request, "\r\n");
+    var lines = mem.splitSequence(u8, request, "\r\n");
     const first_line = lines.first();
-    var parts = mem.split(u8, first_line, " ");
+    var parts = mem.splitScalar(u8, first_line, ' ');
     _ = parts.next(); // Skip method
     const req_path_raw = parts.next() orelse "";
     const req_path = if (mem.startsWith(u8, req_path_raw, "/")) req_path_raw[1..] else req_path_raw;
     // Sanitize and build file path
-    var path_buf: [fs.MAX_PATH_BYTES]u8 = undefined;
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
     const full_path = try fmt.bufPrint(path_buf[0..], "{s}/{s}", .{ serve_dir, req_path });
     log.info("HTTP: Serving File '{s}'...", .{ full_path });
     // Try to read file
@@ -302,7 +302,7 @@ pub fn handleTFTP(
             // Parse filename from request
             const filename = mem.sliceTo(request[2..], 0);
             // Sanitize and build file path
-            var path_buf: [fs.MAX_PATH_BYTES]u8 = undefined;
+            var path_buf: [fs.max_path_bytes]u8 = undefined;
             const full_path = try fmt.bufPrint(path_buf[0..], "{s}/{s}", .{ serve_dir, filename });
             log.info("TFTP: Serving File '{s}'...", .{ full_path });
             // Try to open file

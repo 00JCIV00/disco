@@ -465,7 +465,7 @@ pub fn handle4WHS(
         hs_sock,
         posix.SOL.SOCKET,
         posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .tv_sec = 1, .tv_usec = 0 })[0..],
+        mem.toBytes(posix.timeval{ .sec = 1, .usec = 0 })[0..],
     );
     try posix.setsockopt(
         hs_sock,

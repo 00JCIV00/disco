@@ -1332,8 +1332,8 @@ pub const InformationElements = struct {
             }
             inline for (meta.fields(@This())) |field| {
                 const field_info = @typeInfo(field.type);
-                if (field_info == .Optional) @field(rsn, field.name) = null;
-                if (field_info == .Pointer and field_info.Pointer.size == .Slice)
+                if (field_info == .optional) @field(rsn, field.name) = null;
+                if (field_info == .pointer and field_info.pointer.size == .Slice)
                     @field(rsn, field.name) = &.{};
             }
             rsn.VERSION = @bitCast(bytes[0..2].*);
@@ -1421,7 +1421,7 @@ pub const InformationElements = struct {
                 const field_info = @typeInfo(field.type);
                 const in_field = @field(self, field.name);
                 switch (field_info) {
-                    .Optional => |optl| optl: {
+                    .optional => |optl| optl: {
                         const _in_field = in_field orelse break :optl;
                         if (optl.child == u16 or optl.child == Suite) {
                             try buf.appendSlice(alloc, mem.toBytes(_in_field)[0..]);
@@ -2700,7 +2700,7 @@ pub fn scanSSID(
             @ptrCast(&sa_nl),
             16,
         );
-        var timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
+        var timeout_opt = mem.toBytes(posix.timeval{ .sec = @intCast(timeout), .usec = 0 });
         try posix.setsockopt(
             res_sock, 
             posix.SOL.SOCKET, 
@@ -2759,7 +2759,7 @@ pub fn scanSSID(
                         },
                     );
                     timeout *= 3;
-                    timeout_opt = mem.toBytes(posix.timeval{ .tv_sec = @intCast(timeout), .tv_usec = 0 });
+                    timeout_opt = mem.toBytes(posix.timeval{ .sec = @intCast(timeout), .usec = 0 });
                     try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
                     resp_timer.reset();
                     continue :respLoop;
@@ -2885,7 +2885,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
             .data = ssid_attrs_bytes.?,
         });
     }
-    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = 10_000 });
+    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
     try nl.reqOnSock(
         alloc,
         nl_sock,
@@ -3012,7 +3012,7 @@ pub fn stopSchedScan(alloc: mem.Allocator, if_index: i32) !void {
 /// Request Scan Results from Netlink.
 pub fn getScan(alloc: mem.Allocator, if_index: ?i32, nl_sock: ?posix.socket_t) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const req_sock = nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = 10_000 });
+    const req_sock = nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
     try nl.reqOnSock(
         alloc,
         req_sock,
@@ -3754,7 +3754,7 @@ pub fn connectWPA2(
     time.sleep(config.delay * time.ns_per_ms);
     try nl.route.setState(if_index, c(nl.route.IFF).UP);
     time.sleep(config.delay * time.ns_per_ms);
-    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .tv_sec = 0, .tv_usec = 10_000 });
+    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
     try takeOwnership(nl_sock, if_index);
     try registerFrames(
         alloc,
@@ -3847,7 +3847,7 @@ pub fn connectWPA2(
         nl_sock,
         posix.SOL.SOCKET,
         posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .tv_sec = math.maxInt(u32), .tv_usec = 0 })[0..],
+        mem.toBytes(posix.timeval{ .sec = math.maxInt(u32), .usec = 0 })[0..],
     );
     return nl_sock;
 }

@@ -57,7 +57,7 @@ pub fn asNetBytes(HdrT: type, hdr: HdrT) [@bitSizeOf(HdrT) / 8]u8 {
 pub fn asNativeHeader(HdrT: type, bytes: []const u8) HdrT {
     var net_hdr: HdrT = mem.bytesToValue(HdrT, bytes);
     inline for (meta.fields(HdrT)) |field| cont: {
-        if (@typeInfo(field.type) != .Int) break :cont;
+        if (@typeInfo(field.type) != .int) break :cont;
         @field(net_hdr, field.name) = mem.bigToNative(field.type, @field(net_hdr, field.name));
     }
     return net_hdr;

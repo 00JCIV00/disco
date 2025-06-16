@@ -128,7 +128,7 @@ pub const Core = struct {
             ._alloc = alloc,
             ._arena = arena,
             ._timer = try std.time.Timer.start(),
-            ._thread_pool = .{ .threads = &[_]std.Thread{}, .allocator = alloc },
+            ._thread_pool = .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
             .config = config,
             .if_ctx = if_ctx,
             .network_ctx = network_ctx,

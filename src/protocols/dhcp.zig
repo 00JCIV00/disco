@@ -168,7 +168,7 @@ pub fn handleDHCP(
         dhcp_sock,
         posix.SOL.SOCKET,
         posix.SO.RCVTIMEO,
-        mem.asBytes(&posix.timeval{ .tv_sec = 3, .tv_usec = 0 }),
+        mem.asBytes(&posix.timeval{ .sec = 3, .usec = 0 }),
     );
     try posix.bind(dhcp_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
     const bootp_hdr_len = @sizeOf(l5.BOOTP.Header);

@@ -1,6 +1,7 @@
 const std = @import("std");
 const atomic = std.atomic;
 const crypto = std.crypto;
+const debug = std.debug;
 const fmt = std.fmt;
 const fs = std.fs;
 const heap = std.heap;
@@ -57,7 +58,7 @@ var raw_net_if: ?core.interfaces.Interface = null;
 
 pub fn main() !void {
     // Catch Forced Close
-    try posix.sigaction(
+    posix.sigaction(
         posix.SIG.INT,
         &.{
             .handler = .{ .handler = forceClose },
@@ -995,17 +996,18 @@ pub fn forceClose(errno: i32) callconv(.C) void {
 }
 
 /// Attempt to recover from Panics gracefully.
-pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
-    @setCold(true);
+fn panicFn(msg: []const u8, ret_addr: ?usize) noreturn {
+    @branchHint(.cold);
     if (!cleaning and !panicking) {
         panicking = true;
         cleanUp(1);
     }
     log.err("Panic Report: ({d}) {s}", .{ ret_addr orelse 0, msg });
     if (@import("builtin").mode == .Debug)
-        std.builtin.default_panic(msg, trace, ret_addr)
+    debug.defaultPanic(msg, ret_addr)
     else posix.exit(1);
 }
+pub const panic = debug.FullPanic(panicFn);
 
 test "disco" {
     @setEvalBranchQuota(10_000);
