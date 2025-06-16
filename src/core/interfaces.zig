@@ -27,6 +27,7 @@ const c = utils.toStruct;
 
 /// DisCo Usage State of an Interface
 pub const UsageState = enum {
+    errored,
     unavailable,
     available,
     scanning,
@@ -222,7 +223,7 @@ pub const Context = struct {
         defer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const res_if = if_entry.value_ptr;
-            if (res_if.usage == .unavailable) continue;
+            if (res_if.usage == .unavailable or res_if.usage == .errored) continue;
             res_if.restore(alloc, &.{ .ips, .mac, .dns });
         }
     }
@@ -560,13 +561,16 @@ pub fn updInterfaces(
             }
             break :addr;
         }
-        if (add_if.usage != .unavailable) {
+        if (add_if.usage != .unavailable) setUpIF: {
             if (if_ctx.interfaces.map.get(add_if.index) == null) {
                 log.info("Available Interface Found:\n{s}", .{ add_if });
                 if (config.profile.mask) |pro_mask| {
                     var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
                     if (pro_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
-                    try nl.route.setMAC(add_if.index, mask_mac);
+                    nl.route.setMAC(add_if.index, mask_mac) catch {
+                        add_if.usage = .errored;
+                        break :setUpIF;
+                    };
                     log.info("- Changed Interface '{s}' MAC to: {s}", .{ add_if.name, MACF{ .bytes = mask_mac[0..] } });
                 }
             }

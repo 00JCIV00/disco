@@ -172,7 +172,7 @@ pub const Core = struct {
             };
             defer self.if_ctx.interfaces.mutex.unlock();
             if (if_entry.value_ptr.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN)
-                try nl.route.setState(if_index, c(nl.route.IFF).UP);
+                nl.route.setState(if_index, c(nl.route.IFF).UP) catch continue;
             if_entry.value_ptr.usage = .available;
         }
         log.info("- Initialized Interface Tracking Data.", .{});
@@ -293,7 +293,8 @@ pub const Core = struct {
         self._thread_pool.deinit();
     }
 
-    /// Stop the Core Context, (TODO) archive session data, and Clean Up as needed.
+    /// Stop the Core Context
+    /// TODO: archive session data, and Clean Up as needed.
     pub fn stop(self: *@This()) void {
         var stop_timer = time.Timer.start() catch null;
         log.info("Stopping DisCo Core...", .{});
@@ -312,7 +313,7 @@ pub const Core = struct {
 
     /// Clean Up.
     /// Note, we just let the OS clean up the Memory.
-    /// (TODO) Improve this if it will be needed outise of closing DisCo.
+    /// TODO: Improve this if it will be needed outside of closing DisCo.
     pub fn cleanUp(self: *@This()) void {
         log.info("Cleaning up DisCo Core...", .{});
         if (self.config.profile.mask != null and self.config.profile.change_sys_hostname) {

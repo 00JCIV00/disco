@@ -406,12 +406,20 @@ pub fn handleConnection(
     conn_if.phy_name = try alloc.dupe(u8, conn_if.phy_name);
     defer {
         log.info("Cleaning Connection (ssid: {s}, if: {s})...", .{ conn.ssid, conn_if.name });
+        nl._80211.disconnect(
+            alloc,
+            conn_if.nl_sock,
+            if_index,
+            conn_if.mac,
+        ) catch |err| {
+            log.warn("Unable to Disassociate and Deauthenticate: {s}", .{ @errorName(err) });
+        };
         const cur_conn = ctx.connections.get(conn_id);
         if (cur_conn) |get_conn| relDHCP: {
             alloc.free(conn_if.name);
             alloc.free(conn_if.phy_name);
             conn_if = if_ctx.interfaces.get(if_index) orelse break :relDHCP;
-            if (conn_if.usage == .unavailable) break :relDHCP;
+            if (conn_if.usage == .unavailable or conn_if.usage == .errored) break :relDHCP;
             const dhcp_info = get_conn.dhcp_info orelse break :relDHCP;
             proto.dhcp.releaseDHCP(
                 conn_if.name,
@@ -797,6 +805,8 @@ pub fn handleConnection(
                         log.err("EAPoL Error: {s}", .{ @errorName(last_err) });
                         return last_err;
                     }
+                    // TODO: Fix this timing issue properly
+                    if (conn.security == .wpa3) time.sleep(1_000);
                     break :keys proto.wpa.handle4WHS(
                         if_index, 
                         conn_psk, 
@@ -983,7 +993,7 @@ pub fn handleConnection(
         no_carrier_count < err_max
     ) {
         const get_if = if_ctx.interfaces.get(if_index) orelse break;
-        if (get_if.usage == .unavailable) break;
+        if (get_if.usage == .unavailable or get_if.usage == .errored) break;
         const get_link = (if_ctx.links.get(conn_if.index) orelse continue).link;
         const carrier = get_link.CARRIER orelse continue;
         if (carrier == 0) no_carrier_count += 1

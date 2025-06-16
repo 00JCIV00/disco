@@ -190,7 +190,7 @@ pub fn updScan(
             };
             config.nl_sock = scan_if.nl_sock;
             nl._80211.triggerScan(alloc, scan_if.index, config) catch |err| switch (err) {
-                error.BUSY,
+                //error.BUSY,
                 error.NODEV => return,
                 else => return err,
             };
@@ -218,7 +218,7 @@ pub fn trackScans(
             track_count +%= 1;
             if (track_count % err_max == 0) err_count -|= 1;
             if (err_count > err_max) @panic("WiFi Scan Tracking encountered too many errors to continue.");
-            time.sleep(interval.*);
+            time.sleep(interval.* * @max(1, (err_count * err_count)));
         }
         for (config.scan_configs) |scan_conf| {
             const if_index = nl.route.getIfIdx(scan_conf.if_name) catch continue;
@@ -363,9 +363,11 @@ fn trackNetworksIF(
     const scan_if = interfaces.get(if_index) orelse return error.InterfaceNotFound;
     if (scan_if.usage != .scanning) return;
     log.info("Scanning w/ ({d}) {s}", .{ scan_if.index, scan_if.name });
-    var set_if = (interfaces.getEntry(if_index) orelse return error.InterfaceNotFound).value_ptr;
-    defer set_if.usage = .available;
-    interfaces.mutex.unlock();
+    defer {
+        var set_if = interfaces.getEntry(if_index).?.value_ptr;
+        set_if.usage = .available;
+        interfaces.mutex.unlock();
+    }
     try nl._80211.getScan(alloc, scan_if.index, scan_if.nl_sock);
     const scan_results = nl._80211.handleScanResults(alloc, scan_if.nl_sock) catch |err| {
         log.warn("Could not parse Scan Results: {s}", .{ @errorName(err) });
