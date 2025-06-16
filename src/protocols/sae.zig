@@ -178,7 +178,7 @@ pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !P256 {
         const x_valid = mem.lessThan(u8, x_coord[0..], prime[0..]);
         if (x_valid and found_point == null) findPoint: {
             const x_candidate = P256.Fe.fromBytes(x_coord, .big) catch break :findPoint;
-            const is_odd = @as(u1, @truncate(x_coord[0])) == 1;
+            const is_odd = @as(u1, @truncate(pwd_seed[pwd_seed.len - 1])) == 1;
             const y_coord = P256.recoverY(x_candidate, is_odd) catch break :findPoint;
             found_point = P256.fromAffineCoordinates(.{ .x = x_candidate, .y = y_coord }) catch break :findPoint;
             found_iter = counter;
@@ -326,16 +326,14 @@ pub fn checkConfirm(received: [32]u8, peer: Commit, ctx: Context) !void {
 
 test "commit & confirm" {
     std.testing.log_level = .debug;
+    log.info("=== SAE Commit & Confirm ===", .{});
     const mac1: [6]u8 = .{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
     const mac2: [6]u8 = .{ 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F };
     const password: []const u8 = "test passw0rd!";
-
     var client_ctx: Context = try genCommit(password, mac1, mac2);
     var router_ctx: Context = try genCommit(password, mac2, mac1);
-
     try genConfirm(&client_ctx, router_ctx.commit);
     try genConfirm(&router_ctx, client_ctx.commit);
-
     log.info(
         \\Confirm
         \\- Client: {s}
@@ -346,7 +344,6 @@ test "commit & confirm" {
             HexF{ .bytes = router_ctx.confirm.?[0..] },
         },
     );
-
     try checkConfirm(client_ctx.confirm.?, router_ctx.commit, client_ctx);
     try checkConfirm(router_ctx.confirm.?, client_ctx.commit, router_ctx);
 }

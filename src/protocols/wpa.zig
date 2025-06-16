@@ -8,13 +8,17 @@ const json = std.json;
 const log = std.log.scoped(.wpa);
 const mem = std.mem;
 const posix = std.posix;
+const testing = std.testing;
 
+const CmacAes128 = crypto.auth.cmac.CmacAes128;
+const hkdf = crypto.kdf.hkdf;
+const hmac = crypto.auth.hmac;
 const Md5 = crypto.hash.Md5;
-const Sha1 = crypto.hash.Sha1;
 
 const nl = @import("../netlink.zig");
 const netdata = @import("../netdata.zig");
 const utils = @import("../utils.zig");
+const HexF = utils.HexFormatter;
 
 const c = utils.toStruct;
 const l2 = netdata.l2;
@@ -23,7 +27,7 @@ const l2 = netdata.l2;
 pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
     var key: [32]u8 = .{ 0 } ** 32;
     switch (protocol) {
-        .wpa2, .wpa3t, .wpa3 => {
+        .wpa2, .wpa3t => {
             // PBKDF2 HMAC-SHA1 Key Derivation
             try crypto.pwhash.pbkdf2(
                 key[0..],
@@ -54,13 +58,14 @@ pub fn genPTK(
     snonce: [32]u8,
     addr1: [6]u8,
     addr2: [6]u8,
+    security: nl._80211.SecurityType,
 ) [48]u8 {
+    const label = "Pairwise key expansion";
     const mac_len = 6;
     const nonce_len = 32;
     const data_len = 2 * mac_len + 2 * nonce_len;
-    const label = "Pairwise key expansion";
-    var ptk: [48]u8 = .{ 0 } ** 48;
-    var data: [data_len]u8 = .{ 0 } ** data_len;
+    //const data_len = label.len + 2 * mac_len + 2 * nonce_len;
+    var data: [data_len]u8 = undefined;
     // Order addresses using memcmp logic
     const macs_ordered = mem.order(u8, addr1[0..], addr2[0..]);
     const first_addr = if (macs_ordered == .lt) addr1[0..] else addr2[0..];
@@ -73,66 +78,260 @@ pub fn genPTK(
     const mac_pair_len = 2 * mac_len;
     @memcpy(data[0..mac_len], first_addr);
     @memcpy(data[mac_len..mac_pair_len], second_addr);
-    @memcpy(data[mac_pair_len..mac_pair_len + nonce_len], first_nonce);
+    @memcpy(data[mac_pair_len..(mac_pair_len + nonce_len)], first_nonce);
     @memcpy(data[mac_pair_len + nonce_len..], second_nonce);
-    _ = sha1PRF(pmk[0..], label, data[0..], ptk[0..]);
-    return ptk;
+    var ptk_buf: [48]u8 = undefined;
+    //_ = sha1PRF(pmk[0..], label, data[0..], ptk[0..]);
+    switch (security) {
+        .wpa2, .wpa3t => {
+            log.debug("Using PRF(SHA1)", .{});
+            prf(
+                hmac.HmacSha1,
+                pmk[0..],
+                label,
+                data[0..],
+                ptk_buf[0..],
+            );
+        },
+        else => {
+            log.debug("Using PRF(SHA256)", .{});
+            prfSha256Hostapd(
+                pmk[0..],
+                label,
+                data[0..],
+                ptk_buf[0..],
+            );
+        },
+    }
+    return ptk_buf[0..48].*;
 }
 
-/// HMAC-SHA1 implementation that processes multiple data chunks.
-/// Takes `key` for HMAC operations and arrays of data chunks (`addr`) and their lengths (`len`)
-fn hmacSHA1(key: []const u8, message: []const u8) [Sha1.digest_length]u8 {
-    const block_len = 64;
-    var k_pad: [block_len]u8 = .{ 0 } ** block_len;
-    var tk: [Sha1.digest_length]u8 = .{ 0 } ** Sha1.digest_length;
-    // If key is longer than 64 bytes reset it to key = SHA1(key)
-    const use_key = if (key.len > block_len) blk: {
-        Sha1.hash(key, &tk, .{});
-        break :blk tk[0..];
-    } else key;
-    // Start out by storing key in pad
-    @memcpy(k_pad[0..use_key.len], use_key);
-    // Create inner pad
-    for (&k_pad) |*byte| byte.* ^= 0x36;
-    // Perform inner SHA1
-    var inner = Sha1.init(.{});
-    inner.update(k_pad[0..]);
-    inner.update(message);
-    var inner_hash: [Sha1.digest_length]u8 = .{ 0 } ** Sha1.digest_length;
-    inner.final(&inner_hash);
-    // Reset k_pad and create outer pad
-    @memset(&k_pad, 0);
-    @memcpy(k_pad[0..use_key.len], use_key);
-    for (&k_pad) |*byte| byte.* ^= 0x5c;
-    // Perform outer SHA1
-    var outer = Sha1.init(.{});
-    outer.update(k_pad[0..]);
-    outer.update(&inner_hash);
-    var result: [Sha1.digest_length]u8 = .{ 0 } ** Sha1.digest_length;
-    outer.final(&result);
-    return result;
-}
-
-/// SHA1-based Pseudo-Random Function (PRF) as defined in IEEE 802.11i-2004
-/// Used to derive cryptographically separate keys from `key`
-fn sha1PRF(key: []const u8, label: []const u8, data: []const u8, buf: []u8) void {
+/// Generic PRF using either HMAC-SHA1 (WPA2) or HMAC-SHA256 (WPA3)
+fn prf(
+    Hmac: type,
+    key: []const u8,
+    label: []const u8,
+    data: []const u8,
+    buf: []u8,
+) void {
     var counter: u8 = 0;
     var pos: usize = 0;
-    // Include null terminator in label length
-    const label_len = label.len + 1;
-    while (pos < buf.len) {
-        // Construct the input buffer for this round
-        const round_input_len = label_len + data.len + 1;
-        var round_input: [256]u8 = .{ 0 } ** 256;
-        @memcpy(round_input[0..label.len], label);
-        @memcpy(round_input[label.len + 1 .. label.len + 1 + data.len], data);
+    var ln_buf: [256]u8 = undefined;
+    const label_null = labelNull: {
+        @memcpy(ln_buf[0..label.len], label[0..]);
+        ln_buf[label.len] = 0;
+        break :labelNull ln_buf[0..label.len + 1];
+    };
+    while (pos < buf.len) : (counter += 1) {
+        const round_input_len = label_null.len + data.len + 1;
+        var round_input: [512]u8 = .{ 0 } ** 512;
+        @memcpy(round_input[0..label_null.len], label_null);
+        @memcpy(round_input[(label_null.len)..][0..data.len], data);
         round_input[round_input_len - 1] = counter;
-        const hash = hmacSHA1(key, round_input[0..round_input_len]);
-        const copy_len = @min(Sha1.digest_length, buf.len - pos);
-        @memcpy(buf[pos .. pos + copy_len], hash[0..copy_len]);
+        var hash_buf: [Hmac.mac_length]u8 = undefined;
+        Hmac.create(hash_buf[0..], round_input[0..round_input_len], key);
+        const copy_len = @min(Hmac.mac_length, buf.len - pos);
+        @memcpy(buf[pos..(pos + copy_len)], hash_buf[0..copy_len]);
         pos += copy_len;
+    }
+}
+
+pub fn prfSha256Hostapd(
+    key: []const u8,
+    label: []const u8,
+    data: []const u8,
+    out: []u8,
+) void {
+    const hmac256 = hmac.sha2.HmacSha256;
+    const output_bits: u16 = @truncate(out.len * 8);
+    log.debug("Output Bits: {d}", .{ output_bits });
+    const out_len = @divTrunc(output_bits + 7, 8);
+    var hash_buf: [hmac256.mac_length]u8 = undefined;
+    var pos: usize = 0;
+    var counter: u16 = 1;
+    var counter_bytes: [2]u8 = undefined;
+    var length_bytes: [2]u8 = undefined;
+    //mem.writeInt(u16, length_bytes[0..], output_bits, .little);
+    length_bytes = mem.toBytes(output_bits);
+    while (pos < out_len) : (counter += 1) {
+        //mem.writeInt(u16, counter_bytes[0..], counter, .little);
+        counter_bytes = mem.toBytes(counter);
+        var vec: [512]u8 = undefined;
+        var off: usize = 0;
+        @memcpy(vec[off..][0..2], counter_bytes[0..]);
+        off += 2;
+        @memcpy(vec[off..][0..label.len], label[0..]);
+        off += label.len;
+        @memcpy(vec[off..][0..data.len], data[0..]);
+        off += data.len;
+        @memcpy(vec[off..][0..2], length_bytes[0..]);
+        off += 2;
+        hmac256.create(hash_buf[0..], vec[0..off], key);
+        const copy_len = @min(hmac256.mac_length, out_len - pos);
+        @memcpy(out[pos..][0..copy_len], hash_buf[0..copy_len]);
+        pos += copy_len;
+    }
+    if (output_bits % 8 != 0) {
+        const mask: u8 = @as(u8, 0xff) << @as(u3, @intCast(8 - (output_bits % 8)));
+        out[out.len - 1] &= mask;
+    }
+    @memset(hash_buf[0..], 0);
+}
+
+/// Derives a key using IEEE 802.11 PRF (not HKDF).
+/// 
+/// `key` – The base key for the PRF (e.g., PMK).  
+/// `label` – Purpose-specific ASCII string.  
+/// `data` – Context-specific data (e.g., nonces, MAC addresses).  
+/// `output_bits` – Desired output length in **bits**.
+///
+/// Writes output to `out`, returns error if PRF fails.
+pub fn sha256PRFBits(
+    key: []const u8,
+    label: []const u8,
+    data: []const u8,
+    output_bits: u16,
+    out: []u8,
+) !void {
+    const hmac256 = hmac.sha2.HmacSha256;
+    var counter: u16 = 1;
+    const output_len = (output_bits + 7) / 8;
+    if (out.len < output_len) return error.OutputBufferTooSmall;
+    var pos: usize = 0;
+    var hash: [hmac256.mac_length]u8 = undefined;
+    var length_bytes: [2]u8 = undefined;
+    var counter_bytes: [2]u8 = undefined;
+    mem.writeInt(u16, length_bytes[0..], output_bits, .little);
+    while (pos < output_len) {
+        const remaining = output_len - pos;
+        mem.writeInt(u16, counter_bytes[0..], counter, .little);
+        var vec_array: [256]u8 = undefined;
+        var vec_counter: usize = 0;
+        inline for (&.{
+            counter_bytes[0..],
+            label,
+            data,
+            length_bytes[0..],
+        }) |vec_bytes| {
+            @memcpy(vec_array[vec_counter..(vec_counter + vec_bytes.len)], vec_bytes);
+            vec_counter += vec_bytes.len;
+        }
+        const vec = vec_array[0..vec_counter];
+        if (remaining >= hmac256.mac_length) {
+            hmac256.create(out[pos..(pos + hmac256.mac_length)][0..hmac256.mac_length], vec, key);
+            pos += hmac256.mac_length;
+        }
+        else {
+            hmac256.create(hash[0..hmac256.mac_length], vec, key);
+            @memcpy(out[pos..(pos + remaining)], hash[0..remaining]);
+            pos += remaining;
+            break;
+        }
         counter += 1;
     }
+    // Mask final bits if output_bits isn't byte-aligned
+    //if (output_bits % 8 != 0) {
+    //    const mask: u8 = 0xff << (8 - (output_bits % 8));
+    //    out[output_len - 1] &= mask;
+    //}
+    // Clear sensitive material
+    @memset(hash[0..], 0);
+}
+
+// Maybe make a `crypto.zig` f/ this and other functions?
+fn prfBits(
+    comptime Hmac: type,
+    key: []const u8,
+    label: []const u8,
+    data: []const u8,
+    output_bits: u16,
+    buf: []u8,
+) !void {
+    const mac_len = Hmac.mac_length;
+    const output_len = (output_bits + 7) / 8;
+    if (buf.len < output_len) return error.OutputBufferTooSmall;
+    var counter: u16 = 1;
+    var pos: usize = 0;
+    var hash: [mac_len]u8 = undefined;
+    var length_bytes: [2]u8 = undefined;
+    var counter_bytes: [2]u8 = undefined;
+    mem.writeInt(u16, length_bytes[0..], output_bits, .little);
+    while (pos < output_len) : (counter += 1) {
+        mem.writeInt(u16, counter_bytes[0..], counter, .little);
+        var vec_array: [512]u8 = undefined;
+        var vec_counter: usize = 0;
+        inline for (&.{
+            counter_bytes[0..],
+            label,
+            data,
+            length_bytes[0..],
+        }) |vec_bytes| {
+            @memcpy(vec_array[vec_counter..(vec_counter + vec_bytes.len)], vec_bytes);
+            vec_counter += vec_bytes.len;
+        }
+        const vec = vec_array[0..vec_counter];
+        const remaining = output_len - pos;
+        if (remaining >= mac_len) {
+            var hmac_buf: [Hmac.mac_length]u8 = undefined;
+            Hmac.create(hmac_buf[0..], vec, key);
+            @memcpy(buf[pos..(pos + mac_len)], hmac_buf[0..]);
+            pos += mac_len;
+        } else {
+            Hmac.create(hash[0..], vec, key);
+            @memcpy(buf[pos..(pos + remaining)], hash[0..remaining]);
+            pos += remaining;
+            break;
+        }
+    }
+}
+
+test "PRF" {
+    testing.log_level = .debug;
+    log.info("=== PRF(SHA256) ===", .{});
+    const key = "Jefe";
+    const label = "prefix-2";
+    const data = "what do ya want for nothing?";
+    const sha1_result = [_]u8{ 
+        0x47, 0xc4, 0x90, 0x8e, 0x30, 0xc9, 0x47, 0x52, 
+        0x1a, 0xd2, 0x0b, 0xe9, 0x05, 0x34, 0x50, 0xec, 
+        0xbe, 0xa2, 0x3d, 0x3a, 0xa6, 0x04, 0xb7, 0x73, 
+        0x26, 0xd8, 0xb3, 0x82, 0x5f, 0xf7, 0x47, 0x5c, 
+    };
+    var prf_sha1_buf: [32]u8 = undefined;
+    prf(
+        hmac.HmacSha1,
+        key,
+        label,
+        data,
+        prf_sha1_buf[0..],
+    );
+    const sha256_result = mem.toBytes(mem.nativeToBig(u256, 0x5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843));
+    var prf_sha256_buf: [32]u8 = undefined;
+    prf(
+        hmac.sha2.HmacSha256,
+        key,
+        //label,
+        "",
+        data,
+        prf_sha256_buf[0..],
+    );
+    log.debug(
+        \\
+        \\ prf(sha-1)
+        \\ - Calc'ed:  {s}
+        \\ - Expected: {s}
+        \\ prf(sha-256)
+        \\ - Calc'ed:  {s}
+        \\ - Expected: {s}
+        \\
+        , .{
+            HexF{ .bytes = prf_sha1_buf[0..] },
+            HexF{ .bytes = sha1_result[0..] },
+            HexF{ .bytes = prf_sha256_buf[0..] },
+            HexF{ .bytes = sha256_result[0..] },
+        },
+    );
+    try testing.expect(mem.eql(u8, prf_sha1_buf[0..], sha1_result[0..]));
 }
 
 /// Unwrap key with AES Key Wrap Algorithm (RFC3394)
@@ -233,7 +432,12 @@ const HandshakeState = enum {
 };
 
 /// Handle a 4-Way Handshake
-pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EAPoLKeys { //struct{ [48]u8, [16]u8 } {
+pub fn handle4WHS(
+    if_index: i32, 
+    pmk: [32]u8, 
+    m2_data: []const u8,
+    security: nl._80211.SecurityType,
+) !nl._80211.EAPoLKeys { //struct{ [48]u8, [16]u8 } {
     var state: HandshakeState = .start;
     log.debug("Starting 4WHS...", .{});
     defer {
@@ -267,7 +471,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
         hs_sock,
         posix.SOL.SOCKET,
         posix.SO.RCVBUF,
-        mem.toBytes(@as(usize, 1_000_000))[0..],
+        mem.toBytes(@as(usize, 10_000))[0..],
     );
     try posix.bind(hs_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
     // Process 4-Way Handshake
@@ -276,10 +480,14 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
     const kf_hdr_len = @bitSizeOf(l2.EAPOL.KeyFrame) / 8;
     const hdrs_len = eth_hdr_len + eap_hdr_len + kf_hdr_len;
     const KeyInfo = l2.EAPOL.KeyFrame.KeyInfo;
-    const ptk_flags = mem.nativeToBig(u16, c(KeyInfo).Version2 | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack);
-    const mic_flags = mem.nativeToBig(u16, c(KeyInfo).Version2 | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC);
-    const gtk_flags = mem.nativeToBig(u16, c(KeyInfo).Version2 | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure);
-    const fin_flags = mem.nativeToBig(u16, c(KeyInfo).Version2 | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC | c(KeyInfo).Secure);
+    const desc_info = switch(security) {
+        .wpa2, .wpa3t => c(KeyInfo).Version2,
+        else => 0,
+    };
+    const ptk_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack);
+    const mic_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC);
+    const gtk_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure);
+    const fin_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC | c(KeyInfo).Secure);
     log.debug(
         \\
         \\ETH Len = {d}B
@@ -302,7 +510,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
             //mem.reverse(u8, bytes[0..]);
             break :snonce bytes;
         };
-        var recv_buf: [1600]u8 = .{ 0 } ** 1600;
+        var recv_buf: [1600]u8 = undefined;
         // Message 1
         const m1_len = try posix.recv(hs_sock, recv_buf[0..], 0);
         const m1_buf = recv_buf[0..m1_len];
@@ -343,7 +551,10 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
                 mem.bigToNative(u64, m1_kf_hdr.replay_counter),
             },
         );
-        if (m1_kf_hdr.key_info & ptk_flags != ptk_flags) return error.ExpectedPTK;
+        if (
+            m1_kf_hdr.key_info & ptk_flags != ptk_flags and
+            (security == .wpa3 and m1_kf_hdr.key_info != (ptk_flags))
+        ) return error.ExpectedPTK;
         if (m1_kf_hdr.key_info & c(KeyInfo).MIC == c(KeyInfo).MIC) return error.UnexpectedMIC;
         const ap_mac = m1_eth_hdr.src_mac_addr;
         const client_mac = m1_eth_hdr.dst_mac_addr;
@@ -356,6 +567,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
             snonce,
             client_mac,
             ap_mac,
+            security,
         );
         const kck = ptk[0..16];
         const kek = ptk[16..32];
@@ -378,7 +590,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
         m2_kf_hdr.key_mic = 0;
         m2_kf_hdr.key_data_len = mem.nativeToBig(u16, @intCast(m2_data.len));
         // - Gen M2 MIC
-        var m2_mic_buf: [1600]u8 = .{ 0 } ** 1600;
+        var m2_mic_buf: [1600]u8 = undefined;
         start = 0;
         end = eap_hdr_len;
         @memcpy(m2_mic_buf[start..end], mem.toBytes(m2_eap_hdr)[0..]);
@@ -388,10 +600,21 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
         start = end;
         end += m2_data.len;
         @memcpy(m2_mic_buf[start..end], m2_data);
-        const m2_mic = hmacSHA1(kck, m2_mic_buf[0..end])[0..16];
-        m2_kf_hdr.key_mic = mem.bytesToValue(u128, m2_mic); //[0..16].*;
+        const m2_mic: [16]u8 = switch (security) {
+            .wpa3 => cmacAes128: {
+                var m2_mic: [16]u8 = undefined;
+                CmacAes128.create(m2_mic[0..], m2_mic_buf[0..end], kck);
+                break :cmacAes128 m2_mic;
+            },
+            else => hmacSha1: {
+                var m2_mic: [20]u8 = undefined;
+                hmac.HmacSha1.create(m2_mic[0..], m2_mic_buf[0..end], kck);
+                break :hmacSha1 m2_mic[0..16].*;
+            },
+        };
+        m2_kf_hdr.key_mic = mem.bytesToValue(u128, m2_mic[0..]);
         // - Send M2
-        var m2_buf: [1600]u8 = .{ 0 } ** 1600;
+        var m2_buf: [1600]u8 = undefined;
         start = 0;
         end = eth_hdr_len;
         @memcpy(m2_buf[start..end], mem.toBytes(m2_eth_hdr)[0..]);
@@ -428,7 +651,7 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
                 ptk,
                 kck,
                 kek,
-                m2_mic,
+                m2_mic[0..],
             },
         );
         state = .m2;
@@ -522,7 +745,18 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
         const mic_offset = eap_hdr_len + kf_hdr_len - 18;
         @memset(m3_mic_buf[(mic_offset)..(mic_offset + 16)], 0);
         end -= eth_hdr_len;
-        const m3_mic_valid = hmacSHA1(kck, m3_mic_buf[0..end])[0..16];
+        const m3_mic_valid: [16]u8 = switch (security) {
+            .wpa3 => cmacAes128: {
+                var m3_mic_valid: [16]u8 = undefined;
+                CmacAes128.create(m3_mic_valid[0..], m3_mic_buf[0..end], kck);
+                break :cmacAes128 m3_mic_valid;
+            },
+            else => hmacSha1: {
+                var m3_mic_valid: [20]u8 = undefined;
+                hmac.HmacSha1.create(m3_mic_valid[0..], m3_mic_buf[0..end], kck);
+                break :hmacSha1 m3_mic_valid[0..16].*;
+            },
+        };
         if (!mem.eql(u8, mem.toBytes(m3_mic_actual)[0..], m3_mic_valid[0..])) {
             log.err(
                 \\MIC Mismatch:
@@ -580,8 +814,24 @@ pub fn handle4WHS(if_index: i32, pmk: [32]u8, m2_data: []const u8) !nl._80211.EA
         start = end;
         end += kf_hdr_len;
         @memcpy(m4_mic_buf[start..end], mem.toBytes(m4_kf_hdr)[0..kf_hdr_len]);
-        const m4_mic = hmacSHA1(kck, m4_mic_buf[0..end])[0..16];
-        m4_kf_hdr.key_mic = mem.bytesToValue(u128, m4_mic);
+        //const m4_mic: [16]u8 = hmacSha1: {
+        //    var m4_mic: [20] u8 = undefined;
+        //    hmac.HmacSha1.create(m4_mic[0..], m4_mic_buf[0..end], kck);
+        //    break :hmacSha1 m4_mic[0..16].*;
+        //};
+        const m4_mic: [16]u8 = switch (security) {
+            .wpa3 => cmacAes128: {
+                var m4_mic: [16]u8 = undefined;
+                CmacAes128.create(m4_mic[0..], m4_mic_buf[0..end], kck);
+                break :cmacAes128 m4_mic;
+            },
+            else => hmacSha1: {
+                var m4_mic: [20]u8 = undefined;
+                hmac.HmacSha1.create(m4_mic[0..], m4_mic_buf[0..end], kck);
+                break :hmacSha1 m4_mic[0..16].*;
+            },
+        };
+        m4_kf_hdr.key_mic = mem.bytesToValue(u128, m4_mic[0..]);
         // - Send M4
         var m4_buf: [hdrs_len]u8 = .{ 0 } ** hdrs_len;
         start = 0;
