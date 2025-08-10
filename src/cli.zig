@@ -290,6 +290,11 @@ pub const setup_cmd = CommandT{
             .description = "Disable mouse events for the TUI.",
             .long_name = "no-mouse",
         },
+        .{
+            .name = "no-conflict-pids",
+            .description = "Ignore Conflict PIDs",
+            .long_name = "no-conflict-pids",
+        },
     },
     .sub_cmds = &.{
         .{
