@@ -6,6 +6,7 @@ const crypto = std.crypto;
 const io = std.io;
 const fmt = std.fmt;
 const mem = std.mem;
+const ArrayList = std.ArrayListUnmanaged;
 
 const oui = @import("oui.zig");
 
@@ -30,7 +31,7 @@ pub fn printAddrAlloc(
     comptime byte_fmt: []const u8,
     alloc: mem.Allocator,
 ) ![]const u8 {
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf = ArrayList(u8){};
     errdefer buf.deinit(alloc);
     const writer = buf.writer(alloc).any();
     try printAddr(

@@ -3,7 +3,7 @@
 const std = @import("std");
 const fmt = std.fmt;
 const fs = std.fs;
-const log = std.log.scoped(.dns);
+const log = std.log.scoped(.dbus);
 const mem = std.mem;
 const net = std.net;
 const posix = std.posix;
@@ -14,16 +14,16 @@ const HexF = utils.HexFormatter;
 const sys = @import("sys.zig");
 
 
-/// Possible D-Bus Errors
-pub const DBusError = error {
-    ConnectionFailed,
-    AuthenticationFailed,
-    MessageError,
-    ServiceNotAvailable,
-    InvalidResponse,
-    OutOfMemory,
-    InterfaceNotFound,
-};
+///// Possible D-Bus Errors
+//pub const DBusError = error {
+//    ConnectionFailed,
+//    AuthenticationFailed,
+//    MessageError,
+//    ServiceNotAvailable,
+//    InvalidResponse,
+//    OutOfMemory,
+//    InterfaceNotFound,
+//};
 
 /// D-Bus Header Field
 pub const HeaderField = struct {

@@ -4,13 +4,10 @@ const builtin = @import("builtin");
 const std = @import("std");
 const fmt = std.fmt;
 const fs = std.fs;
-const io = std.io;
-const log = std.log;
 const mem = std.mem;
-const net = std.net;
 const os = std.os;
 const posix = std.posix;
-const time = std.time;
+const ArrayList = std.ArrayListUnmanaged;
 
 
 /// Set the System's Hostname
@@ -83,7 +80,7 @@ pub fn getPID(proc_name: []const u8) !?u32 {
 pub fn getPIDs(alloc: mem.Allocator, proc_names: []const []const u8) ![]const u32 {
     var proc_dir = try fs.openDirAbsolute("/proc", .{ .iterate = true });
     defer proc_dir.close();
-    var pids_list: std.ArrayListUnmanaged(u32) = .{};
+    var pids_list: ArrayList(u32) = .{};
     errdefer pids_list.deinit(alloc);
     var proc_iter = proc_dir.iterate();
     while (try proc_iter.next()) |entry| {
