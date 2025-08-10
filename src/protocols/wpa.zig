@@ -95,7 +95,7 @@ pub fn genPTK(
         },
         else => {
             log.debug("Using PRF(SHA256)", .{});
-            prfSha256Hostapd(
+            prfSha256(
                 pmk[0..],
                 label,
                 data[0..],
@@ -106,7 +106,7 @@ pub fn genPTK(
     return ptk_buf[0..48].*;
 }
 
-/// Generic PRF using either HMAC-SHA1 (WPA2) or HMAC-SHA256 (WPA3)
+/// Generic PRF using the provided `Hmac`
 fn prf(
     Hmac: type,
     key: []const u8,
@@ -124,7 +124,7 @@ fn prf(
     };
     while (pos < buf.len) : (counter += 1) {
         const round_input_len = label_null.len + data.len + 1;
-        var round_input: [512]u8 = .{ 0 } ** 512;
+        var round_input: [512]u8 = undefined;
         @memcpy(round_input[0..label_null.len], label_null);
         @memcpy(round_input[(label_null.len)..][0..data.len], data);
         round_input[round_input_len - 1] = counter;
@@ -136,7 +136,8 @@ fn prf(
     }
 }
 
-pub fn prfSha256Hostapd(
+/// PRF using HMAC-SHA256 f/ WPA3
+pub fn prfSha256(
     key: []const u8,
     label: []const u8,
     data: []const u8,
@@ -285,9 +286,9 @@ fn prfBits(
     }
 }
 
-test "PRF" {
+test "PRF(SHA1)" {
     testing.log_level = .debug;
-    log.info("=== PRF(SHA256) ===", .{});
+    log.info("=== PRF(SHA1) ===", .{});
     const key = "Jefe";
     const label = "prefix-2";
     const data = "what do ya want for nothing?";
@@ -305,30 +306,15 @@ test "PRF" {
         data,
         prf_sha1_buf[0..],
     );
-    const sha256_result = mem.toBytes(mem.nativeToBig(u256, 0x5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843));
-    var prf_sha256_buf: [32]u8 = undefined;
-    prf(
-        hmac.sha2.HmacSha256,
-        key,
-        //label,
-        "",
-        data,
-        prf_sha256_buf[0..],
-    );
     log.debug(
         \\
         \\ prf(sha-1)
-        \\ - Calc'ed:  {s}
-        \\ - Expected: {s}
-        \\ prf(sha-256)
         \\ - Calc'ed:  {s}
         \\ - Expected: {s}
         \\
         , .{
             HexF{ .bytes = prf_sha1_buf[0..] },
             HexF{ .bytes = sha1_result[0..] },
-            HexF{ .bytes = prf_sha256_buf[0..] },
-            HexF{ .bytes = sha256_result[0..] },
         },
     );
     try testing.expect(mem.eql(u8, prf_sha1_buf[0..], sha1_result[0..]));
