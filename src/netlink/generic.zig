@@ -12,6 +12,7 @@ const meta = std.meta;
 const os = std.os;
 const posix = std.posix;
 const time = std.time;
+const StringHashMap = std.StringHashMapUnmanaged;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -76,9 +77,9 @@ pub const CtrlInfo = struct {
             log.debug("Len: {d}, Type: {s}", .{ hdr.len, @tagName(tag) });
             switch (tag) {
                 .MCAST_GROUPS => {
-                    var grp_map = try alloc.create(std.StringHashMapUnmanaged(u32)); 
+                    var grp_map = try alloc.create(StringHashMap(u32)); 
                     errdefer alloc.destroy(grp_map);
-                    grp_map.* = std.StringHashMapUnmanaged(u32){}; 
+                    grp_map.* = .empty; 
                     start = end;
                     end += nl.attr_hdr_len;
                     while (end < bytes.len) {
@@ -128,12 +129,12 @@ pub const CtrlInfo = struct {
     /// Initialize Control Info for the specified `family`.
     pub fn init(alloc: mem.Allocator, family: []const u8) !@This() {
         // Request
+        var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
         const buf_len = comptime mem.alignForward(usize, (Request.len + nl.attr_hdr_len + 7) * 2, 4);
-        var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
-        var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-        const nl_sock = try nl.request(
+        var req_buf: [buf_len]u8 = undefined;
+        var fba: heap.FixedBufferAllocator = .init(req_buf[0..]);
+        try nl.request(
             fba.allocator(),
-            nl.NETLINK.GENERIC,
             Request,
             .{
                 .nlh = .{
@@ -149,13 +150,14 @@ pub const CtrlInfo = struct {
                 },
             },
             &.{ .{ .hdr = .{ .type = c(CTRL.ATTR).FAMILY_NAME }, .data = family } },
+            &req_ctx,
         );
-        defer posix.close(nl_sock);
+        defer posix.close(req_ctx.sock);
 
         // Response
-        var resp_buf: [4096]u8 = .{ 0 } ** 4096;
+        var resp_buf: [4096]u8 = undefined;
         const resp_len = posix.recv(
-            nl_sock,
+            req_ctx.sock,
             resp_buf[0..],
             0,
         ) catch |err| switch (err) {

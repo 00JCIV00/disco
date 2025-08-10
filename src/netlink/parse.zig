@@ -8,6 +8,7 @@ const log = std.log.scoped(.netlink);
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
+const ArrayList = std.ArrayListUnmanaged;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -58,7 +59,7 @@ pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
                     comptime if (mem.eql(u8, decl.name, "AttrHdrT")) break @field(info.child, "AttrHdrT");
                 } else nl.AttributeHeader;
                 const hdr_len = @sizeOf(HdrT);
-                var group_buf = try std.ArrayListUnmanaged(info.child).initCapacity(alloc, 0);
+                var group_buf: ArrayList(info.child) = .empty;
                 errdefer group_buf.deinit(alloc);
                 var start: usize = 0;
                 var end: usize = 0;
@@ -372,7 +373,7 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
     const info = @typeInfo(T);
     if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed"))
         return try rawToBytes(alloc, T, instance);
-    var buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
+    var buf: ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const E,
     const HdrT = comptime consts: {
@@ -440,7 +441,7 @@ fn ptrToBytes(
         .one => return try primToBytes(alloc, info.child, instance.*),
         .slice => {
             if (T == []const u8) return try alloc.dupe(u8, instance);
-            var buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
+            var buf: ArrayList(u8) = .empty;
             //if (T == []const []const u8) log.debug("Slice of Strings: {s}", .{ field_name });
             for (instance[0..]) |in_item| {
                 var hdr: HdrT = .{
@@ -514,7 +515,7 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
 /// Note, the OutT must possess `.type`, `.len`, and `.data` fields.
 /// User must free the `.data` bytes of the resulting `OutT` instance.
 pub fn toTLV(alloc: mem.Allocator, InT: type, instance: InT, OutT: type) !OutT {
-    const HdrT = meta.FieldType(OutT, .hdr);
+    const HdrT = @FieldType(OutT, "hdr");
     const hdr_len = @sizeOf(HdrT);
     const tlv_bytes = try toBytes(alloc, InT, instance);
     defer alloc.free(tlv_bytes);
@@ -536,11 +537,10 @@ pub const IteratorConfig = struct {
     /// The Type Field Name (currently unused)
     type_field: []const u8 = "type",
 };
-
 /// Iterator
 pub fn Iterator(
     HdrT: type,
-    comptime iter_config: IteratorConfig
+    comptime iter_config: IteratorConfig,
 ) type {
     return struct {
         const config = iter_config;

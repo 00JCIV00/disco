@@ -3,20 +3,20 @@
 const std = @import("std");
 const atomic = std.atomic;
 const fmt = std.fmt;
-const json = std.json;
 const log = std.log.scoped(.netlink);
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
 const os = std.os;
 const posix = std.posix;
+const ArrayList = std.ArrayListUnmanaged;
 
 pub const AF = os.linux.AF;
 pub const IFLA = os.linux.IFLA;
 pub const NETLINK = os.linux.NETLINK;
 const SOCK = posix.SOCK;
 
-
+pub const io = @import("netlink/io.zig");
 pub const parse = @import("netlink/parse.zig");
 pub const _80211 = @import("netlink/_80211.zig");
 pub const generic = @import("netlink/generic.zig");
@@ -50,9 +50,11 @@ pub const MessageHeader = extern struct {
     /// Request/Response Flags
     flags: u16,
     /// Sequence ID. This is useful for tracking this Request/Response and others related to it.
-    seq: u32,
-    /// Process ID. This is useful for tracking this specific Request/Response.
-    pid: u32,
+    /// If this is left as `0` it will be given a Unique Sequence ID when sent as a request.
+    seq: u32 = 0,
+    /// Port ID. This is useful for tracking this specific Request/Response.
+    /// If this is left as `0` it will be changed to the PID of the corresponding socket.
+    pid: u32 = 0,
 };
 /// Generic Netlink Request Header, wrapping the Netlink Message Header w/ the provided Family Message Header Type (MsgT).
 pub fn Request(MsgT: type) type {
@@ -149,30 +151,47 @@ pub const NLMSG = enum(u32) {
     OVERRUN = 4,
 };
 
-/// Current Unique PID f/ new Netlink Sockets
-var unique_pid = atomic.Value(u32).init(12321);
+
+/// Netlink Socket Config
+pub const NetlinkSocketConfig = struct {
+    /// Netlink Socket Kind
+    /// Derived from the `NETLINK` struct
+    //kind: ?comptime_int = null,
+    kind: u32,
+    /// Blocking I/O for the Netlink Socket
+    blocking: bool = true,
+    /// Optional Timeout period for the Netlink Socket
+    timeout: ?posix.timeval = null,
+    /// Process ID for the Netlink Socket
+    /// If this is left `null` a unique pid will be created
+    pid: ?u32 = null,
+    
+    /// Current Unique PID f/ new Netlink Sockets
+    var unique_pid: atomic.Value(u32) = .init(12321);
+};
 /// Initialize a Netlink Socket
-pub fn initSock(nl_sock_kind: comptime_int, timeout: posix.timeval) !posix.socket_t {
-    defer {
-        //unique_pid +%= 1;
-        //if (unique_pid < 12321) unique_pid = 12321;
-        _ = unique_pid.fetchAdd(1, .acquire);
-        if (unique_pid.load(.acquire) >= math.maxInt(u32)) unique_pid.store(12321, .monotonic);
-    }
-    const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_kind);
+pub fn initSock(nl_sock_conf: NetlinkSocketConfig) !posix.socket_t {
+    defer if (nl_sock_conf.pid == null) {
+        _ = NetlinkSocketConfig.unique_pid.fetchAdd(1, .acquire);
+        if (NetlinkSocketConfig.unique_pid.load(.acquire) >= math.maxInt(u32)) NetlinkSocketConfig.unique_pid.store(12321, .monotonic);
+    };
+    const nl_sock = try posix.socket(AF.NETLINK, SOCK.RAW | SOCK.CLOEXEC, nl_sock_conf.kind);
     errdefer posix.close(nl_sock);
     const nl_addr: posix.sockaddr.nl = .{
-        //.pid = unique_pid,
-        .pid = unique_pid.load(.acquire),
+        .pid = nl_sock_conf.pid orelse NetlinkSocketConfig.unique_pid.load(.acquire),
         .groups = 0,
     };
     try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
-    try posix.setsockopt(
-        nl_sock,
-        posix.SOL.SOCKET,
-        posix.SO.RCVTIMEO,
-        mem.toBytes(timeout)[0..],
-    );
+    if (!nl_sock_conf.blocking)
+        _ = try posix.fcntl(nl_sock, posix.F.SETFL, os.linux.SOCK.NONBLOCK);
+    if (nl_sock_conf.timeout) |timeout| {
+        try posix.setsockopt(
+            nl_sock,
+            posix.SOL.SOCKET,
+            posix.SO.RCVTIMEO,
+            mem.toBytes(timeout)[0..],
+        );
+    }
     try posix.setsockopt(
         nl_sock,
         posix.SOL.NETLINK,
@@ -182,52 +201,100 @@ pub fn initSock(nl_sock_kind: comptime_int, timeout: posix.timeval) !posix.socke
     return nl_sock;
 }
 
-/// Current Unique Sequence ID f/ new Netlink Requests
-var unique_seq_id = atomic.Value(u32).init(1000);
-/// Get a Unique Netlink Sequence ID
-pub fn getSeqID() u32 {
-    defer if (unique_seq_id.load(.acquire) >= math.maxInt(u32) - 5)
-        unique_seq_id.store(1000, .monotonic);
-    return unique_seq_id.fetchAdd(1, .acquire);
-}
+/// Request Context
+pub const RequestContext = struct {
+    /// Netlink Sequence ID
+    seq_id: u32,
+    /// Netlink Socket
+    sock: i32,
+    /// Optional Netlink Request Handler
+    handler: ?*io.Handler = null,
+    /// Async Request Timeout in milliseconds (ms)
+    timeout: u32 = 100,
 
+    /// Current Unique Sequence ID f/ new Netlink Requests
+    var unique_seq_id: atomic.Value(u32) = .init(1000);
 
+    /// Netlink Socket Data
+    pub const NetlinkSocketData = union(enum) {
+        /// The Netlink Handler info that will be used to handle this Request
+        handler: struct {
+            /// Netlink Request Handler
+            handler: *io.Handler,
+            /// Request Timeout in milliseconds (ms)
+            timeout: u32 = 100,
+        },
+        /// POSIX ID of the Netlink Socket for this Request
+        /// Use this if you already have an existing Netlink Socket
+        id: posix.socket_t,
+        /// Netlink Socket Config
+        /// Use this to create a new Socket with this Request
+        conf: NetlinkSocketConfig,
+    };
+
+    /// Get a Unique Netlink Sequence ID
+    fn getSeqID() u32 {
+        defer if (unique_seq_id.load(.acquire) >= math.maxInt(u32) - 1)
+            unique_seq_id.store(1000, .monotonic);
+        return unique_seq_id.fetchAdd(1, .acquire);
+    }
+
+    /// Initialize a new Request Context
+    pub fn init(nl_sock_data: NetlinkSocketData) !@This() {
+        var self: @This() = .{
+            .seq_id = getSeqID(),
+            .sock = nlSock: switch (nl_sock_data) {
+                .handler => |handler| handler.handler.nl_sock,
+                .conf => |conf| {
+                    continue :nlSock .{ .id = try initSock(conf) };
+                },
+                .id => |id| id,
+            },
+        };
+        if (nl_sock_data == .handler) {
+            self.handler = nl_sock_data.handler.handler;
+            self.timeout = nl_sock_data.handler.timeout;
+        }
+        return self;
+    }
+
+    /// Get another Netlink Sequence ID for this Request Context
+    pub fn nextSeqID(self: *@This()) void {
+        self.seq_id = getSeqID();
+    }
+
+    /// Get the Response Data for this Request Context.
+    /// This only works if the Request Context was initialized with a `handler`.
+    pub fn getResponse(self: *const @This()) ?anyerror![]const u8 {
+        const handler = self.handler orelse return null;
+        return handler.getResponse(self.seq_id);
+    }
+
+    /// Check for the Response Data to this Request Context.
+    /// This only works if the Request Context was initialized with a `handler`.
+    pub fn checkResponse(self: *const @This()) bool {
+        const handler = self.handler orelse return false;
+        return handler.checkResponse(self.seq_id);
+    }
+};
 /// Send a Netlink Request
 pub fn request(
     alloc: mem.Allocator,
-    /// Netlink Socket Kind
-    nl_sock_kind: comptime_int,
     /// Netlink Request Type
     RequestT: type,
     /// Raw Netlink Request (Before Length Calculation)
-    nl_req_raw: RequestT,
+    raw_req: RequestT,
     /// Attributes (Before Length Calculation) Array
     attrs_raw: []const Attribute,
-) !posix.socket_t {
-    const timeout = posix.timeval{ .sec = 0, .usec = 10_000 };
-    const nl_sock = try initSock(nl_sock_kind, timeout);
-    errdefer posix.close(nl_sock);
-    try reqOnSock(alloc, nl_sock, RequestT, nl_req_raw, attrs_raw);
-    return nl_sock;
-}
-
-/// Send a Netlink Request on the provided Socket `nl_sock`.
-pub fn reqOnSock(
-    alloc: mem.Allocator,
-    /// Netlink Socket,
-    nl_sock: posix.socket_t,
-    /// Netlink Request Type
-    RequestT: type,
-    /// Raw Netlink Request (Before Length Calculation)
-    nl_req_raw: RequestT,
-    /// Attributes (Before Length Calculation) Array
-    attrs_raw: []const Attribute,
+    /// Netlink Request Context
+    ctx: *RequestContext,
 ) !void {
+    // Netlink Request
     const req_len = mem.alignForward(u32, @sizeOf(RequestT), 4);
     const attrs,
     const attrs_len: usize = attrsLen: {
         if (attrs_raw.len == 0) break :attrsLen .{ &.{}, 0 };
-        var attrs_buf = try std.ArrayListUnmanaged(Attribute).initCapacity(alloc, attrs_raw.len);
+        var attrs_buf: ArrayList(Attribute) = try .initCapacity(alloc, attrs_raw.len);
         var len: usize = 0;
         for (attrs_raw[0..], 0..) |raw_attr, idx| {
             attrs_buf.appendAssumeCapacity(raw_attr);
@@ -235,25 +302,25 @@ pub fn reqOnSock(
             if (attr.hdr.len == 0) attr.hdr.len = mem.alignForward(u16, @intCast(attr_hdr_len + attr.data.len), 4);
             len += mem.alignForward(u16, attr.hdr.len, 4);
         }
-        break :attrsLen .{ 
-            try attrs_buf.toOwnedSlice(alloc), 
-            mem.alignForward(usize, len, 4) 
+        break :attrsLen .{
+            try attrs_buf.toOwnedSlice(alloc),
+            mem.alignForward(usize, len, 4),
         };
     };
-    defer if (attrs.len > 0) alloc.free(@as([]align(8)const Attribute, @alignCast(attrs)));
-    var nl_req = nl_req_raw;
+    defer if (attrs.len > 0) alloc.free(@as([]align(8) const Attribute, @alignCast(attrs)));
+    var req = raw_req;
     const msg_len = mem.alignForward(u32, @intCast(req_len + attrs_len), 4);
-    var nl_sock_info: posix.sockaddr.nl = undefined;
-    var nl_sock_size: u32 = @sizeOf(posix.sockaddr.nl);
-    try posix.getsockname(nl_sock, @ptrCast(&nl_sock_info), &nl_sock_size);
-    nl_req.nlh.pid = nl_sock_info.pid;
+    var sock_info: posix.sockaddr.nl = undefined;
+    var sock_size: u32 = @sizeOf(posix.sockaddr.nl);
+    try posix.getsockname(ctx.sock, @ptrCast(&sock_info), &sock_size);
+    if (req.nlh.pid == 0) req.nlh.pid = sock_info.pid;
     //log.debug("PID: {d}", .{ nl_req.nlh.pid });
-    if (nl_req.nlh.seq == 0) nl_req.nlh.seq = getSeqID();
+    if (req.nlh.seq == 0) req.nlh.seq = ctx.seq_id;
     //log.debug("SID: {d}", .{ nl_req.nlh.seq });
-    nl_req.nlh.len = msg_len;
-    var req_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, msg_len);
+    req.nlh.len = msg_len;
+    var req_buf: ArrayList(u8) = try .initCapacity(alloc, msg_len);
     defer req_buf.deinit(alloc);
-    try req_buf.appendSlice(alloc, mem.toBytes(nl_req)[0..]);
+    try req_buf.appendSlice(alloc, mem.toBytes(req)[0..]);
     if (attrs.len > 0) {
         for (attrs[0..]) |attr| {
             try req_buf.appendSlice(alloc, mem.toBytes(attr.hdr)[0..]);
@@ -265,56 +332,54 @@ pub fn reqOnSock(
     if (req_buf.items.len < msg_len) {
         for (req_buf.items.len..msg_len) |_| req_buf.appendAssumeCapacity(0);
     }
+    if (ctx.handler) |handler| try handler.trackRequest(ctx.*);
     _ = try posix.send(
-        nl_sock,
+        ctx.sock,
         req_buf.items[0..],
         0,
     );
 }
 
-/// Handle a Netlink ACK Response.
-pub fn handleAck(nl_sock: posix.socket_t) !void {
-    var resp_idx: usize = 0;
-    while (resp_idx <= 15) : (resp_idx += 1) {
-        var resp_buf: [4096]u8 = .{ 0 } ** 4096;
-        const resp_len = try posix.recv(
-            nl_sock,
-            resp_buf[0..],
-            0,
-        );
-        var offset: usize = 0;
-        while (offset < resp_len) {
-            var start: usize = offset;
-            var end: usize = (offset + @sizeOf(os.linux.nlmsghdr));
-            const nl_resp_hdr: *const MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-            if (nl_resp_hdr.len < @sizeOf(MessageHeader))
-                return error.InvalidMessage;
-            if (nl_resp_hdr.type > 4) return;
-            if (@as(NLMSG, @enumFromInt(nl_resp_hdr.type)) == .ERROR) {
-                start = end;
-                end += @sizeOf(ErrorHeader);
-                const nl_err: *const ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                    .SUCCESS => return,
-                    .BUSY => return error.BUSY,
-                    .NOLINK => return error.NOLINK,
-                    .ALREADY => return error.ALREADY,
-                    .EXIST => return error.EXIST,
-                    .ADDRNOTAVAIL => return error.ADDRNOTAVAIL,
-                    .SRCH => return error.SRCH,
-                    .NETUNREACH => return error.NETUNREACH,
-                    .INPROGRESS => return error.INPROGRESS,
-                    .NODEV => return error.NODEV,
-                    else => |err| {
-                        log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                        return error.OSError;
-                    },
-                }
-            }
-            offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
+/// Handle a Netlink ACK Response from the provided `msg_buf`
+pub fn handleAckBuf(msg_buf: []const u8) !void {
+    var start: usize = 0;
+    var end: usize = (start + @sizeOf(MessageHeader));
+    const nl_resp_hdr: *const MessageHeader = @alignCast(@ptrCast(msg_buf[start..end]));
+    if (nl_resp_hdr.len < @sizeOf(MessageHeader))
+        return error.InvalidMessage;
+    if (nl_resp_hdr.type > 4) return;
+    if (@as(NLMSG, @enumFromInt(nl_resp_hdr.type)) == .ERROR) {
+        start = end;
+        end += @sizeOf(ErrorHeader);
+        const nl_err: *const ErrorHeader = @alignCast(@ptrCast(msg_buf[start..end]));
+        switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+            .SUCCESS => return,
+            .BUSY => return error.BUSY,
+            .NOLINK => return error.NOLINK,
+            .ALREADY => return error.ALREADY,
+            .EXIST => return error.EXIST,
+            .ADDRNOTAVAIL => return error.ADDRNOTAVAIL,
+            .SRCH => return error.SRCH,
+            .NETUNREACH => return error.NETUNREACH,
+            .INPROGRESS => return error.INPROGRESS,
+            .NODEV => return error.NODEV,
+            else => |err| {
+                log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                return error.OSError;
+            },
         }
     }
     return error.NetlinkAckError;
+}
+/// Handle a Netlink ACK Response on the provided Netlink Socket `nl_sock`.
+pub fn handleAckSock(nl_sock: posix.socket_t) !void {
+    var resp_buf: [4096]u8 = undefined;
+    const resp_len = try posix.recv(
+        nl_sock,
+        resp_buf[0..],
+        0,
+    );
+    return try handleAckBuf(resp_buf[0..resp_len]);
 }
 
 /// Config for Handling Responses
@@ -327,14 +392,76 @@ pub const HandleConfig = struct {
     warn_parse_err: bool = false,
 };
 
-/// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`).
-pub fn handleType(
+/// Context for Handling Responses.
+/// Note, this is only used for `handleTypeBuf()`.
+pub const HandleContext = struct {
+    /// Handle Config
+    config: HandleConfig,
+    /// Done Flag
+    done: ?bool = null,
+};
+
+/// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`) from the provided `msg_buf`.
+pub fn handleTypeBuf(
+    alloc: mem.Allocator,
+    msg_buf: []const u8,
+    /// This must be a derivative of the `Request()` Type.
+    ResponseHdrT: type,
+    ResponseT: type,
+    /// Function to Parse data. (Typically, this will be `nl.parse.fromBytes(ResponseT)`.)
+    parseFn: *const fn(mem.Allocator, []const u8) anyerror!ResponseT,
+    ctx: *HandleContext,
+) ![]const ResponseT {
+    const FamHdrT = comptime famHdrT: {
+        for (meta.fields(ResponseHdrT)) |field| {
+            if (mem.eql(u8, field.name, "msg")) break :famHdrT field.type;
+        }
+        else @compileError(fmt.comptimePrint("The Type `{s}` is not a `Request` Type.", .{ @typeName(ResponseHdrT) }));
+    };
+    const fam_hdr_len = @sizeOf(FamHdrT);
+    var resp_list: ArrayList(ResponseT) = .empty;
+    var msg_iter: parse.Iterator(MessageHeader, .{}) = .{ .bytes = msg_buf[0..] };
+    while (msg_iter.next()) |msg| {
+        defer {
+            if (msg.hdr.flags & c(NLM_F).MULTI == 0)
+                ctx.done = true;
+        }
+        if (msg.hdr.type == c(NLMSG).DONE) {
+            ctx.done = true;
+            break;
+        }
+        const match_hdr = msg.hdr.type == ctx.config.nl_type;
+        const match_cmd = matchCmd: {
+            const cmd = ctx.config.fam_cmd orelse break :matchCmd true;
+            inline for (meta.fields(FamHdrT)) |field| {
+                if (mem.eql(u8, field.name, "cmd")) {
+                    const fam_hdr = mem.bytesToValue(FamHdrT, msg.data[0..fam_hdr_len]);
+                    break :matchCmd @field(fam_hdr, field.name) == cmd; // Wtf Zig? This is convoluted!
+                }
+            }
+            log.err("The Generic Family Command '{d}' was provided for the non-Generic Header '{s}'", .{ cmd, @typeName(FamHdrT) });
+            return error.GenericHeaderRequired;
+        };
+        if (!(match_hdr and match_cmd)) continue;
+        const instance = parseFn(alloc, msg.data) catch |err| {
+            if (ctx.config.warn_parse_err)
+                log.warn("Parsing Error: {s}", .{ @errorName(err) });
+            continue;
+        };
+        try resp_list.append(alloc, instance);
+        //log.debug("Parsed {d} '{s}'", .{ resp_list.items.len, @typeName(ResponseT) });
+    }
+    return try resp_list.toOwnedSlice(alloc);
+}
+
+/// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`) on the provided Netlink Socket `nl_sock`.
+pub fn handleTypeSock(
     alloc: mem.Allocator,
     nl_sock: posix.socket_t,
     /// This must be a derivative of the `Request()` Type.
     ResponseHdrT: type,
     ResponseT: type,
-    /// Function to Parse data. (Typically, this will be `nl.parse.fromBytes`.)
+    /// Function to Parse data. (Typically, this will be `nl.parse.fromBytes(ResponseT)`.)
     parseFn: *const fn(mem.Allocator, []const u8) anyerror!ResponseT,
     config: HandleConfig,
 ) ![]const ResponseT {
@@ -345,23 +472,18 @@ pub fn handleType(
         NETLINK_OPT.RX_RING,
         mem.toBytes(buf_size)[0..],
     );
-    const FamHdrT = comptime famHdrT: {
-        for (meta.fields(ResponseHdrT)) |field| {
-            if (mem.eql(u8, field.name, "msg")) break :famHdrT field.type;
-        }
-        else @compileError(fmt.comptimePrint("The Type `{s}` is not a `Request` Type.", .{ @typeName(ResponseHdrT) }));
-    };
-    const fam_hdr_len = @sizeOf(FamHdrT);
     // Parse Links
-    var resp_list = try std.ArrayListUnmanaged(ResponseT).initCapacity(alloc, 0);
+    var resp_list: ArrayList(ResponseT) = .empty;
     errdefer {
         for (resp_list.items) |item| parse.freeBytes(alloc, ResponseT, item);
         resp_list.deinit(alloc);
     }
     // - Handle Multi-part
-    var done: bool = false;
-    multiPart: while (!done or resp_list.items.len == 0) {
-        var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
+    var handle_ctx: HandleContext = .{
+        .config = config,
+    };
+    multiPart: while (!handle_ctx.done or resp_list.items.len == 0) {
+        var resp_buf: [buf_size]u8 = undefined;
         const resp_len = try posix.recv(
             nl_sock,
             resp_buf[0..],
@@ -369,36 +491,15 @@ pub fn handleType(
         );
         if (resp_len == 0) break :multiPart;
         // Handle Dump
-        var msg_iter: parse.Iterator(MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
-        while (msg_iter.next()) |msg| {
-            defer {
-                if (msg.hdr.flags & c(NLM_F).MULTI != c(NLM_F).MULTI)
-                    done = true;
-            }
-            if (msg.hdr.type == c(NLMSG).DONE) break :multiPart;
-            const match_hdr = msg.hdr.type == config.nl_type;
-            const match_cmd = matchCmd: {
-                const cmd = config.fam_cmd orelse break :matchCmd true;
-                inline for (meta.fields(FamHdrT)) |field| {
-                    if (mem.eql(u8, field.name, "cmd")) {
-                        const fam_hdr = mem.bytesToValue(FamHdrT, msg.data[0..fam_hdr_len]);
-                        break :matchCmd @field(fam_hdr, field.name) == cmd; // Wtf Zig? This is convoluted!
-                   }
-                }
-                log.err("The Generic Family Command '{d}' was provided for the non-Generic Header '{s}'", .{ cmd, @typeName(FamHdrT) });
-                return error.GenericHeaderRequired;
-            };
-            if (!(match_hdr and match_cmd)) continue;
-            const instance = parseFn(alloc, msg.data) catch |err| {
-                if (config.warn_parse_err)
-                    log.warn("Parsing Error: {s}", .{ @errorName(err) });
-                continue;
-            };
-            try resp_list.append(alloc, instance);
-            //log.debug("Parsed {d} '{s}'", .{ resp_list.items.len, @typeName(ResponseT) });
-        }
+        const resp_slice: []const ResponseT = try handleTypeBuf(
+            alloc,
+            resp_buf[0..resp_len],
+            ResponseHdrT,
+            ResponseT,
+            parseFn,
+            &handle_ctx,
+        );
+        resp_list.appendSlice(alloc, resp_slice);
     }
     return try resp_list.toOwnedSlice(alloc);
 }
-
-

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ascii = std.ascii;
+const builtin = std.builtin;
 const enums = std.enums;
 const heap = std.heap;
 const json = std.json;
@@ -12,6 +13,7 @@ const meta = std.meta;
 const os = std.os;
 const posix = std.posix;
 const time = std.time;
+const ArrayList = std.ArrayListUnmanaged;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -585,7 +587,7 @@ pub const IFTYPE = enum(u32) {
     NAN3,
 };
 /// Network Interface Info
-/// Result of `CMD_NEW_INTERFACE` which can be called w/ `getInterface()`.
+/// Result of `CMD_NEW_INTERFACE` which can be called w/ `requestInterface()` or `getInterface()`.
 pub const Interface = struct {
     pub const AttrE = ATTR;
 
@@ -615,10 +617,18 @@ pub const Interface = struct {
     AKM_SUITES: ?[]const u32 = null,
     /// TX Power setting (in dBm) if specified
     TX_POWER: ?u32 = null,
+    /// WIPHY Frequency
+    WIPHY_FREQ: ?u32 = null,
+    /// WIPHY Frequency Offset
+    WIPHY_FREQ_OFFSET: ?u16 = null,
+    /// Channel Width
+    CHANNEL_WIDTH: ?u16 = null,
+    /// Center Frequency 
+    CENTER_FREQ1: ?u16 = null,
 };
 
 /// Wireless Physical Device (WIPHY) Info
-/// Result of `CMD_NEW_WIPHY` which can be called w/ `getWIPHY()`.
+/// Result of `CMD_NEW_WIPHY` which can be called w/ `requestWIPHY()` or `getWIPHY()`.
 pub const Wiphy = struct {
     pub const AttrE = ATTR;
 
@@ -1416,7 +1426,7 @@ pub const InformationElements = struct {
         }
 
         pub fn toBytes(self: @This(), alloc: mem.Allocator) ![]u8 {
-            var buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
+            var buf: ArrayList(u8) = .empty;
             inline for (meta.fields(@This())) |field| {
                 const field_info = @typeInfo(field.type);
                 const in_field = @field(self, field.name);
@@ -1645,7 +1655,7 @@ pub const InformationElements = struct {
             const bands = wiphy.WIPHY_BANDS orelse return null;
             //const ht_40: u32 = 0b0001;
             //const vht_160: u32 = 0b0010;
-            var class_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
+            var class_buf: ArrayList(u8) = .empty;
             errdefer class_buf.deinit(alloc);
             for (bands) |band| {
                 const freqs = band.FREQS orelse continue;
@@ -2137,26 +2147,21 @@ pub fn validateFreq(freq: usize) bool {
     return if (channelFromFreq(freq)) |_| true else |_| false;
 }
 
-/// Set the `channel` for the provided Interface (`if_index`)
-pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void {
-    setFreq(if_index, try freqFromChannel(channel), ch_width) catch |err| switch (err) {
-        error.InvalidFrequency => return error.InvalidChannel,
-        else => return err,
-    };
-}
-/// Set the Frequency (`freq`) for the provided Interface (`if_index`)
-pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
+/// Request to Set the Frequency (`freq`) for the provided Interface (`if_index`)
+pub fn requestSetFreq(
+    alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
+    if_index: i32,
+    freq: usize, 
+    ch_width: CHANNEL_WIDTH,
+) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 12, 4);
-    var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
-    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     if (!validateFreq(freq)) return error.InvalidFrequency;
     const freq_bytes = mem.toBytes(@as(u32, @intCast(freq)))[0..];
     const width_bytes = mem.toBytes(@intFromEnum(ch_width))[0..];
     const type_bytes = mem.toBytes(@intFromEnum(CHANNEL_TYPE.fromWidth(ch_width, try channelFromFreq(freq))))[0..];
-    const nl_sock = try nl.request(
-        fba.allocator(),
-        nl.NETLINK.GENERIC,
+    try nl.request(
+        alloc,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2180,23 +2185,34 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
             .{ .hdr = .{ .type = c(ATTR).CHANNEL_WIDTH }, .data = width_bytes },
 
         },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+}
+/// Set the Frequency (`freq`) for the provided Interface (`if_index`)
+pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
+    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 12, 4);
+    var req_buf: [buf_len]u8 = undefined;
+    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestSetFreq(fba.allocator(), &req_ctx, if_index, freq, ch_width);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAck(req_ctx.sock);
+}
+/// Set the `channel` for the provided Interface (`if_index`)
+pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void {
+    setFreq(if_index, try freqFromChannel(channel), ch_width) catch |err| switch (err) {
+        error.InvalidFrequency => return error.InvalidChannel,
+        else => return err,
+    };
 }
 
-
-/// Take Ownership of a Wireless Interface.
-/// This ensures that only the provided socket (`nl_sock`) can manipulate the given Interface (`if_index`).
-pub fn takeOwnership(nl_sock: posix.socket_t, if_index: i32) !void {
+/// Request to Take Ownership of a Wireless Interface.
+/// This ensures that only the provided socket (`req_ctx.sock`) can manipulate the given Interface (`if_index`).
+pub fn requestTakeOwnership(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const fam_id = info.FAMILY_ID;
-    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
-    var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
-    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    try nl.reqOnSock(
-        fba.allocator(),
-        nl_sock,
+    try nl.request(
+        alloc,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2214,21 +2230,29 @@ pub fn takeOwnership(nl_sock: posix.socket_t, if_index: i32) !void {
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
             .{ .hdr = .{ .type = c(ATTR).SOCKET_OWNER }, .data = &.{} },
-            //.{ .hdr = .{ .type = c(ATTR).SOCKET_OWNER }, .data = mem.toBytes(@as(u32, 1))[0..] },
         },
+        req_ctx,
     );
-    try nl.handleAck(nl_sock);
+}
+/// Take Ownership of a Wireless Interface.
+pub fn takeOwnership(req_ctx: *nl.RequestContext, if_index: i32) !void {
+    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
+    var req_buf: [buf_len]u8 = undefined;
+    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
+    try requestTakeOwnership(fba.allocator(), req_ctx, if_index);
+    try nl.handleAck(req_ctx.sock);
 }
 
-/// Set the Mode for the Interface
-pub fn setMode(if_index: i32, mode: u32) !void {
+/// Request to Set the `mode` for the Interface (`if_index`)
+pub fn requestSetMode(
+    alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
+    if_index: i32, 
+    mode: u32, 
+) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
-    var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
-    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    const nl_sock = try nl.request(
-        fba.allocator(),
-        nl.NETLINK.GENERIC,
+    try nl.request(
+        alloc,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2247,17 +2271,30 @@ pub fn setMode(if_index: i32, mode: u32) !void {
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
             .{ .hdr = .{ .type = c(ATTR).IFTYPE }, .data = mem.toBytes(mode)[0..] },
         },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+}
+/// Set the `mode` for the Interface (`if_index`)
+pub fn setMode(if_index: i32, mode: u32) !void {
+    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
+    var req_buf: [buf_len]u8 = undefined;
+    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestSetMode(fba.allocator(), &req_ctx, if_index, mode);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAck(req_ctx.sock);
 }
 
-/// Get the details for a Station.
-pub fn getStation(alloc: mem.Allocator, if_index: i32, bssid: [6]u8) !StationInfo {
+/// Request the details for a Station.
+pub fn requestStation(
+    alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
+    if_index: i32,
+    bssid: [6]u8,
+) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2282,11 +2319,21 @@ pub fn getStation(alloc: mem.Allocator, if_index: i32, bssid: [6]u8) !StationInf
                 .data = bssid[0..],
             },
         },
+        req_ctx,
     );
+}
+/// Get the details for a Station.
+pub fn getStation(
+    alloc: mem.Allocator, 
+    if_index: i32, 
+    bssid: [6]u8,
+) !StationInfo {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestStation(alloc, &req_ctx, if_index, bssid);
     const buf_size = 5_000;
-    var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
+    var resp_buf: [buf_size]u8 = undefined;
     const resp_len = try posix.recv(
-        nl_sock,
+        req_ctx.sock,
         resp_buf[0..],
         0,
     );
@@ -2342,12 +2389,11 @@ pub fn getStation(alloc: mem.Allocator, if_index: i32, bssid: [6]u8) !StationInf
     return error.NoStationFound;
 }
 
-/// Get the details for a Wireless Interface.
-pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
+/// Request the details for the Wireless Interface (`if_index`).
+pub fn requestInterface(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2365,72 +2411,19 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
         },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    //try nl.handleAck(nl_sock);
-
-    var resp_count: usize = 0;
-    while (resp_count < 5) : (resp_count += 1) {
-        var resp_buf: [64_000]u8 = .{ 0 } ** 64_000;
-        _ = try posix.recv(
-            nl_sock,
-            resp_buf[0..],
-            0,
-        );
-        // Netlink Header
-        var start: usize = 0;
-        var end: usize = @sizeOf(nl.MessageHeader);
-        const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-        log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
-        if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-            return error.InvalidMessage;
-        if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-            start = end;
-            end += @sizeOf(nl.ErrorHeader);
-            const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-            switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                .SUCCESS => {},
-                .BUSY => return error.BUSY,
-                else => |err| {
-                    log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                    return error.OSError;
-                },
-            }
-        }
-        // General Header
-        start = end;
-        end += @sizeOf(nl.generic.Header);
-        const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
-        if (gen_hdr.cmd != c(CMD).NEW_INTERFACE) {
-            log.debug("Not an Interface. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-            //return error.NonInterfacResponse;
-            continue;
-        }
-        log.debug("Received New Interface. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-        // WIPHY 
-        start = end;
-        end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
-        const net_if = try nl.parse.fromBytes(alloc, Interface, resp_buf[start..end]);
-        errdefer nl.parse.freeBytes(alloc, Interface, net_if);
-        //if (net_if.IFINDEX) |idx| {
-        //    if (idx == if_index) return net_if;
-        //}
-        if (net_if.IFINDEX == if_index) return net_if;
-    }
-    return error.NoResultForInterface;
 }
-/// Get the details for all Wireless Interfaces.
-pub fn getAllInterfaces(alloc: mem.Allocator) ![]const Interface {
+/// Request the details for all Wireless Interfaces.
+pub fn requestAllInterfaces(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
             .nlh = .{
                 .len = 0,
                 .type = info.FAMILY_ID,
-                //.flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
                 .seq = 0,
                 .pid = 0,
@@ -2441,18 +2434,53 @@ pub fn getAllInterfaces(alloc: mem.Allocator) ![]const Interface {
             },
         },
         &.{},
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    return try handleInterface(alloc, nl_sock);
+}
+/// Get the details for a Wireless Interface.
+pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestInterface(alloc, &req_ctx, if_index);
+    defer posix.close(req_ctx.sock);
+    const if_buf = try handleInterfaceSock(alloc, req_ctx.sock);
+    if (if_buf.len == 0 or if_buf[0].IFINDEX != if_index) 
+        return error.NoResultForInterface;
+    return if_buf[0];
+}
+/// Get the details for all Wireless Interfaces.
+pub fn getAllInterfaces(alloc: mem.Allocator) ![]const Interface {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestAllInterfaces(alloc, &req_ctx);
+    defer posix.close(req_ctx.sock);
+    return try handleInterfaceSock(alloc, req_ctx.sock);
 }
 /// Parse the provided `bytes` to an Interface instance.
 pub fn parseInterface(alloc: mem.Allocator, bytes: []const u8) !Interface {
     return try nl.parse.fromBytes(alloc, Interface, bytes[@sizeOf(nl.generic.Header)..]);
 }
-/// Handle a NEW_INTERFACE response.
-pub fn handleInterface(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Interface {
+/// Handle a NEW_INTERFACE response from the provided `msg_buf`.
+pub fn handleInterfaceBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Interface {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleType(
+    var handle_ctx: nl.HandleContext = .{
+        .config = .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_INTERFACE,
+            .warn_parse_err = @import("builtin").mode == .Debug
+        },
+    };
+    return try nl.handleTypeBuf(
+        alloc,
+        msg_buf,
+        nl.generic.Request,
+        Interface,
+        parseInterface,
+        &handle_ctx,
+    );
+}
+/// Handle a NEW_INTERFACE response.
+pub fn handleInterfaceSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Interface {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -2461,112 +2489,56 @@ pub fn handleInterface(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const I
         .{
             .nl_type = info.FAMILY_ID,
             .fam_cmd = c(CMD).NEW_INTERFACE,
-        },
+            .warn_parse_err = @import("builtin").mode == .Debug
+        }
     );
 }
 
-/// Get details for a Wireless Physical Device (WIPHY).
-pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
+/// Request details for a Wireless Physical Device (WIPHY) (`phy_index`).
+pub fn requestWIPHY(
+    alloc: mem.Allocator, 
+    req_ctx: *nl.RequestContext,
+    if_index: i32, 
+    phy_index: u32,
+) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    for (0..3) |_| {
-        const nl_sock = try nl.request(
-            alloc,
-            nl.NETLINK.GENERIC,
-            nl.generic.Request,
-            .{
-                .nlh = .{
-                    .len = 0,
-                    .type = info.FAMILY_ID,
-                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                    .seq = 0,
-                    .pid = 0,
-                },
-                .msg = .{
-                    .cmd = c(CMD).GET_WIPHY,
-                    .version = 0,
-                },
-            },
-            &.{
-                .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-                //.{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = &.{} },
-            },
-        );
-        defer posix.close(nl_sock);
-        var first_msg = true;
-        var resp_multi = false;
-        respLoop: while (first_msg or resp_multi) {
-            first_msg = false;
-            var resp_buf: [64_000]u8 = .{ 0 } ** 64_000;
-            const resp_len = try posix.recv(
-                nl_sock,
-                resp_buf[0..],
-                0,
-            );
-            var offset: usize = 0;
-            var inner_count: usize = 1;
-            while (offset < resp_len) : (inner_count += 1) {
-                //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
-                // Netlink Header
-                var start: usize = offset;
-                var end: usize = offset + @sizeOf(nl.MessageHeader);
-                const nl_resp_hdr = mem.bytesToValue(nl.MessageHeader, resp_buf[start..end]);
-                //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
-                if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-                    return error.InvalidMessage;
-                if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-                    start = end;
-                    end += @sizeOf(nl.ErrorHeader);
-                    const nl_err = mem.bytesToValue(nl.ErrorHeader, resp_buf[start..end]);
-                    switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                        .SUCCESS => {},
-                        .BUSY => return error.BUSY,
-                        else => |err| {
-                            log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                            return error.OSError;
-                        },
-                    }
-                }
-                resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
-                if (resp_multi) //log.debug("Multi Part Message", .{});
-                if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
-                    //log.debug("Done w/ Multi Part Message.", .{});
-                    resp_multi = false;
-                };
-                // General Header
-                start = end;
-                end += @sizeOf(nl.generic.Header);
-                const gen_hdr = mem.bytesToValue(nl.generic.Header, resp_buf[start..end]);
-                if (gen_hdr.cmd != c(CMD).NEW_WIPHY) {
-                    //log.debug("Not a WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-                    continue :respLoop;
-                }
-                //log.debug("Received New WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-                // WIPHY 
-                start = end;
-                end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
-                const wiphy = try nl.parse.fromBytes(alloc, Wiphy, resp_buf[start..end]);
-                errdefer nl.parse.freeBytes(alloc, Wiphy, wiphy);
-                if (wiphy.WIPHY == phy_index) return wiphy;
-                nl.parse.freeBytes(alloc, Wiphy, wiphy);
-                offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-            }
-        }
-    }
-    return error.NoResultForWIPHY;
-}
-
-/// Get details for all Wireless Physical Devices (WIPHYs).
-pub fn getAllWIPHY(alloc: mem.Allocator) ![]const Wiphy {
-    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
             .nlh = .{
                 .len = 0,
                 .type = info.FAMILY_ID,
-                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                //.flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).GET_WIPHY,
+                .version = 0,
+            },
+        },
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).WIPHY }, .data = mem.toBytes(phy_index)[0..] },
+            //.{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = &.{} },
+        },
+        req_ctx,
+    );
+}
+/// Request details for all Wireless Physical Devices (WIPHY),
+pub fn requestAllWIPHY(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.request(
+        alloc,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                //.flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
                 .seq = 0,
                 .pid = 0,
             },
@@ -2578,18 +2550,120 @@ pub fn getAllWIPHY(alloc: mem.Allocator) ![]const Wiphy {
         &.{
             .{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = mem.toBytes(@as(u32, 1))[0..] },
         },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    return try handleWIPHY(alloc, nl_sock);
+}
+/// Get details for a Wireless Physical Device (WIPHY) (`phy_index`).
+pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestWIPHY(
+        alloc, 
+        &req_ctx,
+        if_index,
+        phy_index,
+    );
+    defer posix.close(req_ctx.sock);
+    const wiphy_slice = try handleWIPHYSock(alloc, req_ctx.sock)[0];
+    if (wiphy_slice.len == 0) 
+        return error.NoResultForWIPHY;
+    return wiphy_slice[0];
+    //for (0..3) |_| {
+    //    defer posix.close(nl_sock);
+    //    var first_msg = true;
+    //    var resp_multi = false;
+    //    respLoop: while (first_msg or resp_multi) {
+    //        first_msg = false;
+    //        var resp_buf: [64_000]u8 = undefined;
+    //        const resp_len = try posix.recv(
+    //            nl_sock,
+    //            resp_buf[0..],
+    //            0,
+    //        );
+    //        var offset: usize = 0;
+    //        var inner_count: usize = 1;
+    //        while (offset < resp_len) : (inner_count += 1) {
+    //            //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
+    //            // Netlink Header
+    //            var start: usize = offset;
+    //            var end: usize = offset + @sizeOf(nl.MessageHeader);
+    //            const nl_resp_hdr = mem.bytesToValue(nl.MessageHeader, resp_buf[start..end]);
+    //            //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+    //            if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+    //                return error.InvalidMessage;
+    //            if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
+    //                start = end;
+    //                end += @sizeOf(nl.ErrorHeader);
+    //                const nl_err = mem.bytesToValue(nl.ErrorHeader, resp_buf[start..end]);
+    //                switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+    //                    .SUCCESS => {},
+    //                    .BUSY => return error.BUSY,
+    //                    else => |err| {
+    //                        log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+    //                        return error.OSError;
+    //                    },
+    //                }
+    //            }
+    //            resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
+    //            if (resp_multi) //log.debug("Multi Part Message", .{});
+    //            if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
+    //                //log.debug("Done w/ Multi Part Message.", .{});
+    //                resp_multi = false;
+    //            };
+    //            // General Header
+    //            start = end;
+    //            end += @sizeOf(nl.generic.Header);
+    //            const gen_hdr = mem.bytesToValue(nl.generic.Header, resp_buf[start..end]);
+    //            if (gen_hdr.cmd != c(CMD).NEW_WIPHY) {
+    //                //log.debug("Not a WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+    //                continue :respLoop;
+    //            }
+    //            //log.debug("Received New WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+    //            // WIPHY 
+    //            start = end;
+    //            end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
+    //            const wiphy = try nl.parse.fromBytes(alloc, Wiphy, resp_buf[start..end]);
+    //            errdefer nl.parse.freeBytes(alloc, Wiphy, wiphy);
+    //            if (wiphy.WIPHY == phy_index) return wiphy;
+    //            nl.parse.freeBytes(alloc, Wiphy, wiphy);
+    //            offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
+    //        }
+    //    }
+    //}
+}
+
+/// Get details for all Wireless Physical Devices (WIPHYs).
+pub fn getAllWIPHY(alloc: mem.Allocator) ![]const Wiphy {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestAllWIPHY(alloc, &req_ctx);
+    defer posix.close(req_ctx.sock);
+    return try handleWIPHYSock(alloc, req_ctx.sock);
 }
 /// Parse the provided `bytes` to a Wiphy instance.
 pub fn parseWIPHY(alloc: mem.Allocator, bytes: []const u8) !Wiphy {
     return try nl.parse.fromBytes(alloc, Wiphy, bytes[@sizeOf(nl.generic.Header)..]);
 }
-/// Handle a NEW_WIPHY response.
-pub fn handleWIPHY(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Wiphy {
+/// Handle a NEW_WIPHY response from the provided `msg_buf`.
+pub fn handleWIPHYBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Wiphy {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleType(
+    var handle_ctx: nl.HandleContext = .{
+        .config = .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_WIPHY,
+        },
+    };
+    return try nl.handleTypeBuf(
+        alloc,
+        msg_buf,
+        nl.generic.Request,
+        Wiphy,
+        parseWIPHY,
+        &handle_ctx,
+    );
+}
+/// Handle a NEW_WIPHY response.
+pub fn handleWIPHYSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Wiphy {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -2602,226 +2676,222 @@ pub fn handleWIPHY(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Wiphy
     );
 }
 
-
-/// Config f/ `scanSSID()`.
-pub const ScanConfig = struct {
-    /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
-    /// (WIP)
-    nl_sock: ?posix.socket_t = null,
-    /// Frequencies to Scan. (Note, if this is left null, all compatible frequencies will be scanned.)
-    freqs: ?[]const u32 = null,
-    /// Number of times to retry the Scan.
-    retries: usize = 3,
-};
-/// Scan for the Information Element of a specific SSID.
-pub fn scanSSID(
-    alloc: mem.Allocator,
-    if_index: i32,
-    ssid: []const u8,
-    config: ScanConfig,
-) !ScanResults {
-    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var ssid_data = try alloc.alloc(u8, switch (ssid.len) {
-        0...8 => 8,
-        9...16 => 16,
-        17...32 => 32,
-        else => return error.SSIDTooLong,
-    });
-    defer alloc.free(ssid_data);
-    @memset(ssid_data[0..], 0);
-    ssid_data[0] = @intCast(ssid.len + 4);
-    ssid_data[2] = @intCast(ssid_data.len / 8 -| 1);
-    @memcpy(ssid_data[(ssid_data.len - ssid.len)..], ssid);
-    var attrs_buf = try std.ArrayListUnmanaged(nl.Attribute).initCapacity(alloc, 3);
-    defer attrs_buf.deinit(alloc);
-    try attrs_buf.appendSlice(
-        alloc,
-        &.{
-            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-            .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
-            .{
-                .hdr = .{ .type = c(ATTR).SCAN_FLAGS },
-                .data = mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH)[0..], //| c(SCAN_FLAG).RANDOM_SN)[0..],
-            },
-        },
-    );
-    if (config.freqs) |_freqs| addFreqs: {
-        if (_freqs.len == 0) break :addFreqs;
-        log.debug("Adding Scan Freqs:", .{});
-        var freq_attrs_buf = try std.ArrayListUnmanaged(u8).initCapacity(alloc, 0);
-        for (_freqs) |freq| {
-            const freq_attr_hdr: nl.AttributeHeader = .{ .type = c(ATTR).WIPHY_FREQ, .len = 8 };
-            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq_attr_hdr)[0..]);
-            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq)[0..]);
-            log.debug("- Scan Freq: {d}MHz", .{ freq });
-        }
-        const freq_attrs_bytes = try freq_attrs_buf.toOwnedSlice(alloc);
-        try attrs_buf.append(alloc, .{ 
-            .hdr = .{ 
-                .type = c(ATTR).SCAN_FREQUENCIES, 
-                .len = @intCast(nl.attr_hdr_len + freq_attrs_bytes.len),
-            }, 
-            .data = freq_attrs_bytes, 
-        });
-    }
-    attemptScan: for (0..config.retries) |attempt| {
-        log.debug("Scan Attempt {d}/{d} for SSID '{s}'", .{ attempt + 1, config.retries, ssid });
-        const nl_sock = try nl.request(
-            alloc,
-            nl.NETLINK.GENERIC,
-            nl.generic.Request,
-            .{
-                .nlh = .{
-                    .len = 0,
-                    .type = info.FAMILY_ID,
-                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                    .seq = 0,
-                    .pid = 0,
-                },
-                .msg = .{
-                    .cmd = c(CMD).TRIGGER_SCAN,
-                    .version = 0,
-                },
-            },
-            attrs_buf.items,
-        );
-        defer posix.close(nl_sock);
-        try nl.handleAck(nl_sock);
-        const buf_size: u32 = 64_000;
-        var timeout: usize = 3;
-        var res_sock = try posix.socket(nl.AF.NETLINK, posix.SOCK.RAW, nl.NETLINK.GENERIC);
-        defer posix.close(res_sock);
-        const sa_nl = posix.sockaddr.nl{
-            .pid = 0,
-            .groups = c(nl.route.RTMGRP).LINK | c(nl.route.RTMGRP).IPV4_IFADDR,
-        };
-        try posix.bind(
-            res_sock,
-            @ptrCast(&sa_nl),
-            16,
-        );
-        var timeout_opt = mem.toBytes(posix.timeval{ .sec = @intCast(timeout), .usec = 0 });
-        try posix.setsockopt(
-            res_sock, 
-            posix.SOL.SOCKET, 
-            posix.SO.RCVTIMEO, 
-            timeout_opt[0..],
-        );
-        try posix.setsockopt(
-            res_sock, 
-            posix.SOL.SOCKET, 
-            nl.NETLINK_OPT.RX_RING, 
-            mem.toBytes(buf_size)[0..],
-        );
-        //try posix.setsockopt(
-        //    res_sock,
-        //    posix.SOL.NETLINK,
-        //    nl.NETLINK_OPT.ADD_MEMBERSHIP,
-        //    mem.toBytes(info.MCAST_GROUPS.get("scan").?)[0..],
-        //);
-        var resp_timer = try time.Timer.start();
-        var tried_get = false;
-        var resp_count: usize = 1;
-        var resp_multi = false;
-        respLoop: while (resp_timer.read() / time.ns_per_s < timeout * 2 or resp_multi) : (resp_count += 1) {
-            //log.debug("Listening for response #{d}...", .{ resp_count });
-            var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
-            const resp_len = posix.recv(
-                res_sock,
-                resp_buf[0..],
-                0,
-            ) catch |err| switch (err) {
-                error.WouldBlock => {
-                    //return error.NoScanResults;
-                    if (tried_get) continue :attemptScan; //return error.NoScanResults;
-                    tried_get = true;
-                    //log.debug("Attempting to Get Scan.", .{});
-                    posix.close(res_sock);
-                    res_sock = try nl.request(
-                        alloc,
-                        nl.NETLINK.GENERIC,
-                        nl.generic.Request,
-                        .{
-                            .nlh = .{
-                                .len = 0,
-                                .type = info.FAMILY_ID,
-                                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
-                                .seq = 0,
-                                .pid = 0,
-                            },
-                            .msg = .{
-                                .cmd = c(CMD).GET_SCAN,
-                                .version = 0,
-                            },
-                        },
-                        &.{
-                            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-                        },
-                    );
-                    timeout *= 3;
-                    timeout_opt = mem.toBytes(posix.timeval{ .sec = @intCast(timeout), .usec = 0 });
-                    try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
-                    resp_timer.reset();
-                    continue :respLoop;
-                },
-                else => return err,
-            };
-            //log.debug("\n==================\nRESPONSE LEN: {d}B\n==================", .{ resp_len });
-            //var offset: usize = 0;
-            var msg_iter: nl.parse.Iterator(nl.MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
-            while (msg_iter.next()) |msg| {
-                //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
-                //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
-                // Netlink Header
-                if (msg.hdr.type == c(nl.NLMSG).ERROR) {
-                    const nl_err = mem.bytesAsValue(nl.ErrorHeader, msg.data);
-                    switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                        //.SUCCESS => {},
-                        .SUCCESS => continue,
-                        .BUSY => return error.BUSY,
-                        else => |err| {
-                            log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                            return error.OSError;
-                        },
-                    }
-                }
-                resp_multi = msg.hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
-                //if (resp_multi) //log.debug("Multi Part Message", .{});
-                if (msg.hdr.type == c(nl.NLMSG).DONE) resp_multi = false;
-                // General Header
-                var start: usize = 0;
-                var end: usize = @sizeOf(nl.generic.Header);
-                const gen_hdr = mem.bytesAsValue(nl.generic.Header, msg.data[start..end]);
-                if (gen_hdr.cmd != c(CMD).NEW_SCAN_RESULTS and gen_hdr.cmd != c(CMD).SCAN_ABORTED) {
-                    //log.debug("Not a Scan Result. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-                    continue :respLoop;
-                }
-                //log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-
-                start = end;
-                end = msg.data.len;
-                const results = try nl.parse.fromBytes(alloc, ScanResults, msg.data[start..end]);
-                errdefer nl.parse.freeBytes(alloc, ScanResults, results);
-                if (results.BSS) |bss| {
-                    if (bss.INFORMATION_ELEMENTS) |ies| {
-                        if (ies.SSID) |scan_ssid| {
-                            log.debug("Scan Result SSID: {s} | Ch: {d}", .{ scan_ssid, try channelFromFreq(bss.FREQUENCY) });
-                            if (mem.eql(u8, scan_ssid, ssid)) return results;
-                        }
-                    }
-                }
-                nl.parse.freeBytes(alloc, ScanResults, results);
-            }
-        }
-    }
-    return error.NoScanResults;
-}
+///// Config f/ `scanSSID()`.
+//pub const ScanConfig = struct {
+//    /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
+//    /// (WIP)
+//    nl_sock: ?posix.socket_t = null,
+//    /// Frequencies to Scan. (Note, if this is left null, all compatible frequencies will be scanned.)
+//    freqs: ?[]const u32 = null,
+//    /// Number of times to retry the Scan.
+//    retries: usize = 3,
+//};
+///// Scan for the Information Element of a specific SSID.
+//pub fn scanSSID(
+//    alloc: mem.Allocator,
+//    if_index: i32,
+//    ssid: []const u8,
+//    config: ScanConfig,
+//) !ScanResults {
+//    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+//    var ssid_data = try alloc.alloc(u8, switch (ssid.len) {
+//        0...8 => 8,
+//        9...16 => 16,
+//        17...32 => 32,
+//        else => return error.SSIDTooLong,
+//    });
+//    defer alloc.free(ssid_data);
+//    @memset(ssid_data[0..], 0);
+//    ssid_data[0] = @intCast(ssid.len + 4);
+//    ssid_data[2] = @intCast(ssid_data.len / 8 -| 1);
+//    @memcpy(ssid_data[(ssid_data.len - ssid.len)..], ssid);
+//    var attrs_buf: ArrayList(nl.Attribute) = try .initCapacity(alloc, 3);
+//    defer attrs_buf.deinit(alloc);
+//    try attrs_buf.appendSlice(
+//        alloc,
+//        &.{
+//            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+//            .{ .hdr = .{ .type = c(ATTR).SCAN_SSIDS }, .data = ssid_data },
+//            .{
+//                .hdr = .{ .type = c(ATTR).SCAN_FLAGS },
+//                .data = mem.toBytes(c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH)[0..], //| c(SCAN_FLAG).RANDOM_SN)[0..],
+//            },
+//        },
+//    );
+//    if (config.freqs) |_freqs| addFreqs: {
+//        if (_freqs.len == 0) break :addFreqs;
+//        log.debug("Adding Scan Freqs:", .{});
+//        var freq_attrs_buf: ArrayList(u8) = .empty;
+//        for (_freqs) |freq| {
+//            const freq_attr_hdr: nl.AttributeHeader = .{ .type = c(ATTR).WIPHY_FREQ, .len = 8 };
+//            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq_attr_hdr)[0..]);
+//            try freq_attrs_buf.appendSlice(alloc, mem.toBytes(freq)[0..]);
+//            log.debug("- Scan Freq: {d}MHz", .{ freq });
+//        }
+//        const freq_attrs_bytes = try freq_attrs_buf.toOwnedSlice(alloc);
+//        try attrs_buf.append(alloc, .{ 
+//            .hdr = .{ 
+//                .type = c(ATTR).SCAN_FREQUENCIES, 
+//                .len = @intCast(nl.attr_hdr_len + freq_attrs_bytes.len),
+//            }, 
+//            .data = freq_attrs_bytes, 
+//        });
+//    }
+//    attemptScan: for (0..config.retries) |attempt| {
+//        log.debug("Scan Attempt {d}/{d} for SSID '{s}'", .{ attempt + 1, config.retries, ssid });
+//        const nl_sock = try nl.request(
+//            alloc,
+//            nl.NETLINK.GENERIC,
+//            nl.generic.Request,
+//            .{
+//                .nlh = .{
+//                    .len = 0,
+//                    .type = info.FAMILY_ID,
+//                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+//                    .seq = 0,
+//                    .pid = 0,
+//                },
+//                .msg = .{
+//                    .cmd = c(CMD).TRIGGER_SCAN,
+//                    .version = 0,
+//                },
+//            },
+//            attrs_buf.items,
+//        );
+//        defer posix.close(nl_sock);
+//        try nl.handleAck(nl_sock);
+//        const buf_size: u32 = 64_000;
+//        var timeout: usize = 3;
+//        var res_sock = try posix.socket(nl.AF.NETLINK, posix.SOCK.RAW, nl.NETLINK.GENERIC);
+//        defer posix.close(res_sock);
+//        const sa_nl = posix.sockaddr.nl{
+//            .pid = 0,
+//            .groups = c(nl.route.RTMGRP).LINK | c(nl.route.RTMGRP).IPV4_IFADDR,
+//        };
+//        try posix.bind(
+//            res_sock,
+//            @ptrCast(&sa_nl),
+//            16,
+//        );
+//        var timeout_opt = mem.toBytes(posix.timeval{ .sec = @intCast(timeout), .usec = 0 });
+//        try posix.setsockopt(
+//            res_sock, 
+//            posix.SOL.SOCKET, 
+//            posix.SO.RCVTIMEO, 
+//            timeout_opt[0..],
+//        );
+//        try posix.setsockopt(
+//            res_sock, 
+//            posix.SOL.SOCKET, 
+//            nl.NETLINK_OPT.RX_RING, 
+//            mem.toBytes(buf_size)[0..],
+//        );
+//        //try posix.setsockopt(
+//        //    res_sock,
+//        //    posix.SOL.NETLINK,
+//        //    nl.NETLINK_OPT.ADD_MEMBERSHIP,
+//        //    mem.toBytes(info.MCAST_GROUPS.get("scan").?)[0..],
+//        //);
+//        var resp_timer = try time.Timer.start();
+//        var tried_get = false;
+//        var resp_count: usize = 1;
+//        var resp_multi = false;
+//        respLoop: while (resp_timer.read() / time.ns_per_s < timeout * 2 or resp_multi) : (resp_count += 1) {
+//            //log.debug("Listening for response #{d}...", .{ resp_count });
+//            var resp_buf: [buf_size]u8 = undefined;
+//            const resp_len = posix.recv(
+//                res_sock,
+//                resp_buf[0..],
+//                0,
+//            ) catch |err| switch (err) {
+//                error.WouldBlock => {
+//                    //return error.NoScanResults;
+//                    if (tried_get) continue :attemptScan; //return error.NoScanResults;
+//                    tried_get = true;
+//                    //log.debug("Attempting to Get Scan.", .{});
+//                    posix.close(res_sock);
+//                    res_sock = try nl.request(
+//                        alloc,
+//                        nl.NETLINK.GENERIC,
+//                        nl.generic.Request,
+//                        .{
+//                            .nlh = .{
+//                                .len = 0,
+//                                .type = info.FAMILY_ID,
+//                                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).DUMP | c(nl.NLM_F).EXCL,
+//                                .seq = 0,
+//                                .pid = 0,
+//                            },
+//                            .msg = .{
+//                                .cmd = c(CMD).GET_SCAN,
+//                                .version = 0,
+//                            },
+//                        },
+//                        &.{
+//                            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+//                        },
+//                    );
+//                    timeout *= 3;
+//                    timeout_opt = mem.toBytes(posix.timeval{ .sec = @intCast(timeout), .usec = 0 });
+//                    try posix.setsockopt(res_sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, timeout_opt[0..]);
+//                    resp_timer.reset();
+//                    continue :respLoop;
+//                },
+//                else => return err,
+//            };
+//            //log.debug("\n==================\nRESPONSE LEN: {d}B\n==================", .{ resp_len });
+//            //var offset: usize = 0;
+//            var msg_iter: nl.parse.Iterator(nl.MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
+//            while (msg_iter.next()) |msg| {
+//                //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
+//                //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
+//                // Netlink Header
+//                if (msg.hdr.type == c(nl.NLMSG).ERROR) {
+//                    const nl_err = mem.bytesAsValue(nl.ErrorHeader, msg.data);
+//                    switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+//                        //.SUCCESS => {},
+//                        .SUCCESS => continue,
+//                        .BUSY => return error.BUSY,
+//                        else => |err| {
+//                            log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+//                            return error.OSError;
+//                        },
+//                    }
+//                }
+//                resp_multi = msg.hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
+//                //if (resp_multi) //log.debug("Multi Part Message", .{});
+//                if (msg.hdr.type == c(nl.NLMSG).DONE) resp_multi = false;
+//                // General Header
+//                var start: usize = 0;
+//                var end: usize = @sizeOf(nl.generic.Header);
+//                const gen_hdr = mem.bytesAsValue(nl.generic.Header, msg.data[start..end]);
+//                if (gen_hdr.cmd != c(CMD).NEW_SCAN_RESULTS and gen_hdr.cmd != c(CMD).SCAN_ABORTED) {
+//                    //log.debug("Not a Scan Result. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+//                    continue :respLoop;
+//                }
+//                //log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
+//
+//                start = end;
+//                end = msg.data.len;
+//                const results = try nl.parse.fromBytes(alloc, ScanResults, msg.data[start..end]);
+//                errdefer nl.parse.freeBytes(alloc, ScanResults, results);
+//                if (results.BSS) |bss| {
+//                    if (bss.INFORMATION_ELEMENTS) |ies| {
+//                        if (ies.SSID) |scan_ssid| {
+//                            log.debug("Scan Result SSID: {s} | Ch: {d}", .{ scan_ssid, try channelFromFreq(bss.FREQUENCY) });
+//                            if (mem.eql(u8, scan_ssid, ssid)) return results;
+//                        }
+//                    }
+//                }
+//                nl.parse.freeBytes(alloc, ScanResults, results);
+//            }
+//        }
+//    }
+//    return error.NoScanResults;
+//}
 
 /// Trigger Scan Config
 pub const TriggerScanConfig = struct {
-    /// Netlink Socket f/ the Request
-    /// If this is left `null` a temporary socket will be used.
-    nl_sock: ?posix.socket_t = null,
     /// Flags
     flags: u32 = c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH, // | c(SCAN_FLAG).RANDOM_SN,
     /// Frequencies (in MHz) to scan.
@@ -2829,11 +2899,15 @@ pub const TriggerScanConfig = struct {
     /// SSIDs to scan for.
     ssids: ?[]const []const u8 = null,
 };
-
-/// Trigger a Scan on the provided Interface (`if_index`) using the provided Trigger Scan Config (`config`).
-pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfig) !void {
+/// Request to Trigger a Scan on the provided Interface (`if_index`) using the provided Trigger Scan Config (`config`).
+pub fn requestTriggerScan(
+    alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
+    if_index: i32,
+    config: TriggerScanConfig,
+) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var attrs_buf = try std.ArrayListUnmanaged(nl.Attribute).initCapacity(alloc, 2);
+    var attrs_buf: ArrayList(nl.Attribute) = try .initCapacity(alloc, 2);
     defer attrs_buf.deinit(alloc);
     try attrs_buf.appendSlice(
         alloc,
@@ -2846,7 +2920,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
     defer if (freq_attrs_bytes) |fab| alloc.free(fab);
     if (config.freqs) |freqs| addFreqs: {
         if (freqs.len == 0) break :addFreqs;
-        var freq_attrs_buf: std.ArrayListUnmanaged(u8) = .{};
+        var freq_attrs_buf: ArrayList(u8) = .empty;
         errdefer freq_attrs_buf.deinit(alloc);
         for (freqs) |freq| {
             const freq_attr_hdr: nl.AttributeHeader = .{ .type = c(ATTR).WIPHY_FREQ, .len = 8 };
@@ -2866,7 +2940,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
     defer if (ssid_attrs_bytes) |sab| alloc.free(sab);
     if (config.ssids) |ssids| addSSIDs: {
         if (ssids.len == 0) break :addSSIDs;
-        var ssid_attrs_buf: std.ArrayListUnmanaged(u8) = .{};
+        var ssid_attrs_buf: ArrayList(u8) = .empty;
         errdefer ssid_attrs_buf.deinit(alloc);
         for (ssids) |ssid| {
             const attr_len = mem.alignForward(u16, @intCast(nl.attr_hdr_len + ssid.len), 4);
@@ -2885,10 +2959,9 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
             .data = ssid_attrs_bytes.?,
         });
     }
-    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
-    try nl.reqOnSock(
+    //const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
+    try nl.request (
         alloc,
-        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2904,9 +2977,20 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
             },
         },
         attrs_buf.items,
+        req_ctx,
     );
-    defer if (config.nl_sock == null) posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+}
+/// Trigger a Scan on the provided Interface (`if_index`) using the provided Trigger Scan Config (`config`).
+pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfig) !void {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestTriggerScan(
+        alloc, 
+        &req_ctx, 
+        if_index, 
+        config,
+    );
+    defer posix.close(req_ctx.sock);
+    try nl.handleAck(req_ctx.sock);
 }
 
 /// Scheduled Scan Config
@@ -2924,11 +3008,16 @@ pub const SchedScanConfig = struct {
     /// Plans (TODO)
     plans: ?[]const SchedScanPlan = null,
 };
-
-/// Start a Scheduled Scan for the provided Interface (`if_index`) using the provided Scheduled Scan Config (`config`).
-pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConfig) !void {
+/// Request to Start a Scheduled Scan for the provided Interface (`if_index`) using the provided Scheduled Scan Config (`config`).
+/// Note, this must be supported by the interface.
+pub fn requestStartSchedScan(
+    alloc: mem.Allocator, 
+    req_ctx: nl.RequestContext,
+    if_index: i32, 
+    config: SchedScanConfig,
+) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var attrs_buf = try std.ArrayListUnmanaged(nl.Attribute).initCapacity(alloc, 3);
+    var attrs_buf: ArrayList(nl.Attribute) = try .initCapacity(alloc, 3);
     defer attrs_buf.deinit(alloc);
     try attrs_buf.appendSlice(
         alloc,
@@ -2940,7 +3029,7 @@ pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConf
     );
     const scan_freqs: ?[]const u8 = scanFreqs: {
         if (config.freqs) |freqs| {
-            var freqs_buf = std.ArrayListUnmanaged(u8){};
+            var freqs_buf: ArrayList(u8) = .empty;
             errdefer freqs_buf.deinit(alloc);
             for (freqs) |freq| try freqs_buf.appendSlice(alloc, mem.toBytes(freq)[0..]);
             const scan_freqs = try freqs_buf.toOwnedSlice(alloc);
@@ -2959,9 +3048,8 @@ pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConf
         break :scanSched null;
     };
     defer if (scan_sched_attr) |sched_attr| alloc.free(sched_attr.data);
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -2977,17 +3065,23 @@ pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConf
             },
         },
         attrs_buf.items,
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+}
+/// Start a Scheduled Scan for the provided Interface (`if_index`) using the provided Scheduled Scan Config (`config`).
+/// Note, this must be supported by the interface.
+pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConfig) !void {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestStartSchedScan(alloc, &req_ctx, if_index, config);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAck(req_ctx.sock);
 }
 
-/// Stop a Scheduled Scan for the provided Interface (`if_index`).
-pub fn stopSchedScan(alloc: mem.Allocator, if_index: i32) !void {
+/// Request to Stop a Scheduled Scan for the provided Interface (`if_index`).
+pub fn requestStopSchedScan(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3004,18 +3098,30 @@ pub fn stopSchedScan(alloc: mem.Allocator, if_index: i32) !void {
         },
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-        }
+        },
+        req_ctx,
     );
-    try nl.handleAck(nl_sock);
+}
+/// Stop a Scheduled Scan for the provided Interface (`if_index`).
+pub fn stopSchedScan(
+    alloc: mem.Allocator, 
+    if_index: i32, 
+) !void {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestStopSchedScan(alloc, &req_ctx, if_index);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAck(req_ctx.sock);
 }
 
 /// Request Scan Results from Netlink.
-pub fn getScan(alloc: mem.Allocator, if_index: ?i32, nl_sock: ?posix.socket_t) !void {
+pub fn requestScanResults(
+    alloc: mem.Allocator, 
+    if_index: ?i32, 
+    req_ctx: *nl.RequestContext,
+) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const req_sock = nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
-    try nl.reqOnSock(
+    try nl.request(
         alloc,
-        req_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3034,18 +3140,42 @@ pub fn getScan(alloc: mem.Allocator, if_index: ?i32, nl_sock: ?posix.socket_t) !
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(idx)[0..] },
         }
         else &.{},
+        req_ctx,
     );
-    try nl.handleAck(req_sock);
-    if (nl_sock == null) posix.close(req_sock);
+}
+/// Get Scan Results from Netlink.
+pub fn getScanResults(alloc: mem.Allocator, if_index: ?i32) !void {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestScanResults(alloc, &req_ctx, if_index);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAck(req_ctx.sock);
 }
 /// Parse the provided `bytes` to a ScanResults instance.
 pub fn parseScanResults(alloc: mem.Allocator, bytes: []const u8) !ScanResults {
     return try nl.parse.fromBytes(alloc, ScanResults, bytes[@sizeOf(nl.generic.Header)..]);
 }
-/// Handle WiFi Scan Results.
-pub fn handleScanResults(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const ScanResults {
+/// Handle WiFi Scan Results for the provided `msg_buf`.
+pub fn handleScanResultsBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const ScanResults {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleType(
+    var handle_ctx: nl.HandleContext = .{
+        .config = .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_SCAN_RESULTS,
+        },
+    };
+    return try nl.handleTypeBuf(
+        alloc,
+        msg_buf,
+        nl.generic.Request,
+        ScanResults,
+        parseScanResults,
+        &handle_ctx,
+    );
+}
+/// Handle WiFi Scan Results on the provided Netlink Socket `nl_sock`.
+pub fn handleScanResultsSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const ScanResults {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -3065,6 +3195,7 @@ pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
     // TODO: Check for WEP (somehow) and WPA1 in VENDOR_SPECIFIC
     const rsn = ies.RSN orelse return .OPEN;
     const akms = rsn.AKM_SUITES orelse return .OPEN;
+    // TODO: Let this error?
     const akm_type = meta.intToEnum(InformationElements.RobustSecurityNetwork.RSN.AKM, akms[0].TYPE) catch {
         log.err("'{X}' is not a valid AKM. Defaulting to OPEN.", .{ akms[0].TYPE });
         return .OPEN;
@@ -3091,10 +3222,10 @@ pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
     };
 }
 
-/// Register (or Unregister) Frame(s) on the provided Netlink Socket (`nl_sock`).
-pub fn registerFrames(
+/// Request to Register (or Unregister) Frame(s) on the provided Netlink Socket (`nl_sock`).
+pub fn requestRegisterFrames(
     alloc: mem.Allocator,
-    nl_sock: posix.socket_t,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     types: []const ?u16,
     matches: []const ?[]const u8,
@@ -3102,29 +3233,29 @@ pub fn registerFrames(
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     if (types.len == 0) return error.NoFramesForRegistrationProvided;
     if (matches.len != types.len) return error.FramesAndMatchesLengthMismatch;
-    for (types, matches) |f_type, match| {
-        if (f_type == null and match == null) continue;
-        const attrs: []const nl.Attribute = attrs: {
-            var attr_list: std.ArrayListUnmanaged(nl.Attribute) = .{};
-            errdefer {
-                for (attr_list.items) |attr| alloc.free(attr.data);
-                attr_list.deinit(alloc);
-            }
-            try attr_list.append(
-                alloc,
-                .{
-                    .hdr = .{ .type = c(ATTR).IFINDEX },
-                    .data = try alloc.dupe(u8, mem.toBytes(if_index)[0..]),
-                },
-            );
+    const attrs: []const nl.Attribute = attrs: {
+        var attr_list: ArrayList(nl.Attribute) = .empty;
+        errdefer {
+            for (attr_list.items) |attr| alloc.free(attr.data);
+            attr_list.deinit(alloc);
+        }
+        try attr_list.append(
+            alloc,
+            .{
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = try alloc.dupe(u8, mem.toBytes(if_index)[0..]),
+            },
+        );
+        for (types, matches) |f_type, match| {
+            if (f_type == null and match == null) continue;
             if (f_type) |_type| {
                 try attr_list.append(
-                    alloc,
-                    .{
-                        .hdr = .{ .type = c(ATTR).FRAME_TYPE, .len = 6 },
-                        .data = try alloc.dupe(u8, mem.toBytes(_type)[0..]),
-                    },
-                );
+                alloc,
+                .{
+                    .hdr = .{ .type = c(ATTR).FRAME_TYPE, .len = 6 },
+                    .data = try alloc.dupe(u8, mem.toBytes(_type)[0..]),
+                },
+            );
             }
             if (match) |_match| {
                 try attr_list.append(
@@ -3136,84 +3267,14 @@ pub fn registerFrames(
                 );
             }
             break :attrs try attr_list.toOwnedSlice(alloc);
-        };
-        defer {
-            for (attrs) |attr| alloc.free(attr.data);
-            alloc.free(attrs);
         }
-        try nl.reqOnSock(
-            alloc,
-            nl_sock,
-            nl.generic.Request,
-            .{
-                .nlh = .{
-                    .len = 0,
-                    .type = info.FAMILY_ID,
-                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                    .seq = 0,
-                    .pid = 0,
-                },
-                .msg = .{
-                    .cmd = c(CMD).REGISTER_FRAME,
-                    .version = 1,
-                },
-            },
-            attrs,
-        );
-        nl.handleAck(nl_sock) catch |err| switch (err) {
-            error.ALREADY => log.debug("Frame Match 0x{?X:0>4} w/ Type {?X:0>2} is already registered.", .{ match, f_type }),
-            else => return err,
-        };
-        time.sleep(100 * time.ns_per_ms);
+    };
+    defer {
+        for (attrs) |attr| alloc.free(attr.data);
+        alloc.free(attrs);
     }
-}
-
-/// Reset the Key State for the provided Interface (`if_index`) by flushing the PMKSA and deleting keys.
-pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
-    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    // Delete Keys
-    inline for (0..5) |idx| {
-        const key_idx_hdr: nl.AttributeHeader = .{ .type = c(KEY).IDX, .len = 5 };
-        const key_idx = (mem.toBytes(key_idx_hdr) ++ mem.toBytes(@as(u8, @intCast(idx))))[0..];
-        const nl_sock = try nl.request(
-            alloc,
-            nl.NETLINK.GENERIC,
-            nl.generic.Request,
-            .{
-                .nlh = .{
-                    .len = 0,
-                    .type = info.FAMILY_ID,
-                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                    .seq = 0,
-                    .pid = 0,
-                },
-                .msg = .{
-                    .cmd = c(CMD).DEL_KEY,
-                    .version = 1,
-                },
-            },
-            &.{
-                .{
-                    .hdr = .{ .type = c(ATTR).IFINDEX },
-                    .data = mem.toBytes(if_index)[0..],
-                },
-                .{
-                    .hdr = .{ .type = c(ATTR).KEY, .len = 12 },
-                    .data = key_idx,
-                }
-            },
-        );
-        nl.handleAck(nl_sock) catch |err| switch (err) {
-            error.NOLINK => {},
-            else => return err,
-        };
-        time.sleep(100 * time.ns_per_ms);
-    }
-    time.sleep(100 * time.ns_per_ms);
-    // Flush PMKSA
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.GENERIC,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3224,21 +3285,110 @@ pub fn resetKeyState(alloc: mem.Allocator, if_index: i32, _: [6]u8) !void {
                 .pid = 0,
             },
             .msg = .{
-                .cmd = c(CMD).FLUSH_PMKSA,
-                .version = 0,
+                .cmd = c(CMD).REGISTER_FRAME,
+                .version = 1,
             },
         },
-        &.{
-            .{ 
-                .hdr = .{ .type = c(ATTR).IFINDEX },
-                .data = mem.toBytes(if_index)[0..],
-            },
-        },
+        attrs,
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    // TODO Handle faulty flushes
-    nl.handleAck(nl_sock) catch {};
 }
+/// Register (or Unregister) Frame(s) on the provided Netlink Socket (`nl_sock`).
+pub fn registerFrames(
+    alloc: mem.Allocator,
+    if_index: i32,
+    types: []const ?u16,
+    matches: []const ?[]const u8,
+) !void {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestRegisterFrames(
+        alloc, 
+        &req_ctx, 
+        if_index,
+        types,
+        matches,
+    );
+    defer posix.close(req_ctx.sock);
+    nl.handleAck(req_ctx.sock) catch |err| switch (err) {
+        error.ALREADY => {},//log.debug("Frame Match 0x{?X:0>4} w/ Type {?X:0>2} is already registered.", .{ match, f_type }),
+        else => return err,
+    };
+}
+
+///// Reset the Key State for the provided Interface (`if_index`) by flushing the PMKSA and deleting keys.
+//pub fn resetKeyState(
+//    alloc: mem.Allocator, 
+//    if_index: i32,
+//) !void {
+//    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+//    // Delete Keys
+//    inline for (0..5) |idx| contKey: {
+//        const key_idx_hdr: nl.AttributeHeader = .{ .type = c(KEY).IDX, .len = 5 };
+//        const key_idx = (mem.toBytes(key_idx_hdr) ++ mem.toBytes(@as(u8, @intCast(idx))))[0..];
+//        const nl_sock = try nl.request(
+//            alloc,
+//            nl.generic.Request,
+//            .{
+//                .nlh = .{
+//                    .len = 0,
+//                    .type = info.FAMILY_ID,
+//                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+//                    .seq = 0,
+//                    .pid = 0,
+//                },
+//                .msg = .{
+//                    .cmd = c(CMD).DEL_KEY,
+//                    .version = 1,
+//                },
+//            },
+//            &.{
+//                .{
+//                    .hdr = .{ .type = c(ATTR).IFINDEX },
+//                    .data = mem.toBytes(if_index)[0..],
+//                },
+//                .{
+//                    .hdr = .{ .type = c(ATTR).KEY, .len = 12 },
+//                    .data = key_idx,
+//                }
+//            },
+//            req_config.autoSockKind(nl.NETLINK.GENERIC),
+//        ) orelse break :contKey;
+//        nl.handleAck(nl_sock) catch |err| switch (err) {
+//            error.NOLINK => {},
+//            else => return err,
+//        };
+//        time.sleep(100 * time.ns_per_ms);
+//    }
+//    time.sleep(100 * time.ns_per_ms);
+//    // Flush PMKSA
+//    const nl_sock = try nl.request(
+//        alloc,
+//        nl.generic.Request,
+//        .{
+//            .nlh = .{
+//                .len = 0,
+//                .type = info.FAMILY_ID,
+//                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+//                .seq = 0,
+//                .pid = 0,
+//            },
+//            .msg = .{
+//                .cmd = c(CMD).FLUSH_PMKSA,
+//                .version = 0,
+//            },
+//        },
+//        &.{
+//            .{ 
+//                .hdr = .{ .type = c(ATTR).IFINDEX },
+//                .data = mem.toBytes(if_index)[0..],
+//            },
+//        },
+//        req_config.autoSockKind(nl.NETLINK.GENERIC),
+//    ) orelse return;
+//    defer posix.close(nl_sock);
+//    // TODO: Handle faulty flushes
+//    nl.handleAck(nl_sock) catch {};
+//}
 
 /// Derive HT and VHT Capability Info from the provided `bss` and `wiphy`
 pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, ?[12]u8 } {
@@ -3250,7 +3400,7 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
             if (freq.FREQ != ie_freq) continue;
             if (freq.DISABLED) return .{ null, null };
             const ht = ht: {
-                var buf: [26]u8 = .{ 0 } ** 26;
+                var buf: [26]u8 = undefined;
                 @memcpy(buf[0..2], mem.toBytes(band.HT_CAPA)[0..]);
                 const ampdu = ampdu: {
                     const factor = band.HT_AMPDU_FACTOR orelse break :ht null;
@@ -3265,7 +3415,7 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
                 break :ht buf;
             };
             const vht = vht: {
-                var buf: [12]u8 = .{ 0 } ** 12;
+                var buf: [12]u8 = undefined;
                 @memcpy(buf[0..4], mem.toBytes(band.VHT_CAPA)[0..]);
                 @memcpy(buf[4..], (band.VHT_MCS_SET orelse break :vht null)[0..]);
                 break :vht buf;
@@ -3276,10 +3426,10 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
     return .{ null, null };
 }
 
-/// Authenticate to the provided Network `ssid`.
-pub fn authenticate(
+/// Request to Authenticate to the provided Network `ssid`.
+pub fn requestAuthenticate(
     alloc: mem.Allocator,
-    nl_sock: posix.socket_t,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     ssid: []const u8,
     scan_results: ScanResults,
@@ -3290,7 +3440,7 @@ pub fn authenticate(
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY;
     const bssid = bss.BSSID;
-    var attr_list: std.ArrayListUnmanaged(nl.Attribute) = .{};
+    var attr_list: ArrayList(nl.Attribute) = .empty;
     defer attr_list.deinit(alloc);
     try attr_list.appendSlice(alloc, &.{
         .{ 
@@ -3329,9 +3479,8 @@ pub fn authenticate(
         },
         else => {},
     }
-    try nl.reqOnSock(
+    _ = try nl.request(
         alloc,
-        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3348,14 +3497,36 @@ pub fn authenticate(
             },
         },
         attr_list.items[0..],
+        req_ctx,
     );
-    //try nl.handleAck(nl_sock);
 }
-
-/// Handle a CMD_AUTHENTICATE response.
-pub fn handleAuthResponse(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const AuthResponse {
+/// Parse the provided `bytes` to an AuthResponse instance.
+pub fn parseAuthResponse(alloc: mem.Allocator, bytes: []const u8) !AuthResponse {
+    return try nl.parse.fromBytes(alloc, AuthResponse, bytes[@sizeOf(nl.generic.Header)..]);
+}
+/// Handle a CMD_AUTHENTICATE response on the provided `msg_buf`.
+pub fn handleAuthResponseBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const AuthResponse {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleType(
+    var handle_ctx: nl.HandleContext = .{
+        .config = .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).AUTHENTICATE,
+            .warn_parse_err = true,
+        },
+    };
+    return try nl.handleTypeBuf(
+        alloc,
+        msg_buf,
+        nl.generic.Request,
+        AuthResponse,
+        parseAuthResponse,
+        &handle_ctx,
+    );
+}
+/// Handle a CMD_AUTHENTICATE response on the provided Netlink Socket (`nl_sock`).
+pub fn handleAuthResponseSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const AuthResponse {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -3369,15 +3540,10 @@ pub fn handleAuthResponse(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]cons
     );
 }
 
-/// Parse the provided `bytes` to an AuthResponse instance.
-pub fn parseAuthResponse(alloc: mem.Allocator, bytes: []const u8) !AuthResponse {
-    return try nl.parse.fromBytes(alloc, AuthResponse, bytes[@sizeOf(nl.generic.Header)..]);
-}
-
-/// Associate to the provided Network `ssid`.
-pub fn associate(
+/// Request to Associate to the provided Network `ssid`.
+pub fn requestAssociate(
     alloc: mem.Allocator,
-    nl_sock: posix.socket_t,
+    req_ctx: nl.RequestContext,
     net_if: Interface,
     wiphy: Wiphy,
     ssid: []const u8,
@@ -3391,7 +3557,7 @@ pub fn associate(
     log.debug("Ch: {d}, Freq: {d}MHz", .{ try channelFromFreq(wiphy_freq), wiphy_freq });
     const bssid = bss.BSSID;
     const ht_attr, const vht_attr = try deriveAssocHTCapes(bss, wiphy);
-    var attr_list: std.ArrayListUnmanaged(nl.Attribute) = .{};
+    var attr_list: ArrayList(nl.Attribute) = .empty;
     defer attr_list.deinit(alloc);
     try attr_list.appendSlice(alloc, &.{
         .{ 
@@ -3488,10 +3654,8 @@ pub fn associate(
             });
         },
     }
-
-    try nl.reqOnSock(
+    try nl.request(
         alloc, 
-        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3507,22 +3671,22 @@ pub fn associate(
             },
         },
         attr_list.items[0..],
+        req_ctx,
     );
     //errdefer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+    //try nl.handleAck(nl_sock);
 }
 
-/// Disconnect the corresponding Interface (`if_index`)
-pub fn disconnect(
+/// Request to Disconnect the corresponding Interface (`if_index`)
+pub fn requestDisconnect(
     alloc: mem.Allocator,
-    nl_sock: posix.socket_t,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     mac: [6]u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.reqOnSock(
+    try nl.request(
         alloc, 
-        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3551,22 +3715,22 @@ pub fn disconnect(
                 .data = mem.toBytes(@as(u16, 1))[0..],
             },
         },
+        req_ctx,
     );
-    try nl.handleAck(nl_sock);
+    //try nl.handleAck(nl_sock);
 }
 
-/// Send Control Frame
-pub fn sendControlFrame(
+/// Request to Send Control Frame
+pub fn requestSendControlFrame(
     alloc: mem.Allocator,
-    nl_sock: posix.socket_t,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     bssid: [6]u8,
     frame_data: []const u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.reqOnSock(
+    try nl.request(
         alloc,
-        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3603,14 +3767,15 @@ pub fn sendControlFrame(
                 .data = frame_data,
             },
         },
+        req_ctx,
     );
 }
 
-/// Authorize Port via Station Flags after the 4 Way Handshake
+/// Request to Authorize Port via Station Flags after the 4 Way Handshake
 /// Note, this may not work as expected.
-pub fn authPort(
+pub fn requestAuthPort(
     alloc: mem.Allocator,
-    nl_sock: posix.socket_t,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     mac: [6]u8,
 ) !void {
@@ -3621,7 +3786,6 @@ pub fn authPort(
     };
     try nl.reqOnSock(
         alloc,
-        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3650,14 +3814,15 @@ pub fn authPort(
                 .data = mem.toBytes(sta_flags)[0..],
             },
         },
+        req_ctx,
     );
-    try nl.handleAck(nl_sock);
+    //try nl.handleAck(nl_sock);
 }
 
-/// Add a `key` to the given `key_index` for a specific connection.
+/// Request to Add a `key` to the given `key_index` for a specific connection.
 pub fn addKey(
     alloc: mem.Allocator,
-    nl_sock: posix.socket_t,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     mac: ?[6]u8,
     key: Key,
@@ -3665,9 +3830,8 @@ pub fn addKey(
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const key_bytes = try nl.parse.toBytes(alloc, Key, key);
     defer alloc.free(key_bytes);
-    try nl.reqOnSock(
+    try nl.request(
         alloc,
-        nl_sock,
         nl.generic.Request,
         .{
             .nlh = .{
@@ -3706,148 +3870,150 @@ pub fn addKey(
                 .data = key_bytes,
             },
         },
+        req_ctx,
     );
-    errdefer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+    //errdefer posix.close(nl_sock);
+    //try nl.handleAck(nl_sock);
 }
 
 /// EAPoL Keys
+/// TODO: Move to protocol 80211?
 pub const EAPoLKeys = struct {
     ptk: [48]u8,
     gtk: [16]u8,
 };
-
-/// Config f/ `connectWPA2()`.
-pub const ConnectConfig = struct {
-    /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
-    nl_sock: ?posix.socket_t = null,
-    /// Frequencies to Scan. (Note, if this is left null, all compatible frequencies will be scanned.)
-    freqs: ?[]const u32 = null,
-    /// Number of times to retry the Connection.
-    retries: usize = 3,
-    /// Base delay (in milliseconds) following asynchronous Netlink function calls.
-    delay: usize = 30,
-    /// Scan Results if done separately.
-    scan_results: ?ScanResults = null,
-};
-/// Connect to a WPA2 Network.
-/// This mostly serves as a small demo of the nl80211 features.
-pub fn connectWPA2(
-    alloc: mem.Allocator, 
-    if_index: i32, 
-    ssid: []const u8, 
-    pmk: [32]u8,
-    /// A function to handle the 4-way Handshake and return both the PTK (`[48]u8`) and GTK (`[16]u8`).
-    handle4WHS: *const fn(
-        i32, 
-        [32]u8, 
-        []const u8, 
-        SecurityType,
-    ) anyerror!EAPoLKeys,
-    config: ConnectConfig,
-) !posix.socket_t {
-    //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    time.sleep(config.delay * time.ns_per_ms);
-    try nl.route.setState(if_index, c(nl.route.IFF).DOWN);
-    time.sleep(config.delay * time.ns_per_ms);
-    try setMode(if_index, c(IFTYPE).STATION);
-    time.sleep(config.delay * time.ns_per_ms);
-    try nl.route.setState(if_index, c(nl.route.IFF).UP);
-    time.sleep(config.delay * time.ns_per_ms);
-    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
-    try takeOwnership(nl_sock, if_index);
-    try registerFrames(
-        alloc,
-        nl_sock,
-        if_index,
-        &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
-        &.{ &.{ 0x00, 0x03 }, &.{ 0x00, 0x05 }, &.{ 0x00, 0x06 }, &.{ 0x00, 0x08 }, &.{ 0x00, 0x0c } },
-    );
-    time.sleep(config.delay * time.ns_per_ms);
-    const scan_results = config.scan_results orelse try scanSSID(
-        alloc,
-        if_index,
-        ssid,
-        .{ .nl_sock = nl_sock, .freqs = config.freqs, .retries = config.retries },
-    );
-    defer if (config.scan_results == null) nl.parse.freeBytes(alloc, ScanResults, scan_results);
-    const bss = scan_results.BSS orelse return error.MissingBSS;
-    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
-    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
-    defer alloc.free(ie_bytes);
-    time.sleep(config.delay * time.ns_per_ms);
-    const bssid = bss.BSSID;
-    try resetKeyState(alloc, if_index, bssid);
-    const net_if = try getInterface(alloc, if_index);
-    defer nl.parse.freeBytes(alloc, Interface, net_if);
-    const phy_index = net_if.WIPHY;
-    const wiphy = try getWIPHY(alloc, @intCast(net_if.IFINDEX), phy_index);
-    defer nl.parse.freeBytes(alloc, Wiphy, wiphy);
-    var aa_err: anyerror!void = {};
-    errdefer posix.close(nl_sock);
-    var attempts: usize = 0;
-    while (attempts < config.retries) : (attempts += 1) {
-        time.sleep(config.delay * time.ns_per_ms);
-        authenticate(
-            alloc, 
-            nl_sock, 
-            if_index, 
-            ssid, 
-            scan_results,
-            null
-        ) catch |err| {
-            aa_err = err;
-            continue;
-        };
-        time.sleep(config.delay * time.ns_per_ms);
-        associate(alloc, nl_sock, net_if, wiphy, ssid, scan_results) catch |err| {
-            aa_err = err;
-            continue;
-        };
-        break;
-    }
-    try aa_err;
-    const rsn_bytes = rsnBytes: {
-        const rsn = ies.RSN orelse return error.MissingRSN;
-        const bytes = try nl.parse.toBytes(alloc, InformationElements.RobustSecurityNetwork, rsn);
-        errdefer alloc.free(bytes);
-        var buf = std.ArrayListUnmanaged(u8).fromOwnedSlice(bytes);
-        errdefer buf.deinit(alloc);
-        try buf.insert(alloc, 0, @intCast(bytes.len));
-        try buf.insert(alloc, 0, c(IE).RSN);
-        break :rsnBytes try buf.toOwnedSlice(alloc);
-    };
-    defer alloc.free(rsn_bytes);
-    const keys = keys: {
-        while (attempts < config.retries) : (attempts += 1)
-            break :keys handle4WHS(
-                if_index,
-                pmk,
-                rsn_bytes,
-                .wpa2,
-            ) catch continue;
-        return error.Unsuccessful4WHS;
-    };
-    inline for (&.{ keys.ptk[32..], keys.gtk[0..] }, 0..) |key, idx| {
-        log.debug("Adding Key: {X:0>2}", .{ key });
-        try addKey(
-            alloc,
-            nl_sock,
-            if_index,
-            if (idx == 0) bssid else null,
-            .{
-                .DATA = key.*,
-                .CIPHER = c(CIPHER_SUITES).CCMP,
-                .SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
-                .IDX = idx,
-            },
-        );
-    }
-    try posix.setsockopt(
-        nl_sock,
-        posix.SOL.SOCKET,
-        posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .sec = math.maxInt(u32), .usec = 0 })[0..],
-    );
-    return nl_sock;
-}
+//
+///// Config f/ `connectWPA2()`.
+//pub const ConnectConfig = struct {
+//    /// Netlink Socket to use. (Note, if this is left null, a temporary socket will be used.)
+//    nl_sock: ?posix.socket_t = null,
+//    /// Frequencies to Scan. (Note, if this is left null, all compatible frequencies will be scanned.)
+//    freqs: ?[]const u32 = null,
+//    /// Number of times to retry the Connection.
+//    retries: usize = 3,
+//    /// Base delay (in milliseconds) following asynchronous Netlink function calls.
+//    delay: usize = 30,
+//    /// Scan Results if done separately.
+//    scan_results: ?ScanResults = null,
+//};
+///// Connect to a WPA2 Network.
+///// This should be considered deprecated. It mostly serves as a small demo of the nl80211 features.
+//pub fn connectWPA2(
+//    alloc: mem.Allocator, 
+//    if_index: i32, 
+//    ssid: []const u8, 
+//    pmk: [32]u8,
+//    /// A function to handle the 4-way Handshake and return both the PTK (`[48]u8`) and GTK (`[16]u8`).
+//    handle4WHS: *const fn(
+//        i32, 
+//        [32]u8, 
+//        []const u8, 
+//        SecurityType,
+//    ) anyerror!EAPoLKeys,
+//    config: ConnectConfig,
+//) !posix.socket_t {
+//    //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+//    time.sleep(config.delay * time.ns_per_ms);
+//    try nl.route.setState(if_index, c(nl.route.IFF).DOWN);
+//    time.sleep(config.delay * time.ns_per_ms);
+//    try setMode(if_index, c(IFTYPE).STATION);
+//    time.sleep(config.delay * time.ns_per_ms);
+//    try nl.route.setState(if_index, c(nl.route.IFF).UP);
+//    time.sleep(config.delay * time.ns_per_ms);
+//    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
+//    try takeOwnership(nl_sock, if_index);
+//    try registerFrames(
+//        alloc,
+//        nl_sock,
+//        if_index,
+//        &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
+//        &.{ &.{ 0x00, 0x03 }, &.{ 0x00, 0x05 }, &.{ 0x00, 0x06 }, &.{ 0x00, 0x08 }, &.{ 0x00, 0x0c } },
+//    );
+//    time.sleep(config.delay * time.ns_per_ms);
+//    const scan_results = config.scan_results orelse try scanSSID(
+//        alloc,
+//        if_index,
+//        ssid,
+//        .{ .nl_sock = nl_sock, .freqs = config.freqs, .retries = config.retries },
+//    );
+//    defer if (config.scan_results == null) nl.parse.freeBytes(alloc, ScanResults, scan_results);
+//    const bss = scan_results.BSS orelse return error.MissingBSS;
+//    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+//    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
+//    defer alloc.free(ie_bytes);
+//    time.sleep(config.delay * time.ns_per_ms);
+//    const bssid = bss.BSSID;
+//    try resetKeyState(alloc, if_index);
+//    const net_if = try getInterface(alloc, if_index);
+//    defer nl.parse.freeBytes(alloc, Interface, net_if);
+//    const phy_index = net_if.WIPHY;
+//    const wiphy = try getWIPHY(alloc, @intCast(net_if.IFINDEX), phy_index);
+//    defer nl.parse.freeBytes(alloc, Wiphy, wiphy);
+//    var aa_err: anyerror!void = {};
+//    errdefer posix.close(nl_sock);
+//    var attempts: usize = 0;
+//    while (attempts < config.retries) : (attempts += 1) {
+//        time.sleep(config.delay * time.ns_per_ms);
+//        authenticate(
+//            alloc, 
+//            nl_sock, 
+//            if_index, 
+//            ssid, 
+//            scan_results,
+//            null
+//        ) catch |err| {
+//            aa_err = err;
+//            continue;
+//        };
+//        time.sleep(config.delay * time.ns_per_ms);
+//        associate(alloc, nl_sock, net_if, wiphy, ssid, scan_results) catch |err| {
+//            aa_err = err;
+//            continue;
+//        };
+//        break;
+//    }
+//    try aa_err;
+//    const rsn_bytes = rsnBytes: {
+//        const rsn = ies.RSN orelse return error.MissingRSN;
+//        const bytes = try nl.parse.toBytes(alloc, InformationElements.RobustSecurityNetwork, rsn);
+//        //errdefer alloc.free(bytes);
+//        var buf: ArrayList(u8) = .fromOwnedSlice(bytes);
+//        errdefer buf.deinit(alloc);
+//        try buf.insert(alloc, 0, @intCast(bytes.len));
+//        try buf.insert(alloc, 0, c(IE).RSN);
+//        break :rsnBytes try buf.toOwnedSlice(alloc);
+//    };
+//    defer alloc.free(rsn_bytes);
+//    const keys = keys: {
+//        while (attempts < config.retries) : (attempts += 1)
+//            break :keys handle4WHS(
+//                if_index,
+//                pmk,
+//                rsn_bytes,
+//                .wpa2,
+//            ) catch continue;
+//        return error.Unsuccessful4WHS;
+//    };
+//    inline for (&.{ keys.ptk[32..], keys.gtk[0..] }, 0..) |key, idx| {
+//        log.debug("Adding Key: {X:0>2}", .{ key });
+//        try addKey(
+//            alloc,
+//            nl_sock,
+//            if_index,
+//            if (idx == 0) bssid else null,
+//            .{
+//                .DATA = key.*,
+//                .CIPHER = c(CIPHER_SUITES).CCMP,
+//                .SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
+//                .IDX = idx,
+//            },
+//        );
+//    }
+//    try posix.setsockopt(
+//        nl_sock,
+//        posix.SOL.SOCKET,
+//        posix.SO.RCVTIMEO,
+//        mem.toBytes(posix.timeval{ .sec = math.maxInt(u32), .usec = 0 })[0..],
+//    );
+//    return nl_sock;
+//}

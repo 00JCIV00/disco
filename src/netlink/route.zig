@@ -9,6 +9,7 @@ const math = std.math;
 const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
+const ArrayList = std.ArrayListUnmanaged;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -784,29 +785,16 @@ pub const RTPROT = enum(u8) {
     _,
 };
 
-/// New Address
-
-
-const IFNAMESIZE = posix.IFNAMESIZE;
-
-
-/// Get the Index of an Interface from the provided Interface Name (`if_name`).
-/// Implicitly allocates double the message length to the stack.
-pub fn getIfIdx(if_name: []const u8) !i32 {
-    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + IFNAMESIZE) * 2, 4);
-    var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
-    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    const nl_sock = try nl.request(
-        fba.allocator(),
-        nl.NETLINK.ROUTE,
+/// Request the Index of an Interface from the provided Interface Name (`if_name`).
+pub fn requestIFIdx(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_name: []const u8) !void {
+    try nl.request(
+        alloc,
         RequestIFI,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).GETLINK,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.PACKET,
@@ -817,21 +805,30 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
             },
         },
         &.{ .{ .hdr = .{ .type = c(nl.IFLA).IFNAME }, .data = if_name } },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-
+}
+/// Get the Index of an Interface from the provided Interface Name (`if_name`).
+/// This is a utility function that combines `requestIFIdx()` with Interface parsing.
+/// Implicitly allocates double the message length to the stack.
+pub fn getIfIdx(if_name: []const u8) !i32 {
+    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + posix.IFNAMESIZE) * 2, 4);
+    var req_buf: [buf_len]u8 = undefined;
+    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestIFIdx(fba.allocator(), &req_ctx, if_name);
+    defer posix.close(req_ctx.sock);
     var resp_idx: usize = 0;
     while (resp_idx <= 10) : (resp_idx += 1) {
-        var resp_buf: [4096]u8 = .{ 0 } ** 4096;
+        var resp_buf: [4096]u8 = undefined;
         const resp_len = posix.recv(
-            nl_sock,
+            req_ctx.sock,
             resp_buf[0..],
             0,
         ) catch |err| switch (err) {
             error.WouldBlock => return error.NoInterfaceFound,
             else => return err,
         };
-
         var offset: usize = 0;
         while (offset < resp_len) {
             var start: usize = offset;
@@ -872,20 +869,21 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
     return error.NoInterfaceIndexFound;
 }
 
-/// Get an Interface Link from the provided Interface (`if_index`).
-pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
-    // Request
-    const nl_sock = try nl.request(
+/// Interface Link w/ Interface Info
+pub const IFInfoAndLink = struct {
+    info: InterfaceInfoMessage,
+    link: InterfaceLink,
+};
+/// Request an Interface Link from the provided Interface (`if_index`).
+pub fn requestIFLink(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
+    try nl.request(
         alloc,
-        nl.NETLINK.ROUTE,
         RequestIFI,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).GETLINK,
                 .flags = c(nl.NLM_F).REQUEST,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.UNSPEC,
@@ -896,12 +894,36 @@ pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
             },
         },
         &.{},
+        req_ctx,
     );
-    defer posix.close(nl_sock);
+}
+/// Request All Interface Links w/ their Interface Info.
+pub fn requestAllIFLinks(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
+    try nl.request(
+        alloc,
+        nl.RequestRaw,
+        .{
+            .nlh = .{
+                .len = 20,
+                .type = c(RTM).GETLINK,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
+            },
+            .msg = 0,
+        },
+        &.{},
+        req_ctx,
+    );
+}
+/// Get an Interface Link from the provided Interface (`if_index`).
+pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
+    // Request
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestIFLink(alloc, &req_ctx, if_index);
+    defer posix.close(req_ctx.sock);
     // Response
-    var resp_buf: [4096]u8 = .{ 0 } ** 4096;
+    var resp_buf: [4096]u8 = undefined;
     const resp_len = posix.recv(
-        nl_sock,
+        req_ctx.sock,
         resp_buf[0..],
         0,
     ) catch |err| switch (err) {
@@ -933,47 +955,43 @@ pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
     end = resp_len;
     return try nl.parse.fromBytes(alloc, InterfaceLink, resp_buf[start..end]);
 }
-
-/// Interface Link w/ Interface Info
-pub const IFInfoAndLink = struct {
-    info: InterfaceInfoMessage,
-    link: InterfaceLink,
-};
+/// Get All Interface Links w/ their Interface Info.
+pub fn getAllIFLinks(alloc: mem.Allocator) ![]const IFInfoAndLink {
+    // Request
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestAllIFLinks(alloc, &req_ctx);
+    defer posix.close(req_ctx.sock);
+    // Response
+    const buf_size: u32 = 64_000;
+    try posix.setsockopt(
+        req_ctx.sock, 
+        posix.SOL.SOCKET, 
+        nl.NETLINK_OPT.RX_RING, 
+        mem.toBytes(buf_size)[0..],
+    );
+    return try handleIFLinksSock(alloc, req_ctx.sock);
+}
 /// Parse the given `data` into an `IFInfoAndLink`.
 pub fn parseIFInfoAndLink(alloc: mem.Allocator, data: []const u8) !IFInfoAndLink {
     const info = try nl.parse.fromBytes(alloc, InterfaceInfoMessage, data[0..@sizeOf(InterfaceInfoMessage)]);
     const link = try nl.parse.fromBytes(alloc, InterfaceLink, data[@sizeOf(InterfaceInfoMessage)..]);
     return .{ .info = info, .link = link };
 }
-/// Get All Interface Links w/ their Interface Info
-pub fn getAllIFLinks(alloc: mem.Allocator) ![]const IFInfoAndLink {
-    // Request
-    const nl_sock = try nl.request(
+/// Handle Interface Links and Info on the provided `msg_buf`.
+pub fn handleIFLinksBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const IFInfoAndLink {
+    var handle_ctx: nl.HandleContext = .{ .config = .{ .nl_type = c(RTM).NEWLINK } };
+    return try nl.handleTypeBuf(
         alloc,
-        nl.NETLINK.ROUTE,
-        nl.RequestRaw,
-        .{
-            .nlh = .{
-                .len = 20,
-                .type = c(RTM).GETLINK,
-                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                .seq = 0,
-                .pid = 0,
-            },
-            .msg = 0,
-        },
-        &.{},
+        msg_buf,
+        RequestIFI,
+        IFInfoAndLink,
+        parseIFInfoAndLink,
+        &handle_ctx,
     );
-    defer posix.close(nl_sock);
-    // Response
-    const buf_size: u32 = 64_000;
-    try posix.setsockopt(
-        nl_sock, 
-        posix.SOL.SOCKET, 
-        nl.NETLINK_OPT.RX_RING, 
-        mem.toBytes(buf_size)[0..],
-    );
-    return try nl.handleType(
+}
+/// Handle Interface Links and Info on the provided Netlink Socket (`nl_sock`).
+pub fn handleIFLinksSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]IFInfoAndLink {
+    return try nl.handleTypeSock(
         alloc,
         nl_sock,
         RequestIFI,
@@ -988,26 +1006,16 @@ pub const IFInfoAndAddr = struct {
     info: InterfaceAddressMessage,
     addr: InterfaceAddress,
 };
-/// Parse the given `data` into an `IFInfoAndAddr`.
-pub fn parseIFInfoAndAddr(alloc: mem.Allocator, data: []const u8) !IFInfoAndAddr {
-    const info = try nl.parse.fromBytes(alloc, InterfaceAddressMessage, data[0..@sizeOf(InterfaceAddressMessage)]);
-    const addr = try nl.parse.fromBytes(alloc, InterfaceAddress, data[@sizeOf(InterfaceAddressMessage)..]);
-    return .{ .info = info, .addr = addr };
-}
-/// Get the Interface IP Addresses for the provided Interface (`if_index`).
-pub fn getIFAddr(alloc: mem.Allocator, if_index: i32) ![]const IFInfoAndAddr {
-    // Request
-    const nl_sock = try nl.request(
+/// Request the Interface IP Address for the provided Interface (`if_index`)
+pub fn requestIFAddr(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
+    try nl.request(
         alloc,
-        nl.NETLINK.ROUTE,
         RequestIFI,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).GETADDR,
                 .flags = c(nl.NLM_F).REQUEST,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.UNSPEC,
@@ -1018,37 +1026,61 @@ pub fn getIFAddr(alloc: mem.Allocator, if_index: i32) ![]const IFInfoAndAddr {
             },
         },
         &.{},
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    return try handleIFAddrs(alloc, nl_sock);
 }
-
-/// Get All Interface Addresses w/ their Interface Info
-pub fn getAllIFAddrs(alloc: mem.Allocator) ![]const IFInfoAndAddr {
-    // Request
-    const nl_sock = try nl.request(
+/// Request All Interface Addresses w/ their Interface Info
+pub fn requestAllIFAddrs(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
+    try nl.request(
         alloc,
-        nl.NETLINK.ROUTE,
         nl.RequestRaw,
         .{
             .nlh = .{
                 .len = 20,
                 .type = c(RTM).GETADDR,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).REPLACE | c(nl.NLM_F).EXCL,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = 0,
         },
         &.{},
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    return try handleIFAddrs(alloc, nl_sock);
 }
-
-/// Handle Interface Address Responses
-pub fn handleIFAddrs(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const IFInfoAndAddr {
-    return try nl.handleType(
+/// Get the Interface IP Addresses for the provided Interface (`if_index`).
+pub fn getIFAddr(alloc: mem.Allocator, if_index: i32) ![]const IFInfoAndAddr {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestIFAddr(alloc, &req_ctx, if_index);
+    defer posix.close(req_ctx.sock);
+    return try handleIFAddrsSock(alloc, req_ctx.sock);
+}
+/// Get All Interface Addresses w/ their Interface Info
+pub fn getAllIFAddrs(alloc: mem.Allocator) ![]const IFInfoAndAddr {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestAllIFAddrs(alloc, &req_ctx);
+    defer posix.close(req_ctx.sock);
+    return try handleIFAddrsSock(alloc, req_ctx.sock);
+}
+/// Parse the given `data` into an `IFInfoAndAddr`.
+pub fn parseIFInfoAndAddr(alloc: mem.Allocator, data: []const u8) !IFInfoAndAddr {
+    const info = try nl.parse.fromBytes(alloc, InterfaceAddressMessage, data[0..@sizeOf(InterfaceAddressMessage)]);
+    const addr = try nl.parse.fromBytes(alloc, InterfaceAddress, data[@sizeOf(InterfaceAddressMessage)..]);
+    return .{ .info = info, .addr = addr };
+}
+/// Handle Interface Address Responses from the provided `msg_buf`.
+pub fn handleIFAddrsBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const IFInfoAndAddr {
+    var handle_ctx: nl.HandleContext = .{ .config = .{ .nl_type = c(RTM).NEWADDR } };
+    return try nl.handleTypeBuf(
+        alloc,
+        msg_buf,
+        RequestIFA,
+        IFInfoAndAddr,
+        parseIFInfoAndAddr,
+        &handle_ctx,
+    );
+}
+/// Handle Interface Address Responses on the provided `nl_sock`.
+pub fn handleIFAddrsSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const IFInfoAndAddr {
+    return try nl.handleTypeSock(
         alloc,
         nl_sock,
         RequestIFA,
@@ -1056,62 +1088,23 @@ pub fn handleIFAddrs(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const IFI
         parseIFInfoAndAddr,
         .{ .nl_type = c(RTM).NEWADDR },
     );
-    //// Response
-    //const buf_size: u32 = 64_000;
-    //try posix.setsockopt(
-    //    nl_sock, 
-    //    posix.SOL.SOCKET, 
-    //    nl.NETLINK_OPT.RX_RING, 
-    //    mem.toBytes(buf_size)[0..],
-    //);
-    //// Parse Addresses 
-    //var addr_buf = try std.ArrayListUnmanaged(IFInfoAndAddress).initCapacity(alloc, 0);
-    //errdefer addr_buf.deinit(alloc);
-    //// - Handle Multi-part
-    //multiPart: while (true) {
-    //    var resp_buf: [buf_size]u8 = .{ 0 } ** buf_size;
-    //    const resp_len = posix.recv(
-    //        nl_sock,
-    //        resp_buf[0..],
-    //        0,
-    //    ) catch |err| switch (err) {
-    //        error.WouldBlock => return error.NoAddressesFound,
-    //        else => return err,
-    //    };
-    //    // Handle Dump
-    //    var msg_iter: nl.parse.Iterator(nl.MessageHeader, .{}) = .{ .bytes = resp_buf[0..resp_len] };
-    //    while (msg_iter.next()) |msg| {
-    //        switch (msg.hdr.type) {
-    //            c(nl.NLMSG).DONE => break :multiPart,
-    //            c(RTM).NEWADDR => {
-    //                const info = try nl.parse.fromBytes(alloc, InterfaceAddressMessage, msg.data[0..@sizeOf(InterfaceAddressMessage)]);
-    //                const addr = try nl.parse.fromBytes(alloc, InterfaceAddress, msg.data[@sizeOf(InterfaceAddressMessage)..]);
-    //                try addr_buf.append(alloc, .{ .info = info, .addr = addr });
-    //            },
-    //            else => return error.NonIFAddrResponse,
-    //        }
-    //    }
-    //}
-    //return try addr_buf.toOwnedSlice(alloc);
 }
 
-/// Set the provided Interface (`if_index`) to the Up or Down State (`state`).
-/// Implicitly allocates double the message length to the stack.
-pub fn setState(if_index: i32, state: u32) !void {
-    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 4) * 2, 4);
-    var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
-    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    const nl_sock = try nl.request(
-        fba.allocator(),
-        nl.NETLINK.ROUTE,
+/// Request that the provided Interface (`if_index`) be Set to the Up or Down State (`state`).
+pub fn requestSetState(
+    alloc: mem.Allocator, 
+    req_ctx: *nl.RequestContext, 
+    if_index: i32,
+    state: u32,
+) !void {
+    try nl.request(
+        alloc,
         RequestIFI,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).SETLINK,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.UNSPEC,
@@ -1122,28 +1115,35 @@ pub fn setState(if_index: i32, state: u32) !void {
             },
         },
         &.{},
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+}
+/// Set the provided Interface (`if_index`) to the Up or Down State (`state`).
+/// Implicitly allocates double the message length to the stack.
+pub fn setState(if_index: i32, state: u32) !void {
+    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 4) * 2, 4);
+    var req_buf: [buf_len]u8 = undefined;
+    var fba: heap.FixedBufferAllocator = .init(req_buf[0..]);
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestSetState(fba.allocator(), &req_ctx, if_index, state);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
-/// Set the MAC (`mac`) of the provided Interface (`if_index`).
-/// Implicitly allocates double the message length to the stack.
-pub fn setMAC(if_index: i32, mac: [6]u8) !void {
-    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 6) * 2, 4);
-    var req_buf: [buf_len]u8 = .{ 0 } ** buf_len;
-    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    try setState(if_index, c(IFF).DOWN);
-    const nl_sock = try nl.request(
-        fba.allocator(),
-        nl.NETLINK.ROUTE,
+/// Request that the provided Interface (`if_index`) be given the provided MAC (`mac`).
+pub fn requestSetMAC(
+    alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
+    if_index: i32,
+    mac: [6]u8,
+) !void {
+    try nl.request(
+        alloc,
         RequestIFI,
         .{
             .nlh = .{
                 .type = c(RTM).NEWLINK,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.UNSPEC,
@@ -1154,31 +1154,46 @@ pub fn setMAC(if_index: i32, mac: [6]u8) !void {
             },
         },
         &.{ .{ .hdr = .{ .type = c(nl.IFLA).ADDRESS }, .data = mac[0..] } },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
-    try setState(if_index, c(IFF).UP);
+}
+/// Set the MAC (`mac`) of the provided Interface (`if_index`).
+/// Implicitly allocates double the message length to the stack.
+pub fn setMAC(if_index: i32, mac: [6]u8) !void {
+    const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 6) * 2, 4);
+    var req_buf: [buf_len]u8 = undefined;
+    var fba: heap.FixedBufferAllocator = .init(req_buf[0..]);
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    //try setState(if_index, c(IFF).DOWN);
+    try requestSetMAC(
+        fba.allocator(), 
+        &req_ctx, 
+        if_index, 
+        mac
+    );
+    defer posix.close(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
+    //try setState(if_index, c(IFF).UP);
 }
 
-/// Add IP address to interface
-pub fn addIP(
+
+/// Request to Add IP address (`ip`) to the Interface (`if_index`)
+pub fn requestAddIP(
     alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     ip: [4]u8,
     prefix_len: u8,
 ) !void {
     const flags = c(IFA_F).PERMANENT;
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.ROUTE,
         RequestIFA,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).NEWADDR,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).EXCL,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.INET,
@@ -1198,29 +1213,38 @@ pub fn addIP(
                 .data = mem.toBytes(flags)[0..],
             },
         },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
 }
-
-/// Delete IP address from interface
-pub fn deleteIP(
+/// Add IP address (`ip`) to the Interface (`if_index`)
+pub fn addIP(
     alloc: mem.Allocator,
     if_index: i32,
     ip: [4]u8,
     prefix_len: u8,
 ) !void {
-    const nl_sock = try nl.request(
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestAddIP(alloc, &req_ctx, if_index, ip, prefix_len);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
+}
+
+/// Request to Delete IP address from Interface (`if_index`)
+pub fn requestDeleteIP(
+    alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
+    if_index: i32,
+    ip: [4]u8,
+    prefix_len: u8,
+) !void {
+    try nl.request(
         alloc,
-        nl.NETLINK.ROUTE,
         RequestIFA,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).DELADDR,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.INET,
@@ -1236,9 +1260,21 @@ pub fn deleteIP(
                 .data = &ip,
             },
         },
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+
+}
+/// Delete IP address from Interface (`if_index`)
+pub fn deleteIP(
+    alloc: mem.Allocator,
+    if_index: i32,
+    ip: [4]u8,
+    prefix_len: u8,
+) !void {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestDeleteIP(alloc, &req_ctx, if_index, ip, prefix_len);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
 /// Route Config
@@ -1246,14 +1282,16 @@ pub const RouteConfig = struct {
     cidr: u8 = 24,
     gateway: ?[4]u8 = null,
 };
-/// Add route to routing table
-pub fn addRoute(
+
+/// Request to Add the Route Destination (`dest`) to the provided Interface's (`if_index`) routing table
+pub fn requestAddRoute(
     alloc: mem.Allocator,
+    req_ctx: nl.RequestContext,
     if_index: i32,
     dest: [4]u8,
     config: RouteConfig,
 ) !void {
-    var attrs = std.ArrayListUnmanaged(nl.Attribute){};
+    var attrs: ArrayList(nl.Attribute) = .empty;
     defer attrs.deinit(alloc);
     // Always add destination network
     try attrs.append(alloc, .{
@@ -1272,17 +1310,14 @@ pub fn addRoute(
         .hdr = .{ .type = c(RTA).OIF },
         .data = mem.toBytes(if_index)[0..],
     });
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.ROUTE,
         RequestRTM,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).NEWROUTE,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK | c(nl.NLM_F).CREATE | c(nl.NLM_F).EXCL,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.INET,
@@ -1297,19 +1332,31 @@ pub fn addRoute(
             },
         },
         attrs.items,
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
 }
-
-/// Delete route from routing table
-pub fn deleteRoute(
+/// Add the Route Destination (`dest`) to the provided Interface's (`if_index`) routing table
+pub fn addRoute(
     alloc: mem.Allocator,
     if_index: i32,
     dest: [4]u8,
     config: RouteConfig,
 ) !void {
-    var attrs = std.ArrayListUnmanaged(nl.Attribute){};
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestAddRoute(alloc, &req_ctx, if_index, dest, config);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
+}
+
+/// Request the Delete the Route Destination (`dest`) from the provided Interface's (`if_index`) routing table
+pub fn requestDeleteRoute(
+    alloc: mem.Allocator,
+    req_ctx: nl.RequestContext,
+    if_index: i32,
+    dest: [4]u8,
+    config: RouteConfig,
+) !void {
+    var attrs: ArrayList(nl.Attribute) = .empty;
     defer attrs.deinit(alloc);
     // Always add destination network
     try attrs.append(alloc, .{
@@ -1328,17 +1375,14 @@ pub fn deleteRoute(
         .hdr = .{ .type = c(RTA).OIF },
         .data = mem.toBytes(if_index)[0..],
     });
-    const nl_sock = try nl.request(
+    try nl.request(
         alloc,
-        nl.NETLINK.ROUTE,
         RequestRTM,
         .{
             .nlh = .{
                 .len = 0,
                 .type = c(RTM).DELROUTE,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
-                .seq = 0,
-                .pid = 0,
             },
             .msg = .{
                 .family = nl.AF.INET,
@@ -1353,222 +1397,19 @@ pub fn deleteRoute(
             },
         },
         attrs.items,
+        req_ctx,
     );
-    defer posix.close(nl_sock);
-    try nl.handleAck(nl_sock);
+}
+/// Delete the Route Destination (`dest`) from the provided Interface's (`if_index`) routing table
+pub fn deleteRoute(
+    alloc: mem.Allocator,
+    if_index: i32,
+    dest: [4]u8,
+    config: RouteConfig,
+) !void {
+    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    try requestDeleteRoute(alloc, &req_ctx, if_index, dest, config);
+    defer posix.close(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
-/// Device Info. Simple Struct for common Device data from rtnetlink 
-pub const DeviceInfo = struct {
-    index: i32,
-    mac: [6]u8,
-    mtu: usize,
-    ips: [10]?[4]u8 = .{ null } ** 10,
-    cidrs: [10]?u8 = .{ null } ** 10,
-
-    pub fn get(if_index: i32) !@This() {
-        var dev: @This() = undefined;
-        dev.index = if_index;
-        dev.ips = .{ null } ** 10;
-
-        const l2_buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 6) * 2, 4);
-        var l2_req_buf: [l2_buf_len]u8 = .{ 0 } ** l2_buf_len;
-        var l2_fba = heap.FixedBufferAllocator.init(l2_req_buf[0..]);
-        const l2_sock = try nl.request(
-            l2_fba.allocator(),
-            nl.NETLINK.ROUTE,
-            RequestIFI,
-            .{
-                .nlh = .{
-                    .len = 0,
-                    .type = c(RTM).GETLINK,
-                    .flags = c(nl.NLM_F).REQUEST,
-                    .seq = 0,
-                    .pid = 0,
-                },
-                .msg = .{
-                    .family = nl.AF.UNSPEC,
-                    .index = if_index,
-                    .type = 0,
-                    .change = 0,
-                    .flags = 0,
-                },
-            },
-            &.{},
-        );
-        defer posix.close(l2_sock);
-
-        var set_count: u8 = 0;
-        var resp_buf: [4096]u8 = .{ 0 } ** 4096;
-        var resp_len = posix.recv(
-            l2_sock,
-            resp_buf[0..],
-            0,
-        ) catch |err| switch (err) {
-            error.WouldBlock => return error.NoInterfaceFound,
-            else => return err,
-        };
-
-        var offset: usize = 0;
-        while (offset < resp_len) {
-            var start: usize = offset;
-            var end: usize = (offset + @sizeOf(nl.MessageHeader));
-            const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-            if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-                return error.InvalidMessage;
-            if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-                start = end;
-                end += @sizeOf(nl.ErrorHeader);
-                const nl_err: *nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                    .SUCCESS => {},
-                    .BUSY => return error.BUSY,
-                    else => |err| {
-                        log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                        return error.OSError;
-                    },
-                }
-            }
-            if (nl_resp_hdr.type == c(RTM).NEWLINK) {
-                start = end + @sizeOf(InterfaceInfoMessage);
-                end += @sizeOf(InterfaceInfoMessage) + nl.attr_hdr_len;
-                while (end < offset + nl_resp_hdr.len) {
-                    const attr: *const nl.AttributeHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                    start = end;
-                    end += (attr.len -| nl.attr_hdr_len);
-                    switch (@as(nl.IFLA, @enumFromInt(attr.type))) {
-                        .ADDRESS => {
-                            @memcpy(dev.mac[0..], resp_buf[start..start + 6]);
-                            set_count += 1;
-                        },
-                        .MTU => {
-                            dev.mtu = @as(*const u32, @alignCast(@ptrCast(resp_buf[start..start + 4]))).*;
-                            set_count += 1;
-                        },
-                        else => {}
-                    }
-                    end = mem.alignForward(usize, end, 4);
-                    start = end;
-                    end += nl.attr_hdr_len;
-                }
-            }
-            offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-        }
-        if (set_count < 2) return error.DetailsNotProvided;
-
-        const l3_buf_len = comptime mem.alignForward(usize, (RequestIFA.len + nl.attr_hdr_len + 6) * 2, 4);
-        var l3_req_buf: [l3_buf_len]u8 = .{ 0 } ** l3_buf_len;
-        var l3_fba = heap.FixedBufferAllocator.init(l3_req_buf[0..]);
-        const l3_sock = try nl.request(
-            l3_fba.allocator(),
-            nl.NETLINK.ROUTE,
-            RequestIFA,
-            .{
-                .nlh = .{
-                    .len = 0,
-                    .type = c(RTM).GETADDR,
-                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).DUMP,
-                    .seq = 0,
-                    .pid = 0,
-                },
-                .msg = .{
-                    .family = nl.AF.INET,
-                    .index = if_index,
-                    .prefix_len = 24,
-                    .scope = 0,
-                    .flags = 0,
-                },
-            },
-            &.{},
-        );
-        defer posix.close(l3_sock);
-
-        var resp_idx: usize = 0;
-        respL3: while (resp_idx <= 10) : (resp_idx += 1) {
-            resp_buf = .{ 0 } ** 4096;
-            resp_len = posix.recv(
-                l3_sock,
-                resp_buf[0..],
-                0,
-            ) catch |err| switch (err) {
-                error.WouldBlock => break,
-                else => return err,
-            };
-
-            offset = 0;
-            while (offset < resp_len) {
-                var start: usize = offset;
-                var end: usize = (offset + @sizeOf(nl.MessageHeader));
-                const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-                    return error.InvalidMessage;
-                if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-                    start = end;
-                    end += @sizeOf(nl.ErrorHeader);
-                    const nl_err: *nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                    switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                        .SUCCESS => {},
-                        .BUSY => return error.BUSY,
-                        else => |err| {
-                            log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                            return error.OSError;
-                        },
-                    }
-                }
-                if (nl_resp_hdr.type == c(nl.NLMSG).DONE) break :respL3;
-                if (nl_resp_hdr.type == c(RTM).NEWADDR) ipAddr: {
-                    start = end;
-                    end += @sizeOf(InterfaceAddressMessage);
-                    const ifa_msg = mem.bytesToValue(InterfaceAddressMessage, resp_buf[start..end]);
-                    if (ifa_msg.index != if_index) break :ipAddr;
-                    start = end;
-                    end += nl.attr_hdr_len;
-                    while (end < offset + nl_resp_hdr.len) {
-                        const attr: *const nl.AttributeHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-                        start = end;
-                        end += (attr.len -| nl.attr_hdr_len);
-                        switch (attr.type) {
-                            1 => {
-                                for (dev.ips[0..], dev.cidrs[0..]) |*ip, *cidr| {
-                                    if (ip.*) |_| continue;
-                                    ip.* = .{ 0 } ** 4;
-                                    @memcpy(ip.*.?[0..], resp_buf[start..(start + 4)]);
-                                    cidr.* = ifa_msg.prefix_len;
-                                    set_count += 1;
-                                    break;
-                                }
-                            },
-                            else => {},
-                        }
-                        end = mem.alignForward(usize, end, 4);
-                        start = end;
-                        end += nl.attr_hdr_len;
-                    }
-                }
-                offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-            }
-        }
-        return dev;
-    }
-
-    pub fn format(
-        self: @This(), 
-        _: []const u8, 
-        _: fmt.FormatOptions, 
-        writer: anytype,
-    ) !void {
-        try writer.print("- Index: {d}\n", .{ self.index });
-        try writer.print("- MAC:   ", .{});
-        try address.printAddr(self.mac[0..], ":", "{X:0>2}", writer);
-        try writer.print("\n", .{});
-        try writer.print("- MTU:   {d}\n", .{ self.mtu });
-        if (self.ips[0] == null) return;
-        try writer.print("- IPs:\n", .{});
-        for (self.ips) |ip| {
-            const _ip = ip orelse return;
-            try writer.print("  - ", .{});
-            try address.printAddr(_ip[0..], ".", "{d}", writer);
-            try writer.print("\n", .{});
-        }
-    }
-};
