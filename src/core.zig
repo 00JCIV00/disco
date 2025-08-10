@@ -9,6 +9,7 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
+const ArrayList = std.ArrayListUnmanaged;
 
 const netdata = @import("netdata.zig");
 const oui = netdata.oui;
@@ -28,7 +29,7 @@ pub const serve = @import("core/serve.zig");
 /// This should be used as a Singleton that is passed around for context.
 pub const Core = struct {
     /// Config
-    /// This is made to be configurable by users via JSON.
+    /// This is made to be configurable by users via JSON or ZON.
     pub const Config = struct {
         pub const ScanConfig = struct {
             if_name: []const u8,
@@ -38,8 +39,8 @@ pub const Core = struct {
 
         /// Profile Settings
         profile: profiles.Profile = .{},
-        /// Available Interface Indexes
-        avail_if_indexes: []const i32 = &.{},
+        ///// Available Interface Indexes
+        //avail_if_indexes: []const i32 = &.{},
         /// Available Interface Names
         avail_if_names: []const []const u8 = &.{},
         /// Scan Configs
@@ -52,10 +53,6 @@ pub const Core = struct {
         serve_config: ?serve.Config = null,
     };
 
-    /// Allocator
-    _alloc: mem.Allocator,
-    /// Arena Wrapper f/ Allocator
-    _arena: heap.ArenaAllocator,
     /// Mutex Lock
     _mutex: std.Thread.Mutex = .{},
     /// Timer
@@ -64,12 +61,22 @@ pub const Core = struct {
     _thread_pool: std.Thread.Pool,
     /// Wait Group
     _wait_group: std.Thread.WaitGroup = .{},
+    /// Allocator
+    alloc: mem.Allocator,
+    /// Arena Wrapper f/ Allocator
+    arena: heap.ArenaAllocator,
     /// Config
     config: Config,
-    /// Interval for Thread Checks in milliseconds.
+    /// Interval for Thread Checks.
     interval: usize = 100 * time.ns_per_ms,
     /// Active Status of the overall program.
-    active: atomic.Value(bool) = atomic.Value(bool).init(false),
+    active: atomic.Value(bool) = .init(false),
+    /// Netlink Event Loop
+    nl_event_loop: nl.io.Loop,
+    /// Netlink 802.11 Handler
+    nl80211_handler: *nl.io.Handler,
+    /// Netlink Route Handler
+    rtnetlink_handler: *nl.io.Handler,
     /// Interface Context
     if_ctx: interfaces.Context,
     /// Network Context
@@ -87,14 +94,105 @@ pub const Core = struct {
     /// Initialize the Core Context.
     pub fn init(alloc: mem.Allocator, config: Config) !@This() {
         log.info("Initializing DisCo Core...", .{});
+        var arena = heap.ArenaAllocator.init(alloc);
+        errdefer arena.deinit();
+        // Get Original Hostname
+        var og_hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
+        const og_hostname = alloc.dupe(u8, try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX])) catch @panic("OOM");
+        errdefer alloc.free(og_hostname);
+        // Netlink Handlers
+        const nl80211_handler = alloc.create(nl.io.Handler) catch @panic("OOM");
+        nl80211_handler.* = .init(alloc, try nl.initSock(.{ .kind = nl.NETLINK.GENERIC }), .{});
+        errdefer alloc.destroy(nl80211_handler);
+        const rtnetlink_handler = alloc.create(nl.io.Handler) catch @panic("OOM");
+        rtnetlink_handler.* = .init(alloc, try nl.initSock(.{ .kind = nl.NETLINK.ROUTE }), .{});
+        errdefer alloc.destroy(rtnetlink_handler);
+        // Core Creation
+        var self: @This() = .{
+            ._timer = try std.time.Timer.start(),
+            ._thread_pool = .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
+            .alloc = alloc,
+            .arena = arena,
+            .config = config,
+            .nl_event_loop = .init(.{}),
+            .nl80211_handler = nl80211_handler,
+            .rtnetlink_handler = rtnetlink_handler,
+            .og_hostname = og_hostname,
+            .if_ctx = undefined,
+            .network_ctx = undefined,
+            .conn_ctx = undefined,
+            .serve_ctx = undefined,
+        };
+        //// Context Initialization
+        self.if_ctx = try .init(&self);
+        errdefer self.if_ctx.deinit(alloc);
+        //var network_ctx = try networks.Context.init(arena_alloc);
+        //errdefer network_ctx.deinit(alloc);
+        //var conn_ctx = try connections.Context.init(arena_alloc);
+        //errdefer conn_ctx.deinit(alloc);
+        self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
+        errdefer self.serve_ctx.deinit(alloc);
+        // Context Setup
+        //try interfaces.updInterfaces(
+        //    alloc,
+        //    &self.if_ctx,
+        //    &self.config,
+        //    &self.interval,
+        //);
+        //log.info("- Initialized Interface Tracking Data.", .{});
+        //for (config.scan_configs) |scan_conf| {
+        //    try self.network_ctx.scan_configs.put(
+        //        alloc,
+        //        nl.route.getIfIdx(scan_conf.if_name) catch continue,
+        //        .{
+        //            .ssids = scan_conf.ssids,
+        //            .freqs = freqs: {
+        //                const chs = scan_conf.channels orelse break :freqs null;
+        //                var freqs_list: ArrayList(u32) = .empty;
+        //                for (chs) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+        //                break :freqs try freqs_list.toOwnedSlice(alloc);
+        //            },
+        //        },
+        //    );
+        //}
+        //log.info("- Initialized Network Tracking Data.", .{});
+        //self.conn_ctx.global_config.* = config.global_connect_config;
+        //for (config.connect_configs) |conn_conf| {
+        //    try self.conn_ctx.configs.put(
+        //        alloc,
+        //        conn_conf.ssid,
+        //        conn_conf,
+        //    );
+        //}
+        //log.info("- Initialized Connection Tracking Data.", .{});
+        if (config.serve_config) |serve_conf| {
+            self.serve_ctx.conf.* = serve_conf;
+            log.info("- Initialized File Serve Data.", .{});
+        }
+        log.info("Initialized DisCo Core.", .{});
+        //time.sleep(5 * time.ns_per_s);
+        return self;
+    }
+
+    /// Start the Core Context (Async)
+    /// This is the main loop for how DisCo is typically run.
+    pub fn startAsync(self: *@This()) !void {
+        self.active.store(true, .release);
+        if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
+        log.info("Core Locked!", .{});
+        log.info("Starting DisCo Core...", .{});
+        defer {
+            log.info("Core Unlocked!", .{});
+            self._mutex.unlock();
+        }
         // Find Conflicting PIDs
         const found_pids = try findConflictPIDs(
-            alloc,
-            config.profile.conflict_processes,
+            self.alloc,
+            self.config.profile.conflict_processes,
             null,
             "- Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
         );
-        if (found_pids and config.profile.require_conflicts_ack) {
+        if (found_pids and self.config.profile.require_conflicts_ack) {
             const stdout = io.getStdOut().writer();
             try stdout.print(
                 \\
@@ -104,42 +202,13 @@ pub const Core = struct {
                 , .{}
             );
             const stdin = io.getStdIn().reader();
-            const input = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
-            defer if (input) |in| alloc.free(in);
+            const input = try stdin.readUntilDelimiterOrEofAlloc(self.alloc, '\n', 4096);
+            defer if (input) |in| self.alloc.free(in);
         }
-        // Get Original Hostname
-        var og_hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
-        const og_hostname = try alloc.dupe(u8, try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX]));
-        errdefer alloc.free(og_hostname);
-        // Context Allocation
-        var arena = heap.ArenaAllocator.init(alloc);
-        errdefer arena.deinit();
-        const arena_alloc = arena.allocator();
-        var if_ctx = try interfaces.Context.init(arena_alloc);
-        errdefer if_ctx.deinit(alloc);
-        var network_ctx = try networks.Context.init(arena_alloc);
-        errdefer network_ctx.deinit(alloc);
-        var conn_ctx = try connections.Context.init(arena_alloc);
-        errdefer conn_ctx.deinit(alloc);
-        var serve_ctx = try serve.Context.init(alloc);
-        errdefer serve_ctx.deinit(alloc);
-        // Core Creation
-        var self: @This() = .{
-            ._alloc = alloc,
-            ._arena = arena,
-            ._timer = try std.time.Timer.start(),
-            ._thread_pool = .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
-            .config = config,
-            .if_ctx = if_ctx,
-            .network_ctx = network_ctx,
-            .conn_ctx = conn_ctx,
-            .serve_ctx = serve_ctx,
-            .og_hostname = og_hostname,
-        };
         // Profile Mask
-        if (config.profile.mask == null) setMask: {
+        if (self.config.profile.mask == null) setMask: {
             log.info("- No Profile Mask provided.", .{}); 
-            if (!config.profile.use_random_mask) {
+            if (!self.config.profile.use_random_mask) {
                 log.info("- Profile Mask explicitly NOT used.", .{});
                 break :setMask;
             }
@@ -150,67 +219,70 @@ pub const Core = struct {
                 mask,
             });
         }
-        if (config.profile.mask) |pro_mask| {
-            if (config.profile.change_sys_hostname) {
+        if (self.config.profile.mask) |pro_mask| {
+            if (self.config.profile.change_sys_hostname) {
                 try sys.setHostName(pro_mask.hostname);
                 log.info("- Set Hostname to '{s}'.", .{ pro_mask.hostname });
             }
             else
-                log.info("- The masked Network Hostname is '{s}'. The System Hostname is still '{s}'.", .{ pro_mask.hostname, og_hostname });
+                log.info("- The masked Network Hostname is '{s}'. The System Hostname is still '{s}'.", .{ pro_mask.hostname, self.og_hostname });
         }
-        // Context Setup
-        try interfaces.updInterfaces(
-            alloc,
-            &self.if_ctx,
-            &self.config,
-            &self.interval,
-        );
-        for (config.avail_if_indexes) |if_index| {
-            const if_entry = self.if_ctx.interfaces.getEntry(if_index) orelse {
-                log.warn("- No Interface Entry for Index: {d}", .{ if_index });
-                continue;
-            };
-            defer self.if_ctx.interfaces.mutex.unlock();
-            if (if_entry.value_ptr.state & c(nl.route.IFF).UP == c(nl.route.IFF).DOWN)
-                nl.route.setState(if_index, c(nl.route.IFF).UP) catch continue;
-            if_entry.value_ptr.usage = .available;
-        }
-        log.info("- Initialized Interface Tracking Data.", .{});
-        for (config.scan_configs) |scan_conf| {
-            try self.network_ctx.scan_configs.put(
-                alloc,
-                nl.route.getIfIdx(scan_conf.if_name) catch continue,
+        // File Serving
+        if (self.config.serve_config) |_| {
+            self._thread_pool.spawnWg(
+                &self._wait_group,
+                serve.serveDir,
                 .{
-                    .ssids = scan_conf.ssids,
-                    .freqs = freqs: {
-                        const chs = scan_conf.channels orelse break :freqs null;
-                        var freqs_list: std.ArrayListUnmanaged(u32) = .{};
-                        for (chs) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
-                        break :freqs try freqs_list.toOwnedSlice(alloc);
-                    },
+                    self.alloc,
+                    &self.serve_ctx,
+                    &self.active,
                 },
             );
+            log.info("- Started File Serving.", .{});
         }
-        log.info("- Initialized Network Tracking Data.", .{});
-        self.conn_ctx.global_config.* = config.global_connect_config;
-        for (config.connect_configs) |conn_conf| {
-            try self.conn_ctx.configs.put(
-                alloc,
-                conn_conf.ssid,
-                conn_conf,
-            );
+        // Available Interfaces
+        log.debug("Searching for the following Interfaces: {s}", .{ self.config.avail_if_names });
+        // Event Loop
+        try self.nl_event_loop.start(self.alloc, &self.active);
+        try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
+        try self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
+        // Core Loop
+        while (self.active.load(.acquire)) {
+            // Interface Tracking
+            try self.if_ctx.update(self);
+            time.sleep(500 * time.ns_per_ms);
         }
-        log.info("- Initialized Connection Tracking Data.", .{});
-        if (config.serve_config) |serve_conf| {
-            serve_ctx.conf.* = serve_conf;
-            log.info("- Initialized File Serve Data.", .{});
+        log.info("Started DisCo Core.", .{});
+        //self._thread_pool.waitAndWork(&self._wait_group);
+        self._thread_pool.deinit();
+    }
+
+    /// Run Condition for `runTo()`.
+    pub const RunCondition = union(enum) {
+        interfaces,
+        scan,
+    };
+    /// Run the Core Context up To the provided `condition`.
+    /// This is useful for getting info from all Interfaces, doing a single Scan, etc
+    pub fn runTo(self: *@This(), condition: RunCondition) !void {
+        self.active.store(true, .release);
+        if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
+        defer self._mutex.unlock();
+        // Event Loop
+        self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
+        self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
+        try self.nl_event_loop.start(self.alloc, &self.active);
+        // Core Loop
+        while (switch (condition) {
+            .interfaces => self.if_ctx.interfaces.count() == 0,
+            .scan => self.network_ctx.networks.count() == 0,
+        }) {
+            try self.if_ctx.update(self);
         }
-        log.info("Initialized DisCo Core.", .{});
-        //time.sleep(5 * time.ns_per_s);
-        return self;
     }
 
     /// Start the Core Context.
+    /// Deprecating after Async Update
     pub fn start(self: *@This()) !void {
         self.active.store(true, .release);
         if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
@@ -220,13 +292,13 @@ pub const Core = struct {
             log.info("Core Unlocked!", .{});
             self._mutex.unlock();
         }
-        try self._thread_pool.init(.{ .allocator = self._alloc, .n_jobs = 3 });
+        try self._thread_pool.init(.{ .allocator = self.alloc, .n_jobs = 3 });
         // Interface Tracking
         self._thread_pool.spawnWg(
             &self._wait_group,
             interfaces.trackInterfaces,
             .{
-                self._alloc,
+                self.alloc,
                 &self.active,
                 &self.interval,
                 &self.if_ctx,
@@ -239,7 +311,7 @@ pub const Core = struct {
             &self._wait_group,
             networks.trackScans,
             .{
-                self._alloc,
+                self.alloc,
                 &self.active,
                 &self.interval,
                 self.if_ctx.interfaces,
@@ -252,7 +324,7 @@ pub const Core = struct {
             &self._wait_group,
             networks.trackNetworks,
             .{
-                self._alloc,
+                self.alloc,
                 &self.active,
                 &self.interval,
                 self.if_ctx.interfaces,
@@ -265,7 +337,7 @@ pub const Core = struct {
             &self._wait_group,
             connections.trackConnections,
             .{
-                self._alloc,
+                self.alloc,
                 &self.active,
                 &self.interval,
                 &self.config,
@@ -281,7 +353,7 @@ pub const Core = struct {
                 &self._wait_group,
                 serve.serveDir,
                 .{
-                    self._alloc,
+                    self.alloc,
                     &self.serve_ctx,
                     &self.active,
                 },
@@ -294,7 +366,7 @@ pub const Core = struct {
     }
 
     /// Stop the Core Context
-    /// TODO: archive session data, and Clean Up as needed.
+    /// TODO: archive session data
     pub fn stop(self: *@This()) void {
         var stop_timer = time.Timer.start() catch null;
         log.info("Stopping DisCo Core...", .{});
@@ -312,7 +384,6 @@ pub const Core = struct {
     }
 
     /// Clean Up.
-    /// Note, we just let the OS clean up the Memory.
     /// TODO: Improve this if it will be needed outside of closing DisCo.
     pub fn cleanUp(self: *@This()) void {
         log.info("Cleaning up DisCo Core...", .{});
@@ -322,22 +393,22 @@ pub const Core = struct {
             else |err|
                 log.warn("- Couldn't reset the Hostname: {s}", .{ @errorName(err) });
         }
-        self.if_ctx.restore(self._alloc);
-        self._alloc.free(self.og_hostname);
+        self.if_ctx.restore(self.alloc);
+        self.alloc.free(self.og_hostname);
         if (self.forced_close) {
             log.warn("- Forced close. Leaving memory clean up to the OS.", .{});
             return;
         }
-        self.if_ctx.deinit(self._alloc);
+        self.if_ctx.deinit(self.alloc);
         log.info("- Deinitialized Interface Tracking.", .{});
-        self.network_ctx.deinit(self._alloc);
+        self.network_ctx.deinit(self.alloc);
         //if (self.config.scan_configs.len > 0) self._alloc.free(self.config.scan_configs);
         log.info("- Deinitialized Network Tracking.", .{});
-        self.conn_ctx.deinit(self._alloc);
+        self.conn_ctx.deinit(self.alloc);
         log.info("- Deinitialized Connection Tracking.", .{});
-        self.serve_ctx.deinit(self._alloc);
+        self.serve_ctx.deinit(self.alloc);
         log.info("- Deinitialized File Serving.", .{});
-        self._arena.deinit();
+        self.arena.deinit();
         log.info("- Deinitialized All Contexts.", .{});
         log.info("Cleaned up DisCo Core.", .{});
     }
@@ -353,12 +424,13 @@ pub const Core = struct {
             \\
             , .{ try posix.gethostname(hn_buf[0..]) }
         );
+        try writer.print("Interface Details:\n", .{});
         var if_iter = self.if_ctx.interfaces.iterator();
         defer if_iter.unlock();
         while (if_iter.next()) |print_if| {
             try writer.print(
-                \\Interface Details:
                 \\{s}
+                \\-----------
                 \\
                 , .{ print_if.value_ptr }
             );
@@ -389,178 +461,12 @@ pub fn findConflictPIDs(
     return found_pids;
 }
 
-/// Thread Safe ArrayList
-pub fn ThreadArrayList(T: type) type {
-    return struct {
-        /// List Type
-        pub const ListT: type = std.ArrayListUnmanaged(T);
-
-        /// Mutex Lock
-        _mutex: std.Thread.Mutex = .{},
-        /// ArrayList
-        _list: ListT,
-
-        /// List Items
-        pub fn items(self: *@This()) []T {
-            return self._list.items;
-        }
-
-        /// Initialize
-        pub fn initCapacity(self: *@This(), alloc: mem.Allocator, num: usize) mem.Allocator.Error!ListT {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            self._list = try ListT.initCapacity(alloc, num);
-        }
-
-        /// Deinitialize
-        pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            self._list.deinit(alloc);
-        }
-
-        /// Append
-        pub fn append(self: *@This(), alloc: mem.Allocator, item: T) mem.Allocator.Error!void {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            try self._list.append(alloc, item);
-        }
-
-        /// Append Slice
-        pub fn appendSlice(self: *@This(), alloc: mem.Allocator, slice: []const T) mem.Allocator.Error!void {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            try self._list.appendSlice(alloc, slice);
-        }
-    };
-}
-
-/// Thread Safe HashMap
-pub fn ThreadHashMap(K: type, V: type) type {
-    return struct {
-        /// Map Type
-        pub const MapT: type =
-            if (K == []const u8) std.StringHashMapUnmanaged(V)
-            else std.AutoHashMapUnmanaged(K, V);
-        /// Iterator
-        pub const Iterator: type = struct {
-            _mutex: *std.Thread.Mutex,
-            _iter: MapT.Iterator,
-
-            pub fn next(self: *@This()) ?MapT.Entry {
-                return self._iter.next();
-            }
-            pub fn index(self: *@This()) u32 {
-                return self._iter.index;
-            }
-            pub fn unlock(self: *@This()) void {
-                self._mutex.unlock();
-            }
-        };
-
-        /// Mutex Lock
-        mutex: std.Thread.Mutex = .{},
-        /// Hash Map
-        map: MapT = .{},
-
-        /// Deinitialize this ThreadHashMap
-        pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            self.map.deinit(alloc);
-        }
-
-        ///// Keys (This is an allocated copy)
-        //pub fn keys(self: *@This(), alloc: mem.Allocator) ![]K {
-        //    self.mutex.lock();
-        //    defer self.mutex.unlock();
-        //    try alloc.dupe(K, self._map.keys());
-        //}
-
-        ///// Values (This is an allocated copy)
-        //pub fn values(self: *@This(), alloc: mem.Allocator) ![]K {
-        //    self.mutex.lock();
-        //    defer self.mutex.unlock();
-        //    try alloc.dupe(V, self._map.values());
-        //}
-
-        /// Count
-        pub fn count(self: *@This()) usize {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            return self.map.count();
-        }
-
-        /// Iterator
-        /// Must unlock with `iterator.unlock()` to edit the Map again.
-        pub fn iterator(self: *@This()) Iterator {
-            self.mutex.lock();
-            return .{
-                ._mutex = &self.mutex,
-                ._iter = self.map.iterator(),
-            };
-        }
-
-        /// Get
-        pub fn get(self: *@This(), key: K) ?V {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            return self.map.get(key);
-        }
-
-        /// Get Entry
-        /// Must unlock map with `map.mutex.unlock()` when done with the Entry.
-        pub fn getEntry(self: *@This(), key: K) ?MapT.Entry {
-            self.mutex.lock();
-            return self.map.getEntry(key);
-        }
-
-        /// Put
-        pub fn put(
-            self: *@This(), 
-            alloc: mem.Allocator, 
-            key: K, 
-            val: V,
-        ) !void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            try self.map.put(alloc, key, val);
-        }
-
-        /// Fetch Put
-        pub fn fetchPut(
-            self: *@This(),
-            alloc: mem.Allocator,
-            key: K,
-            val: V,
-        ) !?MapT.KV {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            return try self.map.fetchPut(alloc, key, val);
-        }
-
-        /// Remove
-        pub fn remove(self: *@This(), key: K) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            return self.map.remove(key);
-        }
-
-        /// Sort
-        pub fn sort(self: *@This(), sort_ctx: anytype) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            try self.map.sort(sort_ctx);
-        }
-    };
-}
-
 /// Reset a Map containing Netlink Data
 pub fn resetNLMap(
     alloc: mem.Allocator,
     K: type,
     V: type,
-    map: *ThreadHashMap(K, V),
+    map: *utils.ThreadHashMap(K, V),
 ) void {
     // Clean
     var map_iter = map.iterator();

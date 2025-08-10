@@ -13,6 +13,7 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
+const ArrayList = std.ArrayListUnmanaged;
 
 const zeit = @import("zeit");
 
@@ -132,11 +133,11 @@ pub const Context = struct {
     global_config: *GlobalConfig,
     /// Configs for Networks to Connect to.
     /// ID = Network SSID
-    configs: *core.ThreadHashMap([]const u8, Config),
+    configs: *utils.ThreadHashMap([]const u8, Config),
     /// Active & Previous Connections.
     /// ID = 6B Network BSSID + 4B Interface Index
-    connections: *core.ThreadHashMap([10]u8, Connection),
-    //connections: *core.ThreadHashMap([6]u8, Connection),
+    connections: *utils.ThreadHashMap([10]u8, Connection),
+    //connections: *utils.ThreadHashMap([6]u8, Connection),
     thread_pool: *std.Thread.Pool,
     wait_group: *std.Thread.WaitGroup,
 
@@ -290,7 +291,7 @@ pub fn trackConnections(
                         alloc,
                         conn_id,
                         .{
-                            .active = atomic.Value(bool).init(true),
+                            .active = .init(true),
                             .if_index = conn_if.index,
                             .state = .search,
                             .bssid = nw.bssid,
@@ -345,7 +346,7 @@ pub fn handleConnectionNoErr(
     ctx: *Context,
     conn_id: [10]u8,
     //conn_id: [6]u8,
-    nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
+    nw_scan_results: *utils.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
 ) void {
@@ -375,7 +376,7 @@ pub fn handleConnection(
     core_config: *const core.Core.Config,
     ctx: *Context,
     conn_id: [10]u8,
-    nw_scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
+    nw_scan_results: *utils.ThreadHashMap([6]u8, nl._80211.ScanResults),
     if_ctx: *const core.interfaces.Context,
     if_index: i32,
 ) !void {
@@ -792,8 +793,8 @@ pub fn handleConnection(
                 const rsn_bytes = rsnBytes: {
                     const rsn = ies.RSN orelse return error.MissingRSN;
                     const bytes = try nl.parse.toBytes(alloc, nl._80211.InformationElements.RobustSecurityNetwork, rsn);
-                    errdefer alloc.free(bytes);
-                    var buf = std.ArrayListUnmanaged(u8).fromOwnedSlice(bytes);
+                    //errdefer alloc.free(bytes);
+                    var buf = ArrayList(u8).fromOwnedSlice(bytes);
                     errdefer buf.deinit(alloc);
                     try buf.insert(alloc, 0, @intCast(bytes.len));
                     try buf.insert(alloc, 0, c(nl._80211.IE).RSN);

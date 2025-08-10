@@ -46,7 +46,7 @@ pub const Context = struct {
         var self: @This() = undefined;
         self.conf = conf: {
             const conf = try alloc.create(Config);
-            conf.* = Config{};
+            conf.* = .{};
             break :conf conf;
         };
         self.thread_pool = threadPool: {

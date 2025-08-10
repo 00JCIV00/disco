@@ -14,6 +14,7 @@ const posix = std.posix;
 const process = std.process;
 const testing = std.testing;
 const time = std.time;
+const ArrayList = std.ArrayListUnmanaged;
 
 const cova = @import("cova");
 const cli = @import("cli.zig");
@@ -76,7 +77,7 @@ pub fn main() !void {
 
     var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }){};
     defer {
-        if (@import("builtin").mode == .Debug and gpa.detectLeaks()) 
+        if (@import("builtin").mode == .Debug and gpa.detectLeaks())
             log.err("Memory leak detected!", .{})
         else if (gpa.deinit() == .leak)
             log.err("Memory leak detected!", .{});
@@ -266,9 +267,9 @@ pub fn main() !void {
 
     // Set up Core Data
     const main_opts = try main_cmd.getOpts(.{});
-    var core_if_indexes: std.ArrayListUnmanaged(i32) = .{};
+    var core_if_indexes: ArrayList(i32) = .{};
     defer core_if_indexes.deinit(alloc);
-    var core_scan_confs: std.ArrayListUnmanaged(core.Core.Config.ScanConfig) = .{};
+    var core_scan_confs: ArrayList(core.Core.Config.ScanConfig) = .{};
     defer core_scan_confs.deinit(alloc);
     const if_names: []const []const u8 = ifOpt: {
         if (main_opts.get("interfaces")) |if_opt| {
@@ -341,7 +342,12 @@ pub fn main() !void {
     const core_config: core.Core.Config = config: {
         const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
         var config: core.Core.Config = importConf: {
-            var config: core.Core.Config = .{};
+            var config: core.Core.Config = .{
+                .avail_if_names = if_names,
+                .profile = .{
+                    .require_conflicts_ack = !main_cmd.checkFlag("no-conflict-pids"),
+                },
+            };
             if (main_opts.get("config")) |config_opt| userConf: {
                 const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
                 defer config_file.close();
@@ -363,7 +369,7 @@ pub fn main() !void {
                 break :importConf config;
             }
             defaultConf: {
-                var user_buf: [100]u8 = .{ 0 } ** 100;
+                var user_buf: [100]u8 = undefined;
                 const user = sys.getUser(user_buf[0..]) orelse break :defaultConf;
                 log.debug("Current User: {s}", .{ user });
                 var path_buf: [fs.max_path_bytes]u8 = .{ 0 } ** fs.max_path_bytes;
@@ -396,30 +402,30 @@ pub fn main() !void {
                     break :importConf config;
                 }
             }
-                break :importConf config;
+            break :importConf config;
         };
         if (if_names.len > 0) config.avail_if_names = if_names;
-        for (config.avail_if_names) |if_name| {
-            const if_index = nl.route.getIfIdx(if_name) catch {
-                log.warn("Could not find Interface '{s}'.", .{ if_name });
-                continue;
-            };
-            try core_if_indexes.append(alloc, if_index);
-        }
-        if (core_if_indexes.items.len > 0) {
-            //config.avail_if_indexes = try core_if_indexes.toOwnedSlice(alloc);
-            config.avail_if_indexes = core_if_indexes.items; 
-        }
-        if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
-            for (config.avail_if_names) |if_name| {
-                try core_scan_confs.append(alloc, .{
-                    .if_name = if_name,
-                    .ssids = &.{},
-                    .channels = &.{},
-                });
-            }
-        }
-        if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
+        //for (config.avail_if_names) |if_name| {
+        //    const if_index = nl.route.getIfIdx(if_name) catch {
+        //        log.warn("Could not find Interface '{s}'.", .{ if_name });
+        //        continue;
+        //    };
+        //    try core_if_indexes.append(alloc, if_index);
+        //}
+        //if (core_if_indexes.items.len > 0) {
+        //    //config.avail_if_indexes = try core_if_indexes.toOwnedSlice(alloc);
+        //    config.avail_if_indexes = core_if_indexes.items; 
+        //}
+        //if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
+        //    for (config.avail_if_names) |if_name| {
+        //        try core_scan_confs.append(alloc, .{
+        //            .if_name = if_name,
+        //            .ssids = &.{},
+        //            .channels = &.{},
+        //        });
+        //    }
+        //}
+        //if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
         if (profile_mask) |pro_mask| config.profile.mask = pro_mask;
         config.profile.use_random_mask = !main_cmd.checkFlag("no_mask");
         for (core_conn_confs) |*conn_conf| {
@@ -433,12 +439,14 @@ pub fn main() !void {
         if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
         break :config config;
     };
-    _core_ctx = try core.Core.init(alloc, core_config);
-    var core_ctx = _core_ctx orelse return error.CoreNotInitialized;
+    //_core_ctx = try core.Core.init(alloc, core_config);
+    //var core_ctx = _core_ctx orelse return error.CoreNotInitialized;
+    var core_ctx: core.Core = try .init(alloc, core_config);
     // Start Core Context
     if (main_cmd.sub_cmd == null) {
         //try core_ctx.start();
-        const core_thread = try std.Thread.spawn(.{}, core.Core.start, .{ &core_ctx });
+        //const core_thread = try std.Thread.spawn(.{}, core.Core.start, .{ &core_ctx });
+        const core_thread = try std.Thread.spawn(.{}, core.Core.startAsync, .{ &core_ctx });
         core_thread.detach();
         const stdin = io.getStdIn().reader();
         //var active: bool = true;
@@ -450,467 +458,467 @@ pub fn main() !void {
         return;
         //posix.exit(0);
     }
-    const num_avail_ifs = numAvailIFs: {
-        var if_iter = core_ctx.if_ctx.interfaces.iterator();
-        defer if_iter.unlock();
-        var count: usize = 0;
-        while (if_iter.next()) |if_entry| {
-            if (if_entry.value_ptr.usage == .unavailable) continue;
-            count += 1;
-        }
-        break :numAvailIFs count;
-    };
+    //const num_avail_ifs = numAvailIFs: {
+    //    var if_iter = core_ctx.if_ctx.interfaces.iterator();
+    //    defer if_iter.unlock();
+    //    var count: usize = 0;
+    //    while (if_iter.next()) |if_entry| {
+    //        if (if_entry.value_ptr.usage == .unavailable) continue;
+    //        count += 1;
+    //    }
+    //    break :numAvailIFs count;
+    //};
     defer cleanUp(0);
 
     // Single Use
     // - Set
-    if (main_cmd.matchSubCmd("set")) |set_cmd| {
-        checkRoot(stdout_file.any());
-        const set_ifs = core_ctx.if_ctx.interfaces;
-        if (num_avail_ifs == 0) checkIF(stdout, "set");
-        var if_iter = set_ifs.iterator();
-        defer {
-            if_iter.unlock();
-            core.interfaces.updInterfaces(
-                alloc,
-                &core_ctx.if_ctx,
-                &core_ctx.config,
-                &core_ctx.interval,
-            ) catch |err|
-                log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
-            core_ctx.printInfo(stdout) catch {};
-            stdout_bw.flush() catch {};
-            posix.exit(0);
-        }
-        while (if_iter.next()) |set_if_entry| {
-            const set_if = set_if_entry.value_ptr;
-            if (set_if.usage == .unavailable) continue;
-            const set_if_opts = try set_cmd.getOpts(.{});
-            if (set_if_opts.get("mac")) |mac_opt| setMAC: {
-                try stdout_file.print("Setting the MAC for {s}...\n", .{ set_if.name });
-                const new_mac: [6]u8 = newMAC: {
-                    var new_mac: [6]u8 = 
-                        if (mac_opt.val.isEmpty()) .{ 0 } ** 6
-                        else mac_opt.val.getAs([6]u8) catch break :setMAC;
-                    if (set_if_opts.get("random_mac")) |rand_mac_opt| randMAC: {
-                        if (!rand_mac_opt.val.isSet() and rand_mac_opt.val.isEmpty()) break :randMAC;
-                        const rand_kind = try rand_mac_opt.val.getAs(address.RandomMACKind);
-                        break :newMAC address.getRandomMAC(rand_kind);
-                    }
-                    if (set_if_opts.get("oui")) |oui_opt| {
-                        const new_oui: [3]u8 = try oui_opt.val.getAs([3]u8);
-                        new_mac[0..3].* = new_oui;
-                    }
-                    break :newMAC new_mac;
-                };
-                nl.route.setMAC(set_if.index, new_mac) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the MAC could not be set.", .{ set_if.name });
-                        break :setMAC;
-                    },
-                    else => {
-                        log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ set_if.name });
-                        return;
-                    },
-                };
-                try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ set_if.name, MACF{ .bytes = new_mac[0..] } });
-            }
-            if (set_if_opts.get("state")) |state_opt| setState: {
-                const new_state, const flag_name = newState: {
-                    const states = state_opt.val.getAllAs(nl.route.IFF) catch break :setState;
-                    var new_state: u32 = 0;
-                    for (states) |state| new_state |= @intFromEnum(state);
-                    break :newState .{
-                        new_state,
-                        if (states.len == 1) @tagName(states[0]) else "Combined-State",
-                    };
-                };
-                try stdout_file.print("Setting the State for {s}...\n", .{ set_if.name });
-                nl.route.setState(set_if.index, new_state) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the State could not be set.", .{ set_if.name });
-                        break :setState;
-                    },
-                    else => {
-                        log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ set_if.name });
-                        return;
-                    },
-                };
-                try stdout_file.print("Set the State for {s} to {s}.\n", .{ set_if.name, flag_name });
-            }
-            if (set_if_opts.get("mode")) |mode_opt| setMode: {
-                const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
-                try stdout_file.print("Setting the Mode for {s}...\n", .{ set_if.name });
-                nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
-                    log.warn("Unable to set the interface down.", .{});
-                };
-                defer nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
-                    log.warn("Unable to set the interface up.", .{});
-                };
-                time.sleep(100 * time.ns_per_ms);
-                nl._80211.setMode(set_if.index, @intFromEnum(new_mode)) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the Mode could not be set.", .{ set_if.name });
-                        break :setMode;
-                    },
-                    else => {
-                        log.err("Netlink request error. The Mode for interface '{s}' could not be set.", .{ set_if.name });
-                        return;
-                    },
-                };
-                try stdout_file.print("Set the Mode for {s} to {s}.\n", .{ set_if.name, @tagName(new_mode) });
-            }
-            if (set_if_opts.get("channel")) |chan_opt| setChannel: {
-                const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
-                const new_ch_width = newChMain: {
-                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                };
-                try stdout_file.print("Setting the Channel for {s}...\n", .{ set_if.name });
-                nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
-                    log.warn("Unable to set the interface down.", .{});
-                };
-                time.sleep(100 * time.ns_per_ms);
-                try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
-                nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
-                    log.warn("Unable to set the interface up.", .{});
-                };
-                time.sleep(100 * time.ns_per_ms);
-                nl._80211.setChannel(set_if.index, new_ch, new_ch_width) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the Channel could not be set.", .{ set_if.name });
-                        break :setChannel;
-                    },
-                    error.InvalidChannel, error.InvalidFrequency => {
-                        log.err("The channel '{d}' is invalid.", .{ new_ch });
-                        break :setChannel;
-                    },
-                    else => {
-                        log.err("Netlink request error. The Channel for interface '{s}' could not be set.", .{ set_if.name });
-                        return err;
-                    },
-                };
-                try stdout_file.print("Set the Channel for {s} to {d}.\n", .{ set_if.name, new_ch });
-            }
-            if (set_if_opts.get("frequency")) |freq_opt| setFreq: {
-                const new_freq = freq_opt.val.getAs(usize) catch break :setFreq;
-                const new_ch_width = newChMain: {
-                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                };
-                try stdout_file.print("Setting the Channel for {s}...\n", .{ set_if.name });
-                try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
-                nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
-                    log.warn("Unable to set the interface up.", .{});
-                };
-                time.sleep(100 * time.ns_per_ms);
-                nl._80211.setFreq(set_if.index, new_freq, new_ch_width) catch |err| switch (err) {
-                    error.OutOfMemory => {
-                        log.err("Out of Memory!", .{});
-                        return err;
-                    },
-                    error.BUSY => {
-                        log.err("The interface '{s}' is busy so the Frequency could not be set.", .{ set_if.name });
-                        break :setFreq;
-                    },
-                    error.InvalidFrequency => {
-                        log.err("The Frequency '{d}'MHz is invalid.", .{ new_freq });
-                        break :setFreq;
-                    },
-                    else => {
-                        log.err("Netlink request error. The Frequency for interface '{s}' could not be set.", .{ set_if.name });
-                        return err;
-                    },
-                };
-                try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ set_if.name, new_freq });
-            }
-        }
-    }
-    // - Add
-    if (main_cmd.matchSubCmd("add")) |add_cmd| {
-        checkRoot(stdout_file.any());
-        const add_ifs = core_ctx.if_ctx.interfaces;
-        if (num_avail_ifs == 0)
-            checkIF(stdout, "add");
-        var if_iter = add_ifs.iterator();
-        defer {
-            if_iter.unlock();
-            core.interfaces.updInterfaces(
-                alloc,
-                &core_ctx.if_ctx,
-                &core_ctx.config,
-                &core_ctx.interval,
-            ) catch |err|
-                log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
-            core_ctx.printInfo(stdout) catch {};
-            stdout_bw.flush() catch {};
-            posix.exit(0);
-        }
-        while (if_iter.next()) |add_if_entry| {
-            const add_if = add_if_entry.value_ptr;
-            if (add_if.usage == .unavailable) continue;
-            const add_opts = try add_cmd.getOpts(.{});
-            //const cidr = try (add_opts.get("subnet").?).val.getAs(u8);
-            if (add_opts.get("ip")) |ip_opt| setIP: {
-                const ip = try ip_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Adding new IP Address '{s}'...\n", .{ ip });
-                nl.route.addIP(
-                    alloc,
-                    add_if.index,
-                    ip.addr,
-                    ip.cidr,
-                ) catch |err| switch (err) {
-                    error.EXIST => {
-                        try stdout_file.print("The IP Address '{s}' is already set.\n", .{ ip });
-                        break :setIP;
-                    },
-                    else => return err,
-                };
-                try stdout_file.print("Added new IP Address '{s}'.\n", .{ ip });
-            }
-            if (add_opts.get("route")) |route_opt| setRoute: {
-                const route = try route_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Adding new Route '{s}'...\n", .{ route });
-                const gateway = gw: {
-                    break :gw if (add_opts.get("gateway")) |gw_opt|
-                        (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
-                    else null;
-                };
-                nl.route.addRoute(
-                    alloc,
-                    add_if.index,
-                    route.addr,
-                    .{ 
-                        .cidr = route.cidr,
-                        .gateway = gateway,
-                    },
-                ) catch |err| switch (err) {
-                    error.EXIST => {
-                        try stdout_file.print("The Route '{s}' is already set.\n", .{ route });
-                        break :setRoute;
-                    },
-                    error.NETUNREACH => {
-                        try stdout_file.print("The Gateway '{?s}' is invalid.\n", .{ gateway });
-                        break :setRoute;
-                    },
-                    else => return err,
-                };
-                try stdout_file.print("Added new Route '{s}'.\n", .{ route });
-            }
-            time.sleep(100 * time.ns_per_ms);
-        }
-    }
-    // - Delete
-    if (main_cmd.matchSubCmd("delete")) |del_cmd| {
-        checkRoot(stdout_file.any());
-        const del_ifs = core_ctx.if_ctx.interfaces;
-        if (num_avail_ifs == 0) checkIF(stdout, "del");
-        var if_iter = del_ifs.iterator();
-        defer {
-            if_iter.unlock();
-            core.interfaces.updInterfaces(
-                alloc,
-                &core_ctx.if_ctx,
-                &core_ctx.config,
-                &core_ctx.interval,
-            ) catch |err|
-                log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
-            core_ctx.printInfo(stdout) catch {};
-            stdout_bw.flush() catch {};
-            posix.exit(0);
-        }
-        while (if_iter.next()) |del_if_entry| {
-            const del_if = del_if_entry.value_ptr;
-            if (del_if.usage == .unavailable) continue;
-            const del_opts = try del_cmd.getOpts(.{});
-            //const cidr = try (del_opts.get("subnet").?).val.getAs(u8);
-            if (del_opts.get("ip")) |ip_opt| setIP: {
-                const ip = try ip_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Deleting the IP Address '{s}'...\n", .{ ip });
-                nl.route.deleteIP(
-                    alloc,
-                    del_if.index,
-                    ip.addr,
-                    ip.cidr,
-                ) catch |err| switch (err) {
-                    error.ADDRNOTAVAIL => {
-                        try stdout_file.print("The IP Address '{s}' could not be found.\n", .{ ip });
-                        break :setIP;
-                    },
-                    else => return err,
-                };
-                try stdout_file.print("Deleted the IP Address '{s}'.\n", .{ ip });
-            }
-            if (del_opts.get("route")) |route_opt| delRoute: {
-                const route = try route_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Deleting Route '{s}'...\n", .{ route });
-                const gateway = gw: {
-                    break :gw if (del_opts.get("gateway")) |gw_opt|
-                        (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
-                    else null;
-                };
-                nl.route.deleteRoute(
-                    alloc,
-                    del_if.index,
-                    route.addr,
-                    .{ 
-                        .cidr = route.cidr,
-                        .gateway = gateway,
-                    },
-                ) catch |err| switch (err) {
-                    error.ADDRNOTAVAIL,
-                    error.SRCH => {
-                        try stdout_file.print("The Route '{s}' could not be found.\n", .{ route });
-                        break :delRoute;
-                    },
-                    else => return err,
-                };
-                try stdout_file.print("Deleted Route '{s}'.\n", .{ route });
-            }
-            time.sleep(100 * time.ns_per_ms);
-        }
-    }
-    // Active
-    // - Connect
-    if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
-        checkRoot(stdout_file.any());
-        try core.interfaces.updInterfaces(
-            alloc,
-            &core_ctx.if_ctx,
-            &core_ctx.config,
-            &core_ctx.interval,
-        );
-        const conn_ifs = core_ctx.if_ctx.interfaces;
-        if (num_avail_ifs == 0) checkIF(stdout, "connect");
-        var if_iter = conn_ifs.iterator();
-        defer {
-            if_iter.unlock();
-            if (conn_ifs.count() > 0) {
-                core.interfaces.updInterfaces(
-                    alloc,
-                    &core_ctx.if_ctx,
-                    &core_ctx.config,
-                    &core_ctx.interval,
-                ) catch |err|
-                    log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
-            }
-        }
-        const conn_if = connIF: while (if_iter.next()) |conn_if_entry| {
-            const conn_if = conn_if_entry.value_ptr;
-            if (conn_if.usage != .unavailable) break :connIF conn_if;
-        } else return error.NoAvailableInterfaces;
-        raw_net_if = conn_if.*;
-        const connect_vals = try connect_cmd.getVals(.{});
-        const connect_opts = try connect_cmd.getOpts(.{});
-        const ssid = (connect_vals.get("ssid").?).getAs([]const u8) catch {
-            log.err("DisCo needs to know the SSID of the network to connect.", .{});
-            return;
-        };
-        const security,
-        const pass = security: {
-            const security = try (connect_opts.get("security").?).val.getAs(nl._80211.SecurityType);
-            break :security switch (security) {
-                .open => .{ security, "" },
-                .wep, .wpa1, .wpa2, .wpa3t, .wpa3 => .{
-                    security,
-                    (connect_opts.get("passphrase").?).val.getAs([]const u8) catch {
-                        log.err("The {s} protocol requires a passhprase.", .{ @tagName(security) });
-                        return;
-                    }
-                },
-            };
-        };
-        const freqs = freqs: {
-            const ch_opt = connect_opts.get("channels") orelse break :freqs null;
-            if (!ch_opt.val.isSet()) break :freqs null;
-            const channels = try ch_opt.val.getAllAs(usize);
-            var freqs_buf = try std.ArrayListUnmanaged(u32).initCapacity(alloc, 1);
-            for (channels) |ch|
-                try freqs_buf.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
-            break :freqs try freqs_buf.toOwnedSlice(alloc);
-        };
-        defer if (freqs) |_freqs| alloc.free(_freqs);
-        try stdout_file.print("Connecting to {s}...\n", .{ ssid });
-        switch (security) {
-            .open, .wep, .wpa1, .wpa3 => {
-                log.info("WIP!", .{});
-                return;
-            },
-            .wpa2, .wpa3t => {
-                const pmk = try wpa.genKey(.wpa2, ssid, pass);
-                _ = try nl._80211.connectWPA2(
-                    alloc,
-                    conn_if.index,
-                    ssid,
-                    pmk,
-                    wpa.handle4WHS,
-                    .{ .freqs = freqs },
-                );
-                try stdout_file.print("Connected to {s}.\n", .{ ssid });
-            }, 
-        }
-        if (connect_cmd.checkFlag("dhcp")) dhcp: {
-            try stdout_file.print("Obtaining an IP Address via DHCP...\n", .{});
-            const gateway = connect_cmd.checkFlag("gateway");
-            dhcp_info = dhcp.handleDHCP(
-                conn_if.name,
-                conn_if.index,
-                conn_if.mac,
-                .{},
-            ) catch |err| switch (err) {
-                error.WouldBlock => {
-                    log.warn("The DHCP process timed out.", .{});
-                    break :dhcp;
-                },
-                else => return err,
-            };
-            const dhcp_cidr = address.cidrFromSubnet(dhcp_info.?.subnet_mask);
-            nl.route.addIP(
-                alloc,
-                conn_if.index,
-                dhcp_info.?.assigned_ip,
-                dhcp_cidr,
-            ) catch |err| switch (err) {
-                error.EXIST => {
-                    log.warn("The Interface already has an IP.", .{});
-                    break :dhcp;
-                },
-                else => return err,
-            };
-            if (gateway) {
-                try nl.route.addRoute(
-                    alloc,
-                    conn_if.index,
-                    address.IPv4.default.addr,
-                    .{
-                        .cidr = address.IPv4.default.cidr,
-                        .gateway = dhcp_info.?.router,
-                    }
-                );
-            }
-        }
-        //time.sleep(10 * time.ns_per_s);
-        //if_iter.unlock();
-        connected = true;
-        const stdin = io.getStdIn().reader();
-        _ = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
-    }
+    //if (main_cmd.matchSubCmd("set")) |set_cmd| {
+    //    checkRoot(stdout_file.any());
+    //    const set_ifs = &core_ctx.if_ctx.interfaces;
+    //    if (num_avail_ifs == 0) checkIF(stdout, "set");
+    //    var if_iter = set_ifs.iterator();
+    //    defer {
+    //        if_iter.unlock();
+    //        core.interfaces.updInterfaces(
+    //            alloc,
+    //            &core_ctx.if_ctx,
+    //            &core_ctx.config,
+    //            &core_ctx.interval,
+    //        ) catch |err|
+    //            log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
+    //        core_ctx.printInfo(stdout) catch {};
+    //        stdout_bw.flush() catch {};
+    //        posix.exit(0);
+    //    }
+    //    while (if_iter.next()) |set_if_entry| {
+    //        const set_if = set_if_entry.value_ptr;
+    //        if (set_if.usage == .unavailable) continue;
+    //        const set_if_opts = try set_cmd.getOpts(.{});
+    //        if (set_if_opts.get("mac")) |mac_opt| setMAC: {
+    //            try stdout_file.print("Setting the MAC for {s}...\n", .{ set_if.name });
+    //            const new_mac: [6]u8 = newMAC: {
+    //                var new_mac: [6]u8 = 
+    //                    if (mac_opt.val.isEmpty()) .{ 0 } ** 6
+    //                    else mac_opt.val.getAs([6]u8) catch break :setMAC;
+    //                if (set_if_opts.get("random_mac")) |rand_mac_opt| randMAC: {
+    //                    if (!rand_mac_opt.val.isSet() and rand_mac_opt.val.isEmpty()) break :randMAC;
+    //                    const rand_kind = try rand_mac_opt.val.getAs(address.RandomMACKind);
+    //                    break :newMAC address.getRandomMAC(rand_kind);
+    //                }
+    //                if (set_if_opts.get("oui")) |oui_opt| {
+    //                    const new_oui: [3]u8 = try oui_opt.val.getAs([3]u8);
+    //                    new_mac[0..3].* = new_oui;
+    //                }
+    //                break :newMAC new_mac;
+    //            };
+    //            nl.route.setMAC(set_if.index, new_mac) catch |err| switch (err) {
+    //                error.OutOfMemory => {
+    //                    log.err("Out of Memory!", .{});
+    //                    return err;
+    //                },
+    //                error.BUSY => {
+    //                    log.err("The interface '{s}' is busy so the MAC could not be set.", .{ set_if.name });
+    //                    break :setMAC;
+    //                },
+    //                else => {
+    //                    log.err("Netlink request error. The MAC for interface '{s}' could not be set.", .{ set_if.name });
+    //                    return;
+    //                },
+    //            };
+    //            try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ set_if.name, MACF{ .bytes = new_mac[0..] } });
+    //        }
+    //        if (set_if_opts.get("state")) |state_opt| setState: {
+    //            const new_state, const flag_name = newState: {
+    //                const states = state_opt.val.getAllAs(nl.route.IFF) catch break :setState;
+    //                var new_state: u32 = 0;
+    //                for (states) |state| new_state |= @intFromEnum(state);
+    //                break :newState .{
+    //                    new_state,
+    //                    if (states.len == 1) @tagName(states[0]) else "Combined-State",
+    //                };
+    //            };
+    //            try stdout_file.print("Setting the State for {s}...\n", .{ set_if.name });
+    //            nl.route.setState(set_if.index, new_state) catch |err| switch (err) {
+    //                error.OutOfMemory => {
+    //                    log.err("Out of Memory!", .{});
+    //                    return err;
+    //                },
+    //                error.BUSY => {
+    //                    log.err("The interface '{s}' is busy so the State could not be set.", .{ set_if.name });
+    //                    break :setState;
+    //                },
+    //                else => {
+    //                    log.err("Netlink request error. The State for interface '{s}' could not be set.", .{ set_if.name });
+    //                    return;
+    //                },
+    //            };
+    //            try stdout_file.print("Set the State for {s} to {s}.\n", .{ set_if.name, flag_name });
+    //        }
+    //        if (set_if_opts.get("mode")) |mode_opt| setMode: {
+    //            const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
+    //            try stdout_file.print("Setting the Mode for {s}...\n", .{ set_if.name });
+    //            nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
+    //                log.warn("Unable to set the interface down.", .{});
+    //            };
+    //            defer nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
+    //                log.warn("Unable to set the interface up.", .{});
+    //            };
+    //            time.sleep(100 * time.ns_per_ms);
+    //            nl._80211.setMode(set_if.index, @intFromEnum(new_mode)) catch |err| switch (err) {
+    //                error.OutOfMemory => {
+    //                    log.err("Out of Memory!", .{});
+    //                    return err;
+    //                },
+    //                error.BUSY => {
+    //                    log.err("The interface '{s}' is busy so the Mode could not be set.", .{ set_if.name });
+    //                    break :setMode;
+    //                },
+    //                else => {
+    //                    log.err("Netlink request error. The Mode for interface '{s}' could not be set.", .{ set_if.name });
+    //                    return;
+    //                },
+    //            };
+    //            try stdout_file.print("Set the Mode for {s} to {s}.\n", .{ set_if.name, @tagName(new_mode) });
+    //        }
+    //        if (set_if_opts.get("channel")) |chan_opt| setChannel: {
+    //            const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
+    //            const new_ch_width = newChMain: {
+    //                const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+    //                break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+    //            };
+    //            try stdout_file.print("Setting the Channel for {s}...\n", .{ set_if.name });
+    //            nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
+    //                log.warn("Unable to set the interface down.", .{});
+    //            };
+    //            time.sleep(100 * time.ns_per_ms);
+    //            try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
+    //            nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
+    //                log.warn("Unable to set the interface up.", .{});
+    //            };
+    //            time.sleep(100 * time.ns_per_ms);
+    //            nl._80211.setChannel(set_if.index, new_ch, new_ch_width) catch |err| switch (err) {
+    //                error.OutOfMemory => {
+    //                    log.err("Out of Memory!", .{});
+    //                    return err;
+    //                },
+    //                error.BUSY => {
+    //                    log.err("The interface '{s}' is busy so the Channel could not be set.", .{ set_if.name });
+    //                    break :setChannel;
+    //                },
+    //                error.InvalidChannel, error.InvalidFrequency => {
+    //                    log.err("The channel '{d}' is invalid.", .{ new_ch });
+    //                    break :setChannel;
+    //                },
+    //                else => {
+    //                    log.err("Netlink request error. The Channel for interface '{s}' could not be set.", .{ set_if.name });
+    //                    return err;
+    //                },
+    //            };
+    //            try stdout_file.print("Set the Channel for {s} to {d}.\n", .{ set_if.name, new_ch });
+    //        }
+    //        if (set_if_opts.get("frequency")) |freq_opt| setFreq: {
+    //            const new_freq = freq_opt.val.getAs(usize) catch break :setFreq;
+    //            const new_ch_width = newChMain: {
+    //                const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+    //                break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+    //            };
+    //            try stdout_file.print("Setting the Channel for {s}...\n", .{ set_if.name });
+    //            try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
+    //            nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
+    //                log.warn("Unable to set the interface up.", .{});
+    //            };
+    //            time.sleep(100 * time.ns_per_ms);
+    //            nl._80211.setFreq(set_if.index, new_freq, new_ch_width) catch |err| switch (err) {
+    //                error.OutOfMemory => {
+    //                    log.err("Out of Memory!", .{});
+    //                    return err;
+    //                },
+    //                error.BUSY => {
+    //                    log.err("The interface '{s}' is busy so the Frequency could not be set.", .{ set_if.name });
+    //                    break :setFreq;
+    //                },
+    //                error.InvalidFrequency => {
+    //                    log.err("The Frequency '{d}'MHz is invalid.", .{ new_freq });
+    //                    break :setFreq;
+    //                },
+    //                else => {
+    //                    log.err("Netlink request error. The Frequency for interface '{s}' could not be set.", .{ set_if.name });
+    //                    return err;
+    //                },
+    //            };
+    //            try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ set_if.name, new_freq });
+    //        }
+    //    }
+    //}
+    //// - Add
+    //if (main_cmd.matchSubCmd("add")) |add_cmd| {
+    //    checkRoot(stdout_file.any());
+    //    const add_ifs = core_ctx.if_ctx.interfaces;
+    //    if (num_avail_ifs == 0)
+    //        checkIF(stdout, "add");
+    //    var if_iter = add_ifs.iterator();
+    //    defer {
+    //        if_iter.unlock();
+    //        core.interfaces.updInterfaces(
+    //            alloc,
+    //            &core_ctx.if_ctx,
+    //            &core_ctx.config,
+    //            &core_ctx.interval,
+    //        ) catch |err|
+    //            log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
+    //        core_ctx.printInfo(stdout) catch {};
+    //        stdout_bw.flush() catch {};
+    //        posix.exit(0);
+    //    }
+    //    while (if_iter.next()) |add_if_entry| {
+    //        const add_if = add_if_entry.value_ptr;
+    //        if (add_if.usage == .unavailable) continue;
+    //        const add_opts = try add_cmd.getOpts(.{});
+    //        //const cidr = try (add_opts.get("subnet").?).val.getAs(u8);
+    //        if (add_opts.get("ip")) |ip_opt| setIP: {
+    //            const ip = try ip_opt.val.getAs(address.IPv4);
+    //            try stdout_file.print("Adding new IP Address '{s}'...\n", .{ ip });
+    //            nl.route.addIP(
+    //                alloc,
+    //                add_if.index,
+    //                ip.addr,
+    //                ip.cidr,
+    //            ) catch |err| switch (err) {
+    //                error.EXIST => {
+    //                    try stdout_file.print("The IP Address '{s}' is already set.\n", .{ ip });
+    //                    break :setIP;
+    //                },
+    //                else => return err,
+    //            };
+    //            try stdout_file.print("Added new IP Address '{s}'.\n", .{ ip });
+    //        }
+    //        if (add_opts.get("route")) |route_opt| setRoute: {
+    //            const route = try route_opt.val.getAs(address.IPv4);
+    //            try stdout_file.print("Adding new Route '{s}'...\n", .{ route });
+    //            const gateway = gw: {
+    //                break :gw if (add_opts.get("gateway")) |gw_opt|
+    //                    (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
+    //                else null;
+    //            };
+    //            nl.route.addRoute(
+    //                alloc,
+    //                add_if.index,
+    //                route.addr,
+    //                .{ 
+    //                    .cidr = route.cidr,
+    //                    .gateway = gateway,
+    //                },
+    //            ) catch |err| switch (err) {
+    //                error.EXIST => {
+    //                    try stdout_file.print("The Route '{s}' is already set.\n", .{ route });
+    //                    break :setRoute;
+    //                },
+    //                error.NETUNREACH => {
+    //                    try stdout_file.print("The Gateway '{?s}' is invalid.\n", .{ gateway });
+    //                    break :setRoute;
+    //                },
+    //                else => return err,
+    //            };
+    //            try stdout_file.print("Added new Route '{s}'.\n", .{ route });
+    //        }
+    //        time.sleep(100 * time.ns_per_ms);
+    //    }
+    //}
+    //// - Delete
+    //if (main_cmd.matchSubCmd("delete")) |del_cmd| {
+    //    checkRoot(stdout_file.any());
+    //    const del_ifs = core_ctx.if_ctx.interfaces;
+    //    if (num_avail_ifs == 0) checkIF(stdout, "del");
+    //    var if_iter = del_ifs.iterator();
+    //    defer {
+    //        if_iter.unlock();
+    //        core.interfaces.updInterfaces(
+    //            alloc,
+    //            &core_ctx.if_ctx,
+    //            &core_ctx.config,
+    //            &core_ctx.interval,
+    //        ) catch |err|
+    //            log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
+    //        core_ctx.printInfo(stdout) catch {};
+    //        stdout_bw.flush() catch {};
+    //        posix.exit(0);
+    //    }
+    //    while (if_iter.next()) |del_if_entry| {
+    //        const del_if = del_if_entry.value_ptr;
+    //        if (del_if.usage == .unavailable) continue;
+    //        const del_opts = try del_cmd.getOpts(.{});
+    //        //const cidr = try (del_opts.get("subnet").?).val.getAs(u8);
+    //        if (del_opts.get("ip")) |ip_opt| setIP: {
+    //            const ip = try ip_opt.val.getAs(address.IPv4);
+    //            try stdout_file.print("Deleting the IP Address '{s}'...\n", .{ ip });
+    //            nl.route.deleteIP(
+    //                alloc,
+    //                del_if.index,
+    //                ip.addr,
+    //                ip.cidr,
+    //            ) catch |err| switch (err) {
+    //                error.ADDRNOTAVAIL => {
+    //                    try stdout_file.print("The IP Address '{s}' could not be found.\n", .{ ip });
+    //                    break :setIP;
+    //                },
+    //                else => return err,
+    //            };
+    //            try stdout_file.print("Deleted the IP Address '{s}'.\n", .{ ip });
+    //        }
+    //        if (del_opts.get("route")) |route_opt| delRoute: {
+    //            const route = try route_opt.val.getAs(address.IPv4);
+    //            try stdout_file.print("Deleting Route '{s}'...\n", .{ route });
+    //            const gateway = gw: {
+    //                break :gw if (del_opts.get("gateway")) |gw_opt|
+    //                    (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
+    //                else null;
+    //            };
+    //            nl.route.deleteRoute(
+    //                alloc,
+    //                del_if.index,
+    //                route.addr,
+    //                .{ 
+    //                    .cidr = route.cidr,
+    //                    .gateway = gateway,
+    //                },
+    //            ) catch |err| switch (err) {
+    //                error.ADDRNOTAVAIL,
+    //                error.SRCH => {
+    //                    try stdout_file.print("The Route '{s}' could not be found.\n", .{ route });
+    //                    break :delRoute;
+    //                },
+    //                else => return err,
+    //            };
+    //            try stdout_file.print("Deleted Route '{s}'.\n", .{ route });
+    //        }
+    //        time.sleep(100 * time.ns_per_ms);
+    //    }
+    //}
+    //// Active
+    //// - Connect
+    //if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
+    //    checkRoot(stdout_file.any());
+    //    try core.interfaces.updInterfaces(
+    //        alloc,
+    //        &core_ctx.if_ctx,
+    //        &core_ctx.config,
+    //        &core_ctx.interval,
+    //    );
+    //    const conn_ifs = core_ctx.if_ctx.interfaces;
+    //    if (num_avail_ifs == 0) checkIF(stdout, "connect");
+    //    var if_iter = conn_ifs.iterator();
+    //    defer {
+    //        if_iter.unlock();
+    //        if (conn_ifs.count() > 0) {
+    //            core.interfaces.updInterfaces(
+    //                alloc,
+    //                &core_ctx.if_ctx,
+    //                &core_ctx.config,
+    //                &core_ctx.interval,
+    //            ) catch |err|
+    //                log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
+    //        }
+    //    }
+    //    const conn_if = connIF: while (if_iter.next()) |conn_if_entry| {
+    //        const conn_if = conn_if_entry.value_ptr;
+    //        if (conn_if.usage != .unavailable) break :connIF conn_if;
+    //    } else return error.NoAvailableInterfaces;
+    //    raw_net_if = conn_if.*;
+    //    const connect_vals = try connect_cmd.getVals(.{});
+    //    const connect_opts = try connect_cmd.getOpts(.{});
+    //    const ssid = (connect_vals.get("ssid").?).getAs([]const u8) catch {
+    //        log.err("DisCo needs to know the SSID of the network to connect.", .{});
+    //        return;
+    //    };
+    //    const security,
+    //    const pass = security: {
+    //        const security = try (connect_opts.get("security").?).val.getAs(nl._80211.SecurityType);
+    //        break :security switch (security) {
+    //            .open => .{ security, "" },
+    //            .wep, .wpa1, .wpa2, .wpa3t, .wpa3 => .{
+    //                security,
+    //                (connect_opts.get("passphrase").?).val.getAs([]const u8) catch {
+    //                    log.err("The {s} protocol requires a passhprase.", .{ @tagName(security) });
+    //                    return;
+    //                }
+    //            },
+    //        };
+    //    };
+    //    const freqs = freqs: {
+    //        const ch_opt = connect_opts.get("channels") orelse break :freqs null;
+    //        if (!ch_opt.val.isSet()) break :freqs null;
+    //        const channels = try ch_opt.val.getAllAs(usize);
+    //        var freqs_buf = try ArrayList(u32).initCapacity(alloc, 1);
+    //        for (channels) |ch|
+    //            try freqs_buf.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+    //        break :freqs try freqs_buf.toOwnedSlice(alloc);
+    //    };
+    //    defer if (freqs) |_freqs| alloc.free(_freqs);
+    //    try stdout_file.print("Connecting to {s}...\n", .{ ssid });
+    //    switch (security) {
+    //        .open, .wep, .wpa1, .wpa3 => {
+    //            log.info("WIP!", .{});
+    //            return;
+    //        },
+    //        .wpa2, .wpa3t => {
+    //            const pmk = try wpa.genKey(.wpa2, ssid, pass);
+    //            _ = try nl._80211.connectWPA2(
+    //                alloc,
+    //                conn_if.index,
+    //                ssid,
+    //                pmk,
+    //                wpa.handle4WHS,
+    //                .{ .freqs = freqs },
+    //            );
+    //            try stdout_file.print("Connected to {s}.\n", .{ ssid });
+    //        }, 
+    //    }
+    //    if (connect_cmd.checkFlag("dhcp")) dhcp: {
+    //        try stdout_file.print("Obtaining an IP Address via DHCP...\n", .{});
+    //        const gateway = connect_cmd.checkFlag("gateway");
+    //        dhcp_info = dhcp.handleDHCP(
+    //            conn_if.name,
+    //            conn_if.index,
+    //            conn_if.mac,
+    //            .{},
+    //        ) catch |err| switch (err) {
+    //            error.WouldBlock => {
+    //                log.warn("The DHCP process timed out.", .{});
+    //                break :dhcp;
+    //            },
+    //            else => return err,
+    //        };
+    //        const dhcp_cidr = address.cidrFromSubnet(dhcp_info.?.subnet_mask);
+    //        nl.route.addIP(
+    //            alloc,
+    //            conn_if.index,
+    //            dhcp_info.?.assigned_ip,
+    //            dhcp_cidr,
+    //        ) catch |err| switch (err) {
+    //            error.EXIST => {
+    //                log.warn("The Interface already has an IP.", .{});
+    //                break :dhcp;
+    //            },
+    //            else => return err,
+    //        };
+    //        if (gateway) {
+    //            try nl.route.addRoute(
+    //                alloc,
+    //                conn_if.index,
+    //                address.IPv4.default.addr,
+    //                .{
+    //                    .cidr = address.IPv4.default.cidr,
+    //                    .gateway = dhcp_info.?.router,
+    //                }
+    //            );
+    //        }
+    //    }
+    //    //time.sleep(10 * time.ns_per_s);
+    //    //if_iter.unlock();
+    //    connected = true;
+    //    const stdin = io.getStdIn().reader();
+    //    _ = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
+    //}
 
     // System Details
     try core_ctx.printInfo(stdout);

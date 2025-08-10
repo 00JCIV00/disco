@@ -10,6 +10,7 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
+const ArrayList = std.ArrayListUnmanaged;
 
 const zeit = @import("zeit");
 
@@ -82,9 +83,9 @@ pub const Network = struct {
 
 /// Network Context 
 pub const Context = struct {
-    scan_configs: *core.ThreadHashMap(i32, nl._80211.TriggerScanConfig),
-    networks: *core.ThreadHashMap([6]u8, Network),
-    scan_results: *core.ThreadHashMap([6]u8, nl._80211.ScanResults),
+    scan_configs: *utils.ThreadHashMap(i32, nl._80211.TriggerScanConfig),
+    networks: *utils.ThreadHashMap([6]u8, Network),
+    scan_results: *utils.ThreadHashMap([6]u8, nl._80211.ScanResults),
     thread_pool: *std.Thread.Pool,
     wait_group: *std.Thread.WaitGroup,
 
@@ -205,7 +206,7 @@ pub fn trackScans(
     alloc: mem.Allocator,
     active: *const atomic.Value(bool),
     interval: *const usize,
-    interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
+    interfaces: *utils.ThreadHashMap(i32, core.interfaces.Interface),
     network_ctx: *Context,
     config: *core.Core.Config,
 ) void {
@@ -231,7 +232,7 @@ pub fn trackScans(
                     .ssids = scan_conf.ssids,
                     .freqs = freqs: {
                         const chs = scan_conf.channels orelse break :freqs null;
-                        var freqs_list: std.ArrayListUnmanaged(u32) = .{};
+                        var freqs_list: ArrayList(u32) = .empty;
                         for (chs) |ch| freqs_list.append(alloc, @intCast(nl._80211.freqFromChannel(ch) catch continue)) catch continue;
                         break :freqs freqs_list.toOwnedSlice(alloc) catch @panic("OOM");
                     },
@@ -260,7 +261,7 @@ pub fn trackScans(
 /// Stop All Active Scans.
 pub fn stopScans(
     alloc: mem.Allocator,
-    interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
+    interfaces: *utils.ThreadHashMap(i32, core.interfaces.Interface),
     network_ctx: *Context,
 ) void {
     var if_iter = interfaces.iterator();
@@ -279,7 +280,7 @@ pub fn trackNetworks(
     alloc: mem.Allocator,
     active: *const atomic.Value(bool),
     interval: *const usize,
-    interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
+    interfaces: *utils.ThreadHashMap(i32, core.interfaces.Interface),
     network_ctx: *Context,
 ) void {
     log.debug("Tracking WiFi Networks!", .{});
@@ -335,7 +336,7 @@ pub fn trackNetworks(
 /// Track Networks on the provided Scan Interface (`scan_if`) w/o bubbling up errors.
 fn trackNetworksIFNoErr(
     alloc: mem.Allocator,
-    interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
+    interfaces: *utils.ThreadHashMap(i32, core.interfaces.Interface),
     if_index: i32,
     interval: *const usize,
     network_ctx: *Context,
@@ -355,7 +356,7 @@ fn trackNetworksIFNoErr(
 /// Track Networks on the provided Scan Interface (`scan_if`)
 fn trackNetworksIF(
     alloc: mem.Allocator,
-    interfaces: *core.ThreadHashMap(i32, core.interfaces.Interface),
+    interfaces: *utils.ThreadHashMap(i32, core.interfaces.Interface),
     if_index: i32,
     interval: *const usize,
     network_ctx: *Context,
