@@ -96,7 +96,7 @@ pub const Handler = struct {
             .{
                 .timeout = .{
                     .timeout = req_ctx.timeout,
-                    .timer = try time.Timer.start(),
+                    .timer = try .start(),
                 },
             },
         );
@@ -105,8 +105,9 @@ pub const Handler = struct {
 
     /// Check for a Response for a specific Request
     pub fn checkResponse(self: *@This(), seq_id: u32) bool {
-        const resp_entry = self._seq_responses.getEntry(seq_id) orelse return false;
+        self._seq_responses.mutex.lock();
         defer self._seq_responses.mutex.unlock();
+        const resp_entry = self._seq_responses.map.getEntry(seq_id) orelse return false;
         const response = resp_entry.value_ptr;
         //log.debug("{d} - {}: {s}", .{ seq_id, @intFromPtr(response), @tagName(response.*) });
         return switch (response.*) {
@@ -118,8 +119,9 @@ pub const Handler = struct {
 
     /// Get a Response for a specific Request
     pub fn getResponse(self: *@This(), seq_id: u32) ?anyerror![]const u8 {
-        const resp_entry = self._seq_responses.getEntry(seq_id) orelse return null;
+        self._seq_responses.mutex.lock();
         defer self._seq_responses.mutex.unlock();
+        const resp_entry = self._seq_responses.map.getEntry(seq_id) orelse return null;
         const response = resp_entry.value_ptr;
         var timeout_state: Response = .{ .ready = error.Timeout };
         return resp_state: switch (response.*) {
