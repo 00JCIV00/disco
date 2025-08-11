@@ -277,13 +277,6 @@ pub fn ThreadHashMap(K: type, V: type) type {
             defer self.mutex.unlock();
             return self.map.remove(key);
         }
-
-        /// Sort
-        pub fn sort(self: *@This(), sort_ctx: anytype) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            try self.map.sort(sort_ctx);
-        }
     };
 }
 
