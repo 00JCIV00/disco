@@ -405,7 +405,7 @@ pub fn main() !void {
             break :importConf config;
         };
         if (if_names.len > 0) config.avail_if_names = if_names;
-        //for (config.avail_if_names) |if_name| {
+        //for (config.avail_if_names) |if.{ 0 } ** 100;_name| {
         //    const if_index = nl.route.getIfIdx(if_name) catch {
         //        log.warn("Could not find Interface '{s}'.", .{ if_name });
         //        continue;
@@ -416,16 +416,16 @@ pub fn main() !void {
         //    //config.avail_if_indexes = try core_if_indexes.toOwnedSlice(alloc);
         //    config.avail_if_indexes = core_if_indexes.items; 
         //}
-        //if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
-        //    for (config.avail_if_names) |if_name| {
-        //        try core_scan_confs.append(alloc, .{
-        //            .if_name = if_name,
-        //            .ssids = &.{},
-        //            .channels = &.{},
-        //        });
-        //    }
-        //}
-        //if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
+        if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
+            for (config.avail_if_names) |if_name| {
+                try core_scan_confs.append(alloc, .{
+                    .if_name = if_name,
+                    .ssids = &.{},
+                    .channels = &.{},
+                });
+            }
+        }
+        if (core_scan_confs.items.len > 0) config.scan_configs = core_scan_confs.items;
         if (profile_mask) |pro_mask| config.profile.mask = pro_mask;
         config.profile.use_random_mask = !main_cmd.checkFlag("no_mask");
         for (core_conn_confs) |*conn_conf| {

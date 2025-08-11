@@ -126,8 +126,8 @@ pub const Core = struct {
         //// Context Initialization
         self.if_ctx = try .init(&self);
         errdefer self.if_ctx.deinit(alloc);
-        //var network_ctx = try networks.Context.init(arena_alloc);
-        //errdefer network_ctx.deinit(alloc);
+        self.network_ctx = try .init(&self);
+        errdefer self.network_ctx.deinit(alloc);
         //var conn_ctx = try connections.Context.init(arena_alloc);
         //errdefer conn_ctx.deinit(alloc);
         self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
@@ -250,6 +250,9 @@ pub const Core = struct {
         while (self.active.load(.acquire)) {
             // Interface Tracking
             try self.if_ctx.update(self);
+            time.sleep(1 * time.ns_per_ms);
+            // Network Tracking
+            try self.network_ctx.update(self);
             time.sleep(500 * time.ns_per_ms);
         }
         log.info("Started DisCo Core.", .{});
@@ -259,8 +262,9 @@ pub const Core = struct {
 
     /// Run Condition for `runTo()`.
     pub const RunCondition = union(enum) {
-        interfaces,
-        scan,
+        list_interfaces,
+        mod_interfaces,
+        network_scan,
     };
     /// Run the Core Context up To the provided `condition`.
     /// This is useful for getting info from all Interfaces, doing a single Scan, etc
@@ -274,7 +278,9 @@ pub const Core = struct {
         try self.nl_event_loop.start(self.alloc, &self.active);
         // Core Loop
         while (switch (condition) {
-            .interfaces => self.if_ctx.interfaces.count() == 0,
+            .list_interfaces => self.if_ctx.interfaces.count() == 0,
+            //TODO: WIP
+            .mod_interfaces => false, 
             .scan => self.network_ctx.networks.count() == 0,
         }) {
             try self.if_ctx.update(self);
@@ -436,6 +442,14 @@ pub const Core = struct {
             );
         }
     }
+};
+
+/// Netlink Async State for Core Contexts
+pub const AsyncState = enum {
+    ready,
+    request,
+    await_response,
+    parse,
 };
 
 /// Find Conflicting PIDs

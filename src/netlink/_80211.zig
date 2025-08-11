@@ -2893,7 +2893,7 @@ pub fn handleWIPHYSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const W
 /// Trigger Scan Config
 pub const TriggerScanConfig = struct {
     /// Flags
-    flags: u32 = c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH, // | c(SCAN_FLAG).RANDOM_SN,
+    flags: u32 = c(SCAN_FLAG).COLOCATED_6GHZ | c(SCAN_FLAG).FLUSH,
     /// Frequencies (in MHz) to scan.
     freqs: ?[]const u32 = null,
     /// SSIDs to scan for.
@@ -3116,8 +3116,8 @@ pub fn stopSchedScan(
 /// Request Scan Results from Netlink.
 pub fn requestScanResults(
     alloc: mem.Allocator, 
-    if_index: ?i32, 
     req_ctx: *nl.RequestContext,
+    if_index: ?i32, 
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     try nl.request(
