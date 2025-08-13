@@ -102,6 +102,21 @@ pub const Interface = struct {
         }
     };
 
+    /// Free the allocated portions of this Interface.
+    pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+        if (!self._init) return;
+        switch (self.usage) {
+            .modify => |*mods| {
+                for (mods.items) |mod| alloc.destroy(mod);
+                mods.deinit(alloc);
+            },
+            else => {},
+        }
+        alloc.free(self.name);
+        alloc.free(self.phy_name);
+        self._init = false;
+    }
+
     /// Modify this Interface
     pub fn modify(self: *@This(), core_ctx: *core.Core, mod_field: ModifyField) !void {
         if (self.usage != .modify) self.usage = .{ .modify = .empty };
@@ -113,6 +128,7 @@ pub const Interface = struct {
                 else => core_ctx.rtnetlink_handler,
             };
             const mod_ctx: *ModifyContext = core_ctx.alloc.create(ModifyContext) catch @panic("OOM");
+            errdefer core_ctx.alloc.destroy(mod_ctx);
             mod_ctx.* = .{
                 .req_ctx = try .init(.{ .handler = .{ .handler = req_handler } }),
                 .mod_field = mod_field,
@@ -176,14 +192,6 @@ pub const Interface = struct {
         time.sleep(1 * time.ns_per_ms);
     }
 
-    /// Free the allocated portions of this Interface.
-    pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-        if (!self._init) return;
-        alloc.free(self.name);
-        alloc.free(self.phy_name);
-        self._init = false;
-    }
-
     /// Restoration Kind
     pub const RestoreKind = enum {
         dns,
@@ -217,6 +225,8 @@ pub const Interface = struct {
                 },
                 .mac => resetMAC: {
                     if (mem.eql(u8, self.og_mac[0..], self.mac[0..])) break :resetMAC;
+                    nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch {};
+                    time.sleep(time.ns_per_ms);
                     if (nl.route.setMAC(self.index, self.og_mac))
                         log.info("-- Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
                     else |_|
@@ -310,7 +320,6 @@ pub const Context = struct {
     /// Initialize the Interface Context.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
-        
         self._arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
         self._arena.* = .init(core_ctx.alloc);
         self._a_alloc = self._arena.allocator();
@@ -349,7 +358,7 @@ pub const Context = struct {
     
     /// Update the status of all Interfaces
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
-        //log.debug("Updating Interfaces: {s}", .{ @tagName(self.state) });
+        log.debug("Updating Interfaces: {s}", .{ @tagName(self.state) });
         ifState: switch (self.state) {
             .ready => {
                 self.state = .request;
@@ -465,7 +474,7 @@ pub const Context = struct {
                 const nl_addrs = try nl.route.handleIFAddrsBuf(self._a_alloc, addr_data); 
                 // Update WiFi Interfaces Netlink Status
                 updateIfs: for (nl_wifi_ifs) |wifi_if| {
-                    var good: bool = false;
+                    var valid: bool = false;
                     const wiphy: nl._80211.Wiphy = nlWiphy: {
                         for (nl_wiphys) |nl_wiphy| {
                             if (wifi_if.WIPHY != nl_wiphy.WIPHY) continue;
@@ -482,7 +491,7 @@ pub const Context = struct {
                     };
                     const if_name = core_ctx.alloc.dupe(u8, wifi_if.IFNAME[0..(wifi_if.IFNAME.len - 1)]) catch @panic("OOM");
                     const phy_name = core_ctx.alloc.dupe(u8, wiphy.WIPHY_NAME) catch @panic("OOM");
-                    defer if (!good) {
+                    defer if (!valid) {
                         core_ctx.alloc.free(if_name);
                         core_ctx.alloc.free(phy_name);
                     };
@@ -524,7 +533,10 @@ pub const Context = struct {
                         .cidrs = cidrs,
                         .last_upd = try zeit.instant(.{}),
                     };
-                    if (self.interfaces.get(add_if.og_mac)) |upd_if| updIf: {
+                    self.interfaces.mutex.lock();
+                    defer self.interfaces.mutex.unlock();
+                    if (self.interfaces.map.getEntry(add_if.og_mac)) |upd_if_entry| updIf: {
+                        const upd_if = upd_if_entry.value_ptr;
                         if (add_if.index != upd_if.index) {
                             log.debug("Interface '{s}' has a new Index: {d}", .{ add_if.name, add_if.index });
                             if (upd_if.usage == .err) {
@@ -533,11 +545,12 @@ pub const Context = struct {
                             }
                         }
                         add_if.usage = upd_if.usage;
+                        upd_if.deinit(core_ctx.alloc);
                     }
                     else {
                         log.info("New Interface Seen: ({s}) {s}", .{ MACF{ .bytes = add_if.mac[0..] }, add_if.name });
                     }
-                    good = true;
+                    valid = true;
                     add_if._init = true;
                     self.interfaces.map.put(core_ctx.alloc, add_if.og_mac, add_if) catch @panic("OOM");
                 }
@@ -563,7 +576,8 @@ pub const Context = struct {
                             if (pro_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
                             if (net_if.state & c(nl.route.IFF).UP != c(nl.route.IFF).DOWN) 
                                 try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN });
-                            try net_if.modify(core_ctx, .{ .mac = mask_mac });
+                            if (mem.eql(u8, net_if.mac[0..], net_if.og_mac[0..]))
+                                try net_if.modify(core_ctx, .{ .mac = mask_mac });
                             try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).UP });
                         }
                         break;
@@ -582,15 +596,15 @@ pub const Context = struct {
                     net_if.deinit(core_ctx.alloc);
                     rm_macs[rm_count] = net_if_entry.key_ptr.*;
                     rm_count +|= 1;
-                    //if_iter.unlock();
                 },
                 // Check for complete Modifications of the WiFi Interface
                 .modify => |*mod_list| {
-                    var idx_list: ArrayList(usize) = .empty;
-                    defer idx_list.deinit(core_ctx.alloc);
-                    for (mod_list.items, 0..) |mod, idx| {
+                    var seq_list: ArrayList(u32) = .empty;
+                    defer seq_list.deinit(core_ctx.alloc);
+                    for (mod_list.items) |mod| {
                         const mod_resp = mod.req_ctx.getResponse() orelse continue;
-                        idx_list.append(core_ctx.alloc, idx) catch @panic("OOM");
+                        defer if (mod_resp) |resp_data| core_ctx.alloc.free(resp_data) else |_| {};
+                        seq_list.append(core_ctx.alloc, mod.req_ctx.seq_id) catch @panic("OOM");
                         switch (mod.mod_field) {
                             .mac => |mac| {
                                 if (mod_resp) |_|
@@ -630,14 +644,18 @@ pub const Context = struct {
                             },
                         }
                     }
-                    var idx = mod_list.items.len;
-                    while (idx > 0) : (idx -= 1) {
-                        if (mem.indexOfScalar(usize, idx_list.items, idx) == null)
-                            continue;
-                        core_ctx.alloc.destroy(mod_list.items[idx]);
-                        _ = mod_list.swapRemove(idx);
+                    for (seq_list.items) |seq| {
+                        for (mod_list.items, 0..) |mod, idx| {
+                            if (mod.req_ctx.seq_id != seq) continue;
+                            core_ctx.alloc.destroy(mod);
+                            _ = mod_list.orderedRemove(idx);
+                            break;
+                        }
                     }
-                    net_if.usage = .available;
+                    if (mod_list.items.len == 0) {
+                        mod_list.deinit(core_ctx.alloc);
+                        net_if.usage = .available;
+                    }
                 },
                 else => {},
             }

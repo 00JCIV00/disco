@@ -36,6 +36,14 @@ pub const Handler = struct {
         timeout: Timeout,
         working: []u8,
         ready: anyerror![]const u8,
+
+        pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                .working => |data| alloc.free(data),
+                .ready => |resp| if (resp) |data| alloc.free(data) else |_| {},
+                else => {},
+            }
+        }
     };
 
     /// Initialization Config
@@ -83,9 +91,9 @@ pub const Handler = struct {
     pub fn deinit(self: *@This()) void {
         posix.close(self.nl_sock);
         var seq_resp_iter = self._seq_responses.iterator();
-        while (seq_resp_iter.next()) |resp_data| self._alloc.free(resp_data);
+        while (seq_resp_iter.next()) |resp| resp.value_ptr.deinit(self._alloc);
+        self._seq_responses.mutex.unlock();
         self._seq_responses.deinit(self._alloc);
-        self.seq_cb_fns.deinit(self._alloc);
     }
 
     /// Track a specific Request
@@ -177,7 +185,9 @@ pub const Handler = struct {
                         continue;
                     },
                 };
+                var valid: bool = false;
                 var msg_list: ArrayList(u8) = .fromOwnedSlice(msg_buf);
+                defer if (!valid) msg_list.deinit(self._alloc);
                 msg_list.appendSlice(self._alloc, mem.asBytes(&msg.hdr)) catch |err| {
                     self.handleError(err);
                     continue;
@@ -190,6 +200,7 @@ pub const Handler = struct {
                     self.handleError(err);
                     continue;
                 };
+                valid = true;
                 break :respData msg_buf;
             };
             response.* = .{ .working = resp_bytes };
@@ -197,8 +208,13 @@ pub const Handler = struct {
             const resp_data: anyerror![]const u8 = switch (msg.hdr.type) {
                 c(nl.NLMSG).ERROR => nlError: {
                     const nl_err = mem.bytesAsValue(nl.ErrorHeader, msg.data[0..@sizeOf(nl.ErrorHeader)]);
+                    var valid: bool = false;
+                    defer if (!valid) self._alloc.free(resp_bytes);
                     break :nlError switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                        .SUCCESS => resp_bytes,
+                        .SUCCESS => success: {
+                            valid = true;
+                            break :success resp_bytes;
+                        },
                         .BUSY => error.BUSY,
                         .NOLINK => error.NOLINK,
                         .ALREADY => error.ALREADY,
@@ -211,7 +227,10 @@ pub const Handler = struct {
                         else => error.OSError,
                     };
                 },
-                c(nl.NLMSG).OVERRUN => error.Overrun,
+                c(nl.NLMSG).OVERRUN => overrun: {
+                    defer self._alloc.free(resp_bytes);
+                    break :overrun error.Overrun;
+                },
                 c(nl.NLMSG).NOOP,
                 c(nl.NLMSG).DONE,
                 => resp_bytes,
@@ -283,7 +302,7 @@ pub const Loop = struct {
     /// Deinitialize this Event Loop and any Handlers associated to it
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         var handlers_iter = self._handlers.iterator();
-        while (handlers_iter.next()) |handler| handler.deinit();
+        while (handlers_iter.next()) |handler| handler.value_ptr.*.deinit();
         self._handlers.deinit(alloc);
     }
 
