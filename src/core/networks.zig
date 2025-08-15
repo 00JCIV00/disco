@@ -177,6 +177,15 @@ pub const Context = struct {
         log.debug("Total Scan Configs: {d}", .{ self.scan_configs.count() });
         self.networks = core_ctx.alloc.create(ThreadHashMap([6]u8, Network)) catch @panic("OOM");
         self.networks.* = .empty;
+        const nl80211_info = nl._80211.ctrl_info orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
+        const nl80211_scan = nl80211_info.MCAST_GROUPS.get("scan") orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
+        try posix.setsockopt(
+            core_ctx.nl80211_handler.nl_sock,
+            posix.SOL.NETLINK,
+            nl.NETLINK_OPT.ADD_MEMBERSHIP,
+            mem.toBytes(nl80211_scan)[0..],
+        );
+        core_ctx.nl80211_handler.trackCommand(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM");
         return self;
     }
 
@@ -198,12 +207,33 @@ pub const Context = struct {
 
     /// Update Networks
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+        defer _ = self._arena.reset(.retain_capacity);
+        const scan_result_resps = core_ctx.nl80211_handler.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM");
+        defer {
+            for (scan_result_resps) |resp| {
+                const data = resp catch continue;
+                core_ctx.alloc.free(data);
+            }
+            core_ctx.alloc.free(scan_result_resps);
+        }
         var if_iter = core_ctx.if_ctx.interfaces.iterator();
         defer core_ctx.if_ctx.interfaces.mutex.unlock();
         var scan_list: ArrayList(i32) = .empty;
         defer scan_list.deinit(core_ctx.alloc);
         while (if_iter.next()) |scan_if_entry| {
             const scan_if = scan_if_entry.value_ptr;
+            const scan_results_ready: bool = resultsReady: {
+                for (scan_result_resps) |response| {
+                    const data = response catch continue;
+                    const results = try nl._80211.handleScanResultsBuf(self._a_alloc, data);
+                    for (results) |result| {
+                        if (result.IFINDEX != scan_if.index) continue;
+                        log.debug("Found New Scan Results!", .{});
+                        break :resultsReady true;
+                    }
+                }
+                break :resultsReady false;
+            };
             scanIf: switch (scan_if.usage) {
                 .available => {
                     scan_if.usage = .{
@@ -236,51 +266,47 @@ pub const Context = struct {
                                                 scan_config.*,
                                             );
                                         },
-                                        .results => try nl._80211.requestScanResults(
-                                            core_ctx.alloc,
-                                            &nl_ctx.req_ctx,
-                                            scan_if.index,
-                                        ),
+                                        .results => {
+                                            if (!scan_results_ready) continue;
+                                            try nl._80211.requestScanResults(
+                                                core_ctx.alloc,
+                                                &nl_ctx.req_ctx,
+                                                scan_if.index,
+                                            );
+                                        },
                                     }
                                     nl_ctx.nl_state = .await_response;
                                 },
                                 .await_response => {
-                                    if (nl_ctx.req_ctx.checkResponse()) {
-                                        nl_ctx.nl_state = .parse;
-                                        continue :nlState nl_ctx.nl_state;
-                                    }
+                                    if (!nl_ctx.req_ctx.checkResponse()) continue;
+                                    nl_ctx.nl_state = .parse;
+                                    continue :nlState nl_ctx.nl_state;
                                 },
                                 .parse => {
                                     switch (nl_ctx.scan_state) {
                                         .trigger => {
-                                            //if (nl_ctx.req_ctx.getResponse()) |trigger_resp| _ = trigger_resp catch |err| {
-                                            //    log.warn("Could not trigger scan w/ Interface '{s}': {s}", .{ scan_if.name, @errorName(err) });
-                                            //    scan_if.usage = .available;
-                                            //};
                                             if (nl_ctx.req_ctx.getResponse()) |trigger_resp| {
                                                 if (trigger_resp) |resp_data| {
-                                                    //log.debug("\n\n\n============\nCLEARED TRIGGER RESPONSE DATA\n============\n\n\n", .{});
                                                     core_ctx.alloc.free(resp_data);
+                                                    log.debug("Triggered a scan.", .{});
+                                                    nl_ctx.scan_state = .results;
+                                                    nl_ctx.nl_state = .request;
                                                 }
                                                 else |err| {
                                                     log.warn("Could not trigger scan w/ Interface '{s}': {s}", .{ scan_if.name, @errorName(err) });
                                                     scan_if.usage = .available;
                                                 }
                                             }
-                                            if (@divFloor(nl_ctx.timer.read(), time.ns_per_ms) >= 5000) {
-                                                nl_ctx.scan_state = .results;
-                                                nl_ctx.nl_state = .request;
-                                            }
                                         },
                                         .results => results: {
                                             defer scan_if.usage = .available;
-                                            _ = self._arena.reset(.retain_capacity);
                                             const scan_result_data: []const u8 = nl_ctx.req_ctx.getResponse().? catch |err| {
                                                 log.warn("Could not get Scan Results for Interface '{s}': {s}", .{ scan_if.name, @errorName(err) });
                                                 break :results;
                                             };
                                             defer core_ctx.alloc.free(scan_result_data);
                                             const scan_results = try nl._80211.handleScanResultsBuf(self._a_alloc, scan_result_data);
+                                            log.debug("Parsing {d} Scan Results for '{s}'.", .{ scan_results.len, scan_if.name });
                                             for (scan_results) |result| {
                                                 const bss = result.BSS orelse continue;
                                                 const new_network: Network = newNetwork: {

@@ -39,8 +39,6 @@ pub const Core = struct {
 
         /// Profile Settings
         profile: profiles.Profile = .{},
-        ///// Available Interface Indexes
-        //avail_if_indexes: []const i32 = &.{},
         /// Available Interface Names
         avail_if_names: []const []const u8 = &.{},
         /// Scan Configs
@@ -63,8 +61,8 @@ pub const Core = struct {
     _wait_group: std.Thread.WaitGroup = .{},
     /// Allocator
     alloc: mem.Allocator,
-    /// Arena Wrapper f/ Allocator
-    arena: heap.ArenaAllocator,
+    ///// Arena Wrapper f/ Allocator
+    //arena: heap.ArenaAllocator,
     /// Config
     config: Config,
     /// Interval for Thread Checks.
@@ -94,25 +92,25 @@ pub const Core = struct {
     /// Initialize the Core Context.
     pub fn init(alloc: mem.Allocator, config: Config) !@This() {
         log.info("Initializing DisCo Core...", .{});
-        var arena = heap.ArenaAllocator.init(alloc);
-        errdefer arena.deinit();
+        //var arena = heap.ArenaAllocator.init(alloc);
+        //errdefer arena.deinit();
         // Get Original Hostname
         var og_hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
         const og_hostname = alloc.dupe(u8, try posix.gethostname(og_hn_buf[0..posix.HOST_NAME_MAX])) catch @panic("OOM");
         errdefer alloc.free(og_hostname);
         // Netlink Handlers
         const nl80211_handler = alloc.create(nl.io.Handler) catch @panic("OOM");
-        nl80211_handler.* = .init(alloc, try nl.initSock(.{ .kind = nl.NETLINK.GENERIC }), .{});
+        nl80211_handler.* = try .init(alloc, nl.NETLINK.GENERIC, .{});
         errdefer alloc.destroy(nl80211_handler);
         const rtnetlink_handler = alloc.create(nl.io.Handler) catch @panic("OOM");
-        rtnetlink_handler.* = .init(alloc, try nl.initSock(.{ .kind = nl.NETLINK.ROUTE }), .{});
+        rtnetlink_handler.* = try .init(alloc, nl.NETLINK.ROUTE, .{});
         errdefer alloc.destroy(rtnetlink_handler);
         // Core Creation
         var self: @This() = .{
             ._timer = try std.time.Timer.start(),
             ._thread_pool = .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
             .alloc = alloc,
-            .arena = arena,
+            //.arena = arena,
             .config = config,
             .nl_event_loop = .init(.{}),
             .nl80211_handler = nl80211_handler,
@@ -128,34 +126,11 @@ pub const Core = struct {
         errdefer self.if_ctx.deinit(alloc);
         self.network_ctx = try .init(&self);
         errdefer self.network_ctx.deinit(alloc);
-        //var conn_ctx = try connections.Context.init(arena_alloc);
-        //errdefer conn_ctx.deinit(alloc);
+        self.conn_ctx = try .init(&self);
+        errdefer self.conn_ctx.deinit(alloc);
         self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
         errdefer self.serve_ctx.deinit(alloc);
         // Context Setup
-        //try interfaces.updInterfaces(
-        //    alloc,
-        //    &self.if_ctx,
-        //    &self.config,
-        //    &self.interval,
-        //);
-        //log.info("- Initialized Interface Tracking Data.", .{});
-        //for (config.scan_configs) |scan_conf| {
-        //    try self.network_ctx.scan_configs.put(
-        //        alloc,
-        //        nl.route.getIfIdx(scan_conf.if_name) catch continue,
-        //        .{
-        //            .ssids = scan_conf.ssids,
-        //            .freqs = freqs: {
-        //                const chs = scan_conf.channels orelse break :freqs null;
-        //                var freqs_list: ArrayList(u32) = .empty;
-        //                for (chs) |ch| try freqs_list.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
-        //                break :freqs try freqs_list.toOwnedSlice(alloc);
-        //            },
-        //        },
-        //    );
-        //}
-        //log.info("- Initialized Network Tracking Data.", .{});
         //self.conn_ctx.global_config.* = config.global_connect_config;
         //for (config.connect_configs) |conn_conf| {
         //    try self.conn_ctx.configs.put(
@@ -243,7 +218,7 @@ pub const Core = struct {
         // Available Interfaces
         log.debug("Searching for the following Interfaces: {s}", .{ self.config.avail_if_names });
         // Event Loop
-        try self.nl_event_loop.start(self.alloc, &self.active);
+        try self.nl_event_loop.start(self.alloc, &self.active); 
         try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
         try self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
         // Core Loop
@@ -414,7 +389,9 @@ pub const Core = struct {
         log.info("- Deinitialized Connection Tracking.", .{});
         self.serve_ctx.deinit(self.alloc);
         log.info("- Deinitialized File Serving.", .{});
-        self.arena.deinit();
+        //self.arena.deinit();
+        self.nl_event_loop.deinit(self.alloc);
+        log.info("- Deinitialized Netlink Event Loop.", .{});
         log.info("- Deinitialized All Contexts.", .{});
         log.info("Cleaned up DisCo Core.", .{});
     }

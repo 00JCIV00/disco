@@ -68,7 +68,7 @@ pub fn getPID(proc_name: []const u8) !?u32 {
         defer pid_dir.close();
         var comm = try pid_dir.openFile("comm", .{});
         defer comm.close();
-        var pid_name_buf: [posix.PATH_MAX]u8 = .{ 0 } ** posix.PATH_MAX;
+        var pid_name_buf: [posix.PATH_MAX]u8 = undefined;
         const pid_name_len = try comm.readAll(pid_name_buf[0..]);
         if (mem.indexOf(u8, pid_name_buf[0..pid_name_len], proc_name) == null) continue;
         return pid;

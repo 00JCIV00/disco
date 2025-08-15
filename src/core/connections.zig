@@ -14,6 +14,7 @@ const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
 const ArrayList = std.ArrayListUnmanaged;
+const Thread = std.Thread;
 
 const zeit = @import("zeit");
 
@@ -31,6 +32,7 @@ const wpa = proto.wpa;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 const HexF = utils.HexFormatter;
+const ThreadHashMap = utils.ThreadHashMap;
 
 
 /// The Current State of a Connection.
@@ -62,7 +64,7 @@ pub const State = enum {
             "{s}",
             .{
                 switch (self) {
-                    .search => "Searching f/ the Network",
+                    .search => "Searching for the Network",
                     .auth => "Authenticating to the Network",
                     .assoc => "Associating to the Network",
                     .eapol => "Handling the 4 Way Handshake w/ the Router",
@@ -129,48 +131,46 @@ pub const Connection = struct {
 
 /// Connection Context
 pub const Context = struct {
-    /// Global Config for All Connections. (Used as a fallback for overlapping fields)
-    global_config: *GlobalConfig,
-    /// Configs for Networks to Connect to.
-    /// ID = Network SSID
-    configs: *utils.ThreadHashMap([]const u8, Config),
+    ///// Global Config for All Connections. (Used as a fallback for overlapping fields)
+    //global_config: *GlobalConfig,
+    ///// Configs for Networks to Connect to.
+    ///// ID = Network SSID
+    //configs: *ThreadHashMap([]const u8, Config),
     /// Active & Previous Connections.
-    /// ID = 6B Network BSSID + 4B Interface Index
-    connections: *utils.ThreadHashMap([10]u8, Connection),
-    //connections: *utils.ThreadHashMap([6]u8, Connection),
-    thread_pool: *std.Thread.Pool,
-    wait_group: *std.Thread.WaitGroup,
+    /// ID = 6B Network BSSID 
+    connections: *ThreadHashMap([6]u8, Connection),
+    //thread_pool: *Thread.Pool,
+    //wait_group: *Thread.WaitGroup,
 
 
     /// Initialize all Maps.
-    pub fn init(alloc: mem.Allocator) !@This() {
+    pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
-        inline for (meta.fields(@This())) |field| {
-            switch (field.type) {
-                inline else => |f_ptr_type| {
-                    const f_type = @typeInfo(f_ptr_type).pointer.child;
-                    const ctx_field = try alloc.create(f_type);
-                    ctx_field.* = switch (f_type) {
-                        std.Thread.Pool => .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
-                        inline else => .{},
-                    };
-                    @field(self, field.name) = ctx_field;
-                }
-            }
-        }
+        //self.global_config = core_ctx.config.global_connect_config;
+        //self.configs = core_ctx.alloc.create(ThreadHashMap([]const u8, Config)) catch @panic("OOM");
+        //self.configs.* = .empty;
+        //for (core_ctx.config.connect_configs) |conn_config|
+        //    self.configs.put(core_ctx.alloc, conn_config.ssid, conn_config);
+        self.connections = core_ctx.alloc.create(ThreadHashMap([6]u8, Connection)) catch @panic("OOM");
+        self.connections.* = .empty;
         return self;
     }
 
     /// Deinitialize all Maps.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-        if (self.configs.count() > 0)
-            self.configs.deinit(alloc);
         var conn_iter = self.connections.iterator();
         while (conn_iter.next()) |conn_entry|
             conn_entry.value_ptr.deinit(alloc);
         conn_iter.unlock();
-        if (self.connections.count() > 0)
-            self.connections.deinit(alloc);
+        self.connections.deinit(alloc);
+        //self.configs.deinit(alloc);
+        //alloc.destroy(self.configs);
+    }
+
+    /// Update Connections
+    pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+        _ = self;
+        _ = core_ctx;
     }
 };
 

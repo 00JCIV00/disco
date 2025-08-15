@@ -63,9 +63,15 @@ pub const Handler = struct {
     /// Responses for corresponing Sequence IDs
     /// *Internal Use*
     _seq_responses: ThreadHashMap(u32, Response) = .empty,
+    /// Responses/Messages from corresponding Commands
+    /// *Internal Use*
+    _cmd_response_maps: ThreadHashMap(u16, ThreadHashMap(u32, Response)) = .empty,
     /// Epoll Event
     epoll_event: posix.system.epoll_event,
-    /// Netlink Socket for this Event Loop
+    /// Netlink Socket Protocol
+    /// *Read Only*
+    nl_sock_proto: u32,
+    /// Netlink Socket for this Handler
     /// *Read Only*
     nl_sock: posix.socket_t,
     /// Callback Function for Unsolicited Messages
@@ -74,9 +80,11 @@ pub const Handler = struct {
     err_fn: ?*const fn(anyerror) void = null,
 
     /// Initialize a new Netlink Message Handler
-    pub fn init(alloc: mem.Allocator, nl_sock: posix.socket_t, init_config: InitConfig) @This() {
+    pub fn init(alloc: mem.Allocator, nl_sock_proto: u32, init_config: InitConfig) !@This() {
+        const nl_sock = try nl.initSock(.{ .kind = nl_sock_proto });
         return .{
             ._alloc = alloc,
+            .nl_sock_proto = nl_sock_proto,
             .nl_sock = nl_sock,
             .us_cb_fn = init_config.us_cb_fn,
             .err_fn = init_config.err_fn,
@@ -94,6 +102,14 @@ pub const Handler = struct {
         while (seq_resp_iter.next()) |resp| resp.value_ptr.deinit(self._alloc);
         self._seq_responses.mutex.unlock();
         self._seq_responses.deinit(self._alloc);
+        var cmd_resp_map_iter = self._cmd_response_maps.iterator();
+        while (cmd_resp_map_iter.next()) |resp_map_entry| {
+            const resp_map = resp_map_entry.value_ptr;
+            var cmd_resp_iter = resp_map.iterator();
+            while (cmd_resp_iter.next()) |resp| resp.value_ptr.deinit(self._alloc);
+            resp_map.mutex.unlock();
+            resp_map.deinit(self._alloc);
+        }
     }
 
     /// Track a specific Request
@@ -111,7 +127,12 @@ pub const Handler = struct {
         //log.debug("Tracking Seq ID: {d}", .{ req_ctx.seq_id });
     }
 
-    /// Check for a Response for a specific Request
+    /// Track a specific Command
+    pub fn trackCommand(self: *@This(), cmd: u16) !void {
+        try self._cmd_response_maps.put(self._alloc, cmd, .empty);
+    }
+
+    /// Check for a Response for a specific Request (`seq_id`).
     pub fn checkResponse(self: *@This(), seq_id: u32) bool {
         self._seq_responses.mutex.lock();
         defer self._seq_responses.mutex.unlock();
@@ -125,7 +146,14 @@ pub const Handler = struct {
         };
     }
 
-    /// Get a Response for a specific Request
+    /// Check for Responses/Messages from a specific Command (`cmd`).
+    pub fn checkCmdResponses(self: *@This(), cmd: u16) bool {
+        defer self._cmd_response_maps.mutex.unlock();
+        return self._cmd_response_maps.getEntry(cmd) != null;
+    }
+
+    /// Get a Response for a specific Request (`seq_id`).
+    /// Caller owns memory for non-null, non-errored responses.
     pub fn getResponse(self: *@This(), seq_id: u32) ?anyerror![]const u8 {
         self._seq_responses.mutex.lock();
         defer self._seq_responses.mutex.unlock();
@@ -145,6 +173,33 @@ pub const Handler = struct {
         };
     }
 
+    /// Get Responses/Messages for a specific Command (`cmd`).
+    /// Caller owns memory for non-errored responses and the slice containing them.
+    pub fn getCmdResponses(self: *@This(), cmd: u16) ![]const anyerror![]const u8 {
+        defer self._cmd_response_maps.mutex.unlock();
+        const cmd_map_entry = self._cmd_response_maps.getEntry(cmd) orelse return &.{};
+        const cmd_resp_map = cmd_map_entry.value_ptr;
+        defer cmd_resp_map.mutex.unlock();
+        var cmd_resp_iter = cmd_resp_map.iterator();
+        var resp_list: ArrayList(anyerror![]const u8) = .empty;
+        while (cmd_resp_iter.next()) |resp_entry| {
+            const response = resp_entry.value_ptr;
+            var timeout_state: Response = .{ .ready = error.Timeout };
+            resp_state: switch (response.*) {
+                .timeout => |*timeout| {
+                    if (!timeout.check()) continue;
+                    continue :resp_state timeout_state;
+                },
+                .working => continue,
+                .ready => |ready| {
+                    defer _ = cmd_resp_map.map.remove(resp_entry.key_ptr.*);
+                    try resp_list.append(self._alloc, ready);
+                },
+            }
+        }
+        return try resp_list.toOwnedSlice(self._alloc);
+    }
+
     /// Handle a Netlink Response
     pub fn handleResponse(self: *@This()) void {
         // Receive Netlink Messages from Socket
@@ -155,28 +210,38 @@ pub const Handler = struct {
         while (msg_iter.next()) |msg| {
             //log.debug("Handling Response for Seq ID: {d}", .{ msg.hdr.seq });
             const response = respCtx: {
+                defer self._seq_responses.mutex.unlock();
                 if (self._seq_responses.getEntry(msg.hdr.seq)) |resp_entry| break :respCtx resp_entry.value_ptr;
-                self._seq_responses.mutex.unlock();
-                log.debug("Seq ID {d} is untracked. Tracking now.", .{ msg.hdr.seq });
-                self._seq_responses.put(
-                    self._alloc,
-                    msg.hdr.seq,
-                    .{
-                        .timeout = .{
-                            .timer = time.Timer.start() catch |err| {
-                                self.handleError(err);
-                                continue;
-                            },
-                        },
-                    },
-                ) catch |err| {
+                //self._seq_responses.mutex.unlock();
+                const msg_cmd = self.detectCmd(msg.hdr, msg.data) catch |err| {
                     self.handleError(err);
                     continue;
                 };
-                const resp_entry = self._seq_responses.getEntry(msg.hdr.seq).?;
+                defer self._cmd_response_maps.mutex.unlock();
+                const cmd_resp_map_entry = self._cmd_response_maps.getEntry(msg_cmd) orelse continue;
+                const cmd_resp_map = cmd_resp_map_entry.value_ptr;
+                cmd_resp_map.mutex.lock();
+                defer cmd_resp_map.mutex.unlock();
+                const resp_entry = cmd_resp_map.map.getEntry(msg.hdr.seq) orelse respEntry: {
+                    cmd_resp_map.map.put(
+                        self._alloc,
+                        msg.hdr.seq,
+                        .{
+                            .timeout = .{
+                                .timer = time.Timer.start() catch |err| {
+                                    self.handleError(err);
+                                    continue;
+                                },
+                            },
+                        },
+                    ) catch |err| {
+                        self.handleError(err);
+                        continue;
+                    };
+                    break :respEntry cmd_resp_map.map.getEntry(msg.hdr.seq).?;
+                };
                 break :respCtx resp_entry.value_ptr;
             };
-            defer self._seq_responses.mutex.unlock();
             const resp_bytes = respData: {
                 var msg_buf = switch (response.*) {
                     .working => |buf| buf,
@@ -251,6 +316,17 @@ pub const Handler = struct {
     pub fn handleError(self: *@This(), err: anyerror) void {
         if (self.err_fn) |errFn| return errFn(err);
         log.debug("An Error occured with the Handler: {s}", .{ @errorName(err) });
+    }
+
+    /// Detect the Command 'Type' of Netlink Message using the provided Netlink Message Header (`hdr`) and `data`.
+    fn detectCmd(self: *const @This(), hdr: nl.MessageHeader, data: []const u8) !u16 {
+        if (self.nl_sock_proto != nl.NETLINK.GENERIC)
+            return hdr.type;
+        const generic_hdr_len = @sizeOf(nl.generic.Header);
+        if (data.len < generic_hdr_len)
+            return error.IncompleteGenericHeader;
+        const fam_hdr = mem.bytesToValue(nl.generic.Header, data[0..generic_hdr_len]);
+        return fam_hdr.cmd;
     }
 
     /// Handle an Unsolicited Netlink Message
