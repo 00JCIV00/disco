@@ -13,8 +13,8 @@
         //    .hash = "1220b9cf102d73e0dbf7de594dcd7847fec09732fd4470736d060c40531b799ea643",
         //},
         .zeit = .{
-            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.6.0.tar.gz",
-            .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
+            .url = "https://github.com/rockorager/zeit/archive/991f38266f86535e68431675e8feb84efa1f011b.tar.gz",
+            .hash = "zeit-0.6.0-5I6bk0t7AgCPM_cY1DoqJB2pnmG7MMtpdO5IxNpryJDy",
         },
     },
 
