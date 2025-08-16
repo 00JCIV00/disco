@@ -288,7 +288,7 @@ pub const Context = struct {
                                             if (nl_ctx.req_ctx.getResponse()) |trigger_resp| {
                                                 if (trigger_resp) |resp_data| {
                                                     core_ctx.alloc.free(resp_data);
-                                                    log.debug("Triggered a scan.", .{});
+                                                    //log.debug("Triggered a scan.", .{});
                                                     nl_ctx.scan_state = .results;
                                                     nl_ctx.nl_state = .request;
                                                 }

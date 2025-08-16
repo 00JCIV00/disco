@@ -139,6 +139,9 @@ pub const Context = struct {
     /// Active & Previous Connections.
     /// ID = 6B Network BSSID 
     connections: *ThreadHashMap([6]u8, Connection),
+    /// Connection Candidates
+    candidates: *ArrayList(Candidate),
+    timer: time.Timer,
     //thread_pool: *Thread.Pool,
     //wait_group: *Thread.WaitGroup,
 
@@ -153,6 +156,9 @@ pub const Context = struct {
         //    self.configs.put(core_ctx.alloc, conn_config.ssid, conn_config);
         self.connections = core_ctx.alloc.create(ThreadHashMap([6]u8, Connection)) catch @panic("OOM");
         self.connections.* = .empty;
+        self.candidates = core_ctx.alloc.create(ArrayList(Candidate)) catch @panic("OOM");
+        self.candidates.* = .empty;
+        self.timer = try .start();
         return self;
     }
 
@@ -163,14 +169,104 @@ pub const Context = struct {
             conn_entry.value_ptr.deinit(alloc);
         conn_iter.unlock();
         self.connections.deinit(alloc);
+        self.candidates.deinit(alloc);
         //self.configs.deinit(alloc);
         //alloc.destroy(self.configs);
     }
 
     /// Update Connections
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
-        _ = self;
-        _ = core_ctx;
+        if (self.timer.read() >= 5 * time.ns_per_s) {
+            self.timer.reset();
+            try self.scoreCandidates(core_ctx);
+        }
+    }
+
+    /// Connection Candidate
+    const Candidate = struct {
+        score: u8,
+        bssid: [6]u8,
+        conn_if: [6]u8,
+
+        pub fn format(
+            self: @This(),
+            _: []const u8,
+            _: fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            try writer.print(
+                \\- Score:   {d}
+                \\- BSSID:   {s}
+                \\- Conn IF: {s}
+                \\
+                , .{
+                    self.score,
+                    HexF{ .bytes = self.bssid[0..] },
+                    HexF{ .bytes = self.conn_if[0..] },
+                },
+            );
+        }
+    };
+    /// Score Candidate Networks
+    fn scoreCandidates(self: *@This(), core_ctx: *core.Core) !void {
+        log.debug("Scoring Connections", .{});
+        defer log.debug("Scored {d} Connections.", .{ self.candidates.items.len });
+        self.candidates.deinit(core_ctx.alloc);
+        self.candidates.* = .empty;
+        log.debug("- Total Networks: {d}", .{ core_ctx.network_ctx.networks.count() });
+        var nw_iter = core_ctx.network_ctx.networks.iterator();
+        defer core_ctx.network_ctx.networks.mutex.unlock();
+        const max_age = core_ctx.config.global_connect_config.network_max_age;
+        while (nw_iter.next()) |network_entry| {
+            const network = network_entry.value_ptr;
+            //const config = connConfig: {
+            //    for (core_ctx.config.connect_configs) |conf| {
+            //        if (!mem.eql(u8, conf.ssid, network.ssid)) continue;
+            //        break :connConfig conf;
+            //    }
+            //    continue;
+            //};
+            var net_meta_iter = network.net_meta.iterator();
+            defer network.net_meta.mutex.unlock();
+            while (net_meta_iter.next()) |net_meta_entry| {
+                const net_meta = net_meta_entry.value_ptr;
+                //for (config.if_names) |if_name| {
+                //    if (mem.eql(u8, net_meta.seen_by, if_name)) break;
+                //}
+                //else continue;
+                log.debug("Network '{s}':", .{ network.ssid });
+                const time_score: u8 = timeScore: {
+                    const now = (try zeit.instant(.{})).milliTimestamp();
+                    const last_seen = net_meta.last_seen.milliTimestamp();
+                    const age = @min(now - last_seen, max_age);
+                    log.debug("- Age: {d}ms", .{ age });
+                    //const percentage: u8 = @intFromFloat(@as(f128, @floatFromInt(@divFloor(age, max_age) * 100)));
+                    const percent: f16 = @as(f16, @floatFromInt(age)) / @as(f16, @floatFromInt(max_age)) * 100; 
+                    log.debug("- Percent: {d}", .{ percent });
+                    const diff = 100.0 - percent;
+                    break :timeScore @intFromFloat(@min(diff * 0.5, 50));
+                };
+                log.debug("- Time Score: {d}", .{ time_score });
+                if (time_score == 0) continue;
+                const sig_score: u8 = sigScore: {
+                    const rxq = net_meta.calcRxQual();
+                    if (rxq > 0) break :sigScore @intFromFloat(@as(f16, @floatFromInt(rxq)) * 0.5);
+                    log.debug("- RSSI: {d} dBm", .{ net_meta.rssi });
+                    break :sigScore @intFromFloat(@as(f16, @floatFromInt(100 +| net_meta.rssi)) * 0.25);
+                };
+                log.debug("- Signal Score: {d}", .{ sig_score });
+                const candidate: Candidate = .{
+                    .score = @min(100, time_score +| sig_score),
+                    .bssid = network.bssid,
+                    .conn_if = net_meta_entry.key_ptr.*,
+                };
+                self.candidates.append(
+                    core_ctx.alloc,
+                    candidate,
+                ) catch @panic("OOM");
+                log.debug("Network '{s}' Score:\n{s}", .{ network.ssid, candidate });
+            }
+        }
     }
 };
 

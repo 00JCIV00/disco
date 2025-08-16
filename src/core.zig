@@ -226,6 +226,8 @@ pub const Core = struct {
             // Interface Tracking
             try self.if_ctx.update(self);
             time.sleep(1 * time.ns_per_ms);
+            // Connection Tracking
+            try self.conn_ctx.update(self);
             // Network Tracking
             try self.network_ctx.update(self);
             time.sleep(500 * time.ns_per_ms);
