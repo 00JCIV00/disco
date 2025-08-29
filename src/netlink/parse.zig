@@ -21,7 +21,8 @@ pub fn primFromBytes(T: type, bytes: []const u8) !T {
         .array => |ary| bytes[0..ary.len].*,
         .optional => |optl| try primFromBytes(bytes, optl.child),
         .int, .float => @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
-        .bool => if (bytes.len == 0) true else @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
+        //.bool => if (bytes.len == 0) true else @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
+        .bool => true,
         else => error.NonPrimitiveType,
     };
 }
@@ -67,7 +68,9 @@ pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
                 while (end < bytes.len) {
                     start = end;
                     end += hdr_len;
-                    const hdr: *const HdrT = @alignCast(@ptrCast(bytes[start..end]));
+                    //const hdr: *const HdrT = @alignCast(@ptrCast(bytes[start..end]));
+                    const hdr: HdrT = mem.bytesToValue(HdrT, bytes[start..end]);
+                    //log.debug("**********HdrT: {s}", .{ @typeName(HdrT) });
                     //log.debug("**********Attr: {d}B, Idx: {d}, Start: {d}B", .{ hdr.len, hdr.type, start });
                     start = end;
                     end += hdr.len -| hdr_len;
@@ -261,7 +264,8 @@ pub fn baseFromBytes(
         var parsed_fields: std.StringHashMapUnmanaged(void) = .{};
         defer parsed_fields.deinit(alloc);
         inline for (meta.fields(T)) |field| cont: {
-            if (!mem.eql(u8, field.name, @tagName(tag)) or diff == 0) break :cont;
+            //if (!mem.eql(u8, field.name, @tagName(tag)) or diff == 0) break :cont;
+            if (!mem.eql(u8, field.name, @tagName(tag))) break :cont;
             if (parsed_fields.get(field.name)) |_| break :cont;
             // TODO: Figure out the potential segfault here
             try parsed_fields.put(alloc, field.name, {});
@@ -298,6 +302,7 @@ pub fn baseFromBytes(
 }
 
 /// Recursively frees allocations from Pointer instances, including the provided `instance` Pointer.
+/// TODO: Revise this to always call `freeBytes()` on the unwrapped instance.
 pub fn freePtrBytes(alloc: mem.Allocator, T: type, instance: T) void {
     if (T == []const u8) {
         alloc.free(instance);
@@ -332,12 +337,13 @@ pub fn freePtrBytes(alloc: mem.Allocator, T: type, instance: T) void {
 }
 
 /// Recursively frees allocations from Optional instances.
+/// TODO: Revise this to always call `freeBytes()` on the unwrapped instance.
 pub fn freeOptBytes(alloc: mem.Allocator, T: type, instance: T) void {
-    const _instance = instance orelse return;
     const raw_info = @typeInfo(T);
     if (raw_info != .optional) return;
     const info = raw_info.optional;
     const child_info = @typeInfo(info.child);
+    const _instance = instance orelse return;
     switch (child_info) {
         .optional => freeOptBytes(alloc, info.child, _instance),
         .pointer => freePtrBytes(alloc, info.child, _instance),
@@ -347,6 +353,8 @@ pub fn freeOptBytes(alloc: mem.Allocator, T: type, instance: T) void {
 }
 
 /// Recursively frees allocations made by `fromBytes()`.
+/// Note, this is a "best effort" in freeing all allocations made and an expensive operation.
+/// Prefer to use an Arena Allocator when possible to 
 pub fn freeBytes(alloc: mem.Allocator, T: type, instance: T) void {
     //log.debug("-------\n       CHECK f/ Free: {s}", .{ @typeName(T) });
     inline for (meta.fields(T)) |field| {
@@ -390,6 +398,7 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
     };
 
     inline for (meta.fields(T)) |field| cont: {
+        //@compileLog("E: " ++ @typeName(E));
         var hdr: HdrT = .{
             .len = if (HdrT.full_len) @sizeOf(HdrT) else 0,
             .type = @intFromEnum(meta.stringToEnum(E, field.name) orelse {
@@ -443,11 +452,14 @@ fn ptrToBytes(
             if (T == []const u8) return try alloc.dupe(u8, instance);
             var buf: ArrayList(u8) = .empty;
             //if (T == []const []const u8) log.debug("Slice of Strings: {s}", .{ field_name });
-            for (instance[0..]) |in_item| {
-                var hdr: HdrT = .{
-                    .len = if (HdrT.full_len) @sizeOf(HdrT) else 0,
-                    .type = @intFromEnum(meta.stringToEnum(E, field_name) orelse return error.UnknownEnum),
-                };
+            const grouped = grouped: {
+                if (child_info != .@"struct") break :grouped false;
+                for (child_info.@"struct".decls) |decl| {
+                    if (mem.eql(u8, decl.name, "_grouped_attr")) break :grouped true;
+                }
+                break :grouped false;
+            };
+            for (instance[0..], 0..) |in_item, idx| {
                 const bytes = switch (child_info) {
                     .pointer => try ptrToBytes(alloc, info.child, in_item, HdrT, E, field_name),
                     .optional => try optToBytes(alloc, info.child, in_item, HdrT, E, field_name),
@@ -455,12 +467,31 @@ fn ptrToBytes(
                     else => try primToBytes(alloc, info.child, in_item),
                 };
                 defer alloc.free(bytes);
-                hdr.len +|= @intCast(bytes.len);
-                //if (T == []const []const u8)
-                //    log.debug("\nHdr: {}\nBytes: {X}", .{ hdr, bytes });
-                try buf.appendSlice(alloc, mem.toBytes(hdr)[0..]);
-                try buf.appendSlice(alloc, bytes);
-                if (HdrT.nl_align) try buf.appendNTimes(alloc, 0, (mem.alignForward(usize, buf.items.len, 4) - buf.items.len));
+                if (grouped) {
+                    //log.debug("Grouped Attr: ({d}) {d}B{s}\n", .{ idx, bytes.len, HexF{ .bytes = bytes } });
+                    try buf.appendSlice(alloc, mem.toBytes(@as(u16, @truncate(bytes.len + 4)))[0..]);
+                    try buf.appendSlice(alloc, mem.toBytes(@as(u16, @truncate(idx)))[0..]);
+                    try buf.appendSlice(alloc, bytes);
+                }
+                else {
+                    var hdr: HdrT = .{
+                        .len = if (HdrT.full_len) @sizeOf(HdrT) else 0,
+                        .type = @intFromEnum(meta.stringToEnum(E, field_name) orelse return error.UnknownEnum),
+                    };
+                    hdr.len +|= @intCast(bytes.len);
+                    try buf.appendSlice(alloc, mem.toBytes(hdr)[0..]);
+                    try buf.appendSlice(alloc, bytes);
+                    if (HdrT.nl_align) try buf.appendNTimes(alloc, 0, (mem.alignForward(usize, buf.items.len, 4) - buf.items.len));
+                }
+            }
+            if (grouped) {
+                //log.debug("Grouped Type: {s} | {d}B{s}\n", .{ @typeName(info.child), buf.items.len, HexF{ .bytes = buf.items } });
+                var hdr: HdrT = .{
+                    .len = if (HdrT.full_len) @sizeOf(HdrT) else 0,
+                    .type = @intFromEnum(meta.stringToEnum(E, field_name) orelse return error.UnknownEnum),
+                };
+                hdr.len +|= @truncate(buf.items.len);
+                try buf.insertSlice(alloc, 0, mem.toBytes(hdr)[0..]);
             }
             return try buf.toOwnedSlice(alloc);
         },
@@ -500,15 +531,26 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
             }
             return try alloc.dupe(u8, instance);
         },
-        .int, .float, .bool, .array => {
+        //.int, .float, .bool, .array => {
+        .int, .float, .array => {
             const bytes = mem.toBytes(instance)[0..];
             return try alloc.dupe(u8, bytes);
         },
+        .bool => return try alloc.dupe(u8, &.{}),
         else => {
             log.err("Unsupported Type: {s}", .{ @typeName(T) });
             return error.UnsupportedType;
         }
     }
+}
+
+/// Clone an `instance` of Netlink Type (`T`) using the provided Allocator (`alloc`).
+/// TODO: Make this less wasteful with Allocations
+pub fn clone(alloc: mem.Allocator, T: type, instance: T) !T {
+    const bytes = try toBytes(alloc, T, instance);
+    defer alloc.free(bytes);
+    //log.debug("Clone: {d}B\n{s}", .{ bytes.len, HexF{ .bytes = bytes } });
+    return try fromBytes(alloc, T, bytes);
 }
 
 /// Create a "Type, Length, Value" (TLV) Type (`OutT`) instance from an `instance` of the provided Type (`InT`).
