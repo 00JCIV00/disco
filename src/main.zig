@@ -75,7 +75,7 @@ pub fn main() !void {
     const stdout = stdout_bw.writer().any();
     try stdout_file.print("{s}\n", .{ art.logo });
 
-    var gpa = heap.GeneralPurposeAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }){};
+    var gpa = heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }){};
     defer {
         if (@import("builtin").mode == .Debug and gpa.detectLeaks())
             log.err("Memory leak detected!", .{})
@@ -83,8 +83,9 @@ pub fn main() !void {
             log.err("Memory leak detected!", .{});
     }
     const gpa_alloc = gpa.allocator();
-    var sfba = heap.stackFallback(100_000, gpa_alloc);
+    var sfba = heap.stackFallback(1_000_000, gpa_alloc);
     const alloc = sfba.get();
+    //const alloc = gpa.allocator();
 
     // Get NL80211 Control Info
     try nl._80211.initCtrlInfo(alloc);
@@ -92,6 +93,7 @@ pub fn main() !void {
 
     // Parse Args
     var main_cmd = try cli.setup_cmd.init(gpa_alloc, .{});
+    //var main_cmd = try cli.setup_cmd.init(alloc, .{});
     defer main_cmd.deinit();
     var args_iter = try cova.ArgIteratorGeneric.init(alloc);
     defer args_iter.deinit();
@@ -405,7 +407,7 @@ pub fn main() !void {
             break :importConf config;
         };
         if (if_names.len > 0) config.avail_if_names = if_names;
-        //for (config.avail_if_names) |if.{ 0 } ** 100;_name| {
+        //for (config.avail_if_names) |if_name| {
         //    const if_index = nl.route.getIfIdx(if_name) catch {
         //        log.warn("Could not find Interface '{s}'.", .{ if_name });
         //        continue;
@@ -435,6 +437,8 @@ pub fn main() !void {
                 if (dhcp_conf.hostname) |_| break :setHostname;
                 dhcp_conf.hostname = pro_mask.hostname;
             }
+            //if (conn_conf.if_names.len == 0)
+            //    conn_conf.if_names = config.avail_if_names;
         }
         if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
         break :config config;

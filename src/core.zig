@@ -222,6 +222,7 @@ pub const Core = struct {
         try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
         try self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
         // Core Loop
+        log.info("Started DisCo Core.", .{});
         while (self.active.load(.acquire)) {
             // Interface Tracking
             try self.if_ctx.update(self);
@@ -230,9 +231,8 @@ pub const Core = struct {
             try self.conn_ctx.update(self);
             // Network Tracking
             try self.network_ctx.update(self);
-            time.sleep(500 * time.ns_per_ms);
+            time.sleep(10 * time.ns_per_ms);
         }
-        log.info("Started DisCo Core.", .{});
         //self._thread_pool.waitAndWork(&self._wait_group);
         self._thread_pool.deinit();
     }
@@ -356,6 +356,8 @@ pub const Core = struct {
         self.active.store(false, .seq_cst);
         self._mutex.lock();
         defer self._mutex.unlock();
+        //self.nl_event_loop.stop(null);
+        //log.info("- Stopped Netlink Event Loop.", .{});
         //self._thread_pool.waitAndWork(&self._wait_group);
         //self._thread_pool.deinit();
         log.info("- Stopped all Core Threads.", .{});
@@ -393,6 +395,7 @@ pub const Core = struct {
         log.info("- Deinitialized File Serving.", .{});
         //self.arena.deinit();
         self.nl_event_loop.deinit(self.alloc);
+        //self.nl_event_loop.stop(self.alloc);
         log.info("- Deinitialized Netlink Event Loop.", .{});
         log.info("- Deinitialized All Contexts.", .{});
         log.info("Cleaned up DisCo Core.", .{});

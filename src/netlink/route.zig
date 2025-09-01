@@ -1286,7 +1286,7 @@ pub const RouteConfig = struct {
 /// Request to Add the Route Destination (`dest`) to the provided Interface's (`if_index`) routing table
 pub fn requestAddRoute(
     alloc: mem.Allocator,
-    req_ctx: nl.RequestContext,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     dest: [4]u8,
     config: RouteConfig,
@@ -1351,7 +1351,7 @@ pub fn addRoute(
 /// Request the Delete the Route Destination (`dest`) from the provided Interface's (`if_index`) routing table
 pub fn requestDeleteRoute(
     alloc: mem.Allocator,
-    req_ctx: nl.RequestContext,
+    req_ctx: *nl.RequestContext,
     if_index: i32,
     dest: [4]u8,
     config: RouteConfig,

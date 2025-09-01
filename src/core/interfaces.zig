@@ -32,6 +32,10 @@ const ThreadHashMap = utils.ThreadHashMap;
 pub const Interface = struct {
     // Meta
     _init: bool = false,
+    penalty_time: ?zeit.Instant = null,
+    penalty: usize = 0,
+    min_penalty: usize = 100,
+    max_penalty: usize = 10_000,
     raw_sock: ?posix.socket_t = null,
     usage: UsageState = .unavailable,
     last_upd: zeit.Instant,
@@ -49,6 +53,9 @@ pub const Interface = struct {
     mode: u32,
     channel: ?u32 = null,
     ch_width: ?nl._80211.CHANNEL_WIDTH = null,
+    ssid: ?[]const u8 = null,
+    // Netlink Data
+    wiphy: nl._80211.Wiphy,
 
     /// DisCo Usage State of an Interface
     pub const UsageState = union(enum) {
@@ -57,7 +64,7 @@ pub const Interface = struct {
         modify: ArrayList(*ModifyContext),
         available,
         scan: core.networks.NetworkScanContext,
-        connect,
+        connect: core.connections.Connection,
         remove,
     };
 
@@ -110,11 +117,48 @@ pub const Interface = struct {
                 for (mods.items) |mod| alloc.destroy(mod);
                 mods.deinit(alloc);
             },
+            .connect => |*conn| conn.deinit(alloc),
             else => {},
         }
         alloc.free(self.name);
         alloc.free(self.phy_name);
+        nl.parse.freeBytes(alloc, nl._80211.Wiphy, self.wiphy);
+        //if (self.ssid) |ssid| alloc.free(ssid);
         self._init = false;
+    }
+
+    /// Check if the Interface is currently under a Penalty.
+    pub fn checkPenalty(self: *@This()) bool {
+        const last_penalty = self.penalty_time orelse return false;
+        const cur_time = zeit.instant(.{}) catch @panic("Missing Time Source?");
+        const under_penalty = @divFloor(cur_time.timestamp - last_penalty.timestamp, time.ns_per_ms) < self.penalty;
+        //log.debug("Penalty Check: {d}/{d}", .{ @divFloor(cur_time.timestamp - last_penalty.timestamp, time.ns_per_ms), self.penalty });
+        //defer if (!under_penalty) self.setPenalty(.down);
+        return under_penalty;
+    }
+
+    /// Set the current Penalty of the Interface.
+    pub fn setPenalty(self: *@This(), set: enum { up, down }) void {
+        defer {
+            if (self.penalty < self.min_penalty) self.penalty = self.min_penalty;
+            if (self.penalty > self.max_penalty) self.penalty = self.max_penalty;
+        }
+        self.penalty = switch (set) {
+            .up => if (self.penalty == 0) 1 else self.penalty * 5,
+            .down => @divFloor(self.penalty, 5),
+        };
+    }
+
+    /// Add a Penalty to the Interface.
+    pub fn addPenalty(self: *@This()) void {
+        self.penalty_time = zeit.instant(.{}) catch @panic("Missing Time Source?");
+        self.setPenalty(.up);
+    }
+
+    /// Subtract a Penalty from the Interface.
+    pub fn subtractPenalty(self: *@This()) void {
+        self.setPenalty(.down);
+        self.penalty_time = null;
     }
 
     /// Modify this Interface
@@ -199,8 +243,10 @@ pub const Interface = struct {
         mac,
     };
     /// Restore the Interface.
+    /// Note, this is blocking.
     pub fn restore(self: *@This(), alloc: mem.Allocator, kinds: []const RestoreKind) void {
         log.info("- Restoring Interface '{s}'...", .{ self.name });
+        //if (self.usage == .connect) self.usage.connect.stop();
         const has_ip: bool = if (self.ips[0]) |_| true else false;
         for (kinds) |kind| {
             switch (kind) {
@@ -358,7 +404,7 @@ pub const Context = struct {
     
     /// Update the status of all Interfaces
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
-        log.debug("Updating Interfaces: {s}", .{ @tagName(self.state) });
+        //log.debug("Updating Interfaces: {s}", .{ @tagName(self.state) });
         ifState: switch (self.state) {
             .ready => {
                 self.state = .request;
@@ -531,6 +577,8 @@ pub const Context = struct {
                         .mtu = link.link.MTU,
                         .ips = ips,
                         .cidrs = cidrs,
+                        .ssid = wifi_if.SSID,
+                        .wiphy = try nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy),
                         .last_upd = try zeit.instant(.{}),
                     };
                     self.interfaces.mutex.lock();
@@ -545,7 +593,13 @@ pub const Context = struct {
                             }
                         }
                         add_if.usage = upd_if.usage;
-                        upd_if.deinit(core_ctx.alloc);
+                        add_if.penalty_time = upd_if.penalty_time;
+                        add_if.penalty = upd_if.penalty;
+                        add_if.min_penalty = upd_if.min_penalty;
+                        add_if.max_penalty = upd_if.max_penalty;
+                        core_ctx.alloc.free(upd_if.name);
+                        core_ctx.alloc.free(upd_if.phy_name);
+                        nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
                     }
                     else {
                         log.info("New Interface Seen: ({s}) {s}", .{ MACF{ .bytes = add_if.mac[0..] }, add_if.name });

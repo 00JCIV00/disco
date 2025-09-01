@@ -55,7 +55,7 @@ fn sendDHCPMsg(
         .protocol = ip_hdr.protocol,
         .len = udp_hdr.length,
     };
-    var frame_buf: [1500]u8 = .{ 0 } ** 1500;
+    var frame_buf: [1500]u8 = undefined;
     const frame_end = eth_len + ip_len + udp_len + msg.len;
     const frame_len = frame_end + 4;
     var end: usize = frame_end;
@@ -144,8 +144,8 @@ pub fn handleDHCP(
     mac_addr: [6]u8,
     config: LeaseConfig,
 ) !Info {
-    log.debug("Starting DHCP...", .{});
-    defer log.debug("Finished DHCP!", .{});
+    //log.debug("Starting DHCP...", .{});
+    //defer log.debug("Finished DHCP!", .{});
     const dhcp_sock = try posix.socket(posix.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(Eth.ETH_P).IPv4));
     defer posix.close(dhcp_sock);
     const sock_addr = posix.sockaddr.ll{
@@ -761,7 +761,7 @@ pub fn releaseDHCP(
         .tx_id = transaction_id,
     };
     @memcpy(rel_hdr.client_hw_addr[0..6], mac_addr[0..]);
-    @memcpy(rel_hdr.client_addr[0..], client_ip[0..]);  
+    @memcpy(rel_hdr.client_addr[0..], client_ip[0..]);
     @memcpy(rel_buf[start..end], mem.asBytes(&rel_hdr));
     // - Add DHCP Message Type option
     start = end;

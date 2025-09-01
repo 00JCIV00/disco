@@ -122,43 +122,47 @@ pub fn ThreadArrayList(T: type) type {
     return struct {
         /// List Type
         pub const ListT: type = ArrayList(T);
+        /// Empty Thread Safe ArrayList
+        pub const empty: @This() = .{};
 
         /// Mutex Lock
-        _mutex: std.Thread.Mutex = .{},
+        mutex: std.Thread.Mutex = .{},
         /// ArrayList
-        _list: ListT,
+        list: ListT = .empty,
 
         /// List Items
+        /// Caller must unlock when finished with `list.mutex.unlock()`.
         pub fn items(self: *@This()) []T {
-            return self._list.items;
+            self.mutex.lock();
+            return self.list.items;
         }
 
         /// Initialize
         pub fn initCapacity(self: *@This(), alloc: mem.Allocator, num: usize) mem.Allocator.Error!ListT {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            self._list = try ListT.initCapacity(alloc, num);
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.list = try ListT.initCapacity(alloc, num);
         }
 
         /// Deinitialize
         pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            self._list.deinit(alloc);
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.list.deinit(alloc);
         }
 
         /// Append
         pub fn append(self: *@This(), alloc: mem.Allocator, item: T) mem.Allocator.Error!void {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            try self._list.append(alloc, item);
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            try self.list.append(alloc, item);
         }
 
         /// Append Slice
         pub fn appendSlice(self: *@This(), alloc: mem.Allocator, slice: []const T) mem.Allocator.Error!void {
-            self._mutex.lock();
-            defer self._mutex.unlock();
-            try self._list.appendSlice(alloc, slice);
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            try self.list.appendSlice(alloc, slice);
         }
     };
 }

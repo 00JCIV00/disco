@@ -40,6 +40,8 @@ pub const Network = struct {
     //beacon_interval: ?u16 = null,
     //bss_tsf: ?u64 = null,
     net_meta: *ThreadHashMap([6]u8, Meta),
+    /// Note, this should be cloned if it's used beyond one call of `core.Core.update()`.
+    scan_result: nl._80211.ScanResults,
 
     /// Meta Information about how a Network was Seen
     pub const Meta = struct {
@@ -89,10 +91,11 @@ pub const Network = struct {
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
         alloc.free(self.ssid);
         var meta_iter = self.net_meta.iterator();
-        while (meta_iter.next()) |meta_entry| 
+        while (meta_iter.next()) |meta_entry|
             meta_entry.value_ptr.deinit(alloc);
         self.net_meta.mutex.unlock();
         self.net_meta.deinit(alloc);
+        nl.parse.freeBytes(alloc, nl._80211.ScanResults, self.scan_result);
         alloc.destroy(self.net_meta);
     }
 
@@ -207,7 +210,10 @@ pub const Context = struct {
 
     /// Update Networks
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
-        defer _ = self._arena.reset(.retain_capacity);
+        //defer _ = self._arena.reset(.retain_capacity);
+        if (self._arena.state.end_index > 1_000)
+            _ = self._arena.reset(.retain_capacity);
+        //log.debug("Network Arena Capacity: {d}B", .{ self._arena.queryCapacity() });
         const scan_result_resps = core_ctx.nl80211_handler.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM");
         defer {
             for (scan_result_resps) |resp| {
@@ -256,8 +262,9 @@ pub const Context = struct {
                                     nl_ctx.req_ctx.nextSeqID();
                                     switch (nl_ctx.scan_state) {
                                         .trigger => {
-                                            const scan_config_entry = self.scan_configs.getEntry(scan_if.name) orelse continue;
+                                            if (scan_if.checkPenalty()) continue;
                                             defer self.scan_configs.mutex.unlock();
+                                            const scan_config_entry = self.scan_configs.getEntry(scan_if.name) orelse continue;
                                             const scan_config = scan_config_entry.value_ptr;
                                             try nl._80211.requestTriggerScan(
                                                 core_ctx.alloc,
@@ -267,6 +274,11 @@ pub const Context = struct {
                                             );
                                         },
                                         .results => {
+                                            if (nl_ctx.timer.read() > 10 * time.ns_per_s) {
+                                                log.warn("Scan timed out on Interface '{s}'.", .{ scan_if.name });
+                                                scan_if.usage = .available;
+                                                continue;
+                                            }
                                             if (!scan_results_ready) continue;
                                             try nl._80211.requestScanResults(
                                                 core_ctx.alloc,
@@ -288,12 +300,14 @@ pub const Context = struct {
                                             if (nl_ctx.req_ctx.getResponse()) |trigger_resp| {
                                                 if (trigger_resp) |resp_data| {
                                                     core_ctx.alloc.free(resp_data);
-                                                    //log.debug("Triggered a scan.", .{});
+                                                    log.debug("Triggered a scan.", .{});
+                                                    scan_if.subtractPenalty();
                                                     nl_ctx.scan_state = .results;
                                                     nl_ctx.nl_state = .request;
                                                 }
                                                 else |err| {
                                                     log.warn("Could not trigger scan w/ Interface '{s}': {s}", .{ scan_if.name, @errorName(err) });
+                                                    scan_if.addPenalty();
                                                     scan_if.usage = .available;
                                                 }
                                             }
@@ -349,11 +363,13 @@ pub const Context = struct {
                                                         .freq = bss.FREQUENCY,
                                                         .channel = @intCast(try nl._80211.channelFromFreq(bss.FREQUENCY)),
                                                         .net_meta = net_meta_map,
+                                                        .scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, result),
                                                     };
                                                     valid = true;
                                                     if (old_network_entry) |entry| {
                                                         const old_network = entry.value_ptr;
                                                         core_ctx.alloc.free(old_network.ssid);
+                                                        nl.parse.freeBytes(core_ctx.alloc, nl._80211.ScanResults, old_network.scan_result);
                                                     }
                                                     break :newNetwork new_network;
                                                 };

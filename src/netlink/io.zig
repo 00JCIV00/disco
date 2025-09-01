@@ -16,6 +16,7 @@ const nl = @import("../netlink.zig");
 const parse = @import("parse.zig");
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
+const HexF = utils.HexFormatter;
 const ThreadHashMap = utils.ThreadHashMap;
 
 /// Netlink Message Handler
@@ -24,12 +25,12 @@ pub const Handler = struct {
     pub const Response = union(enum) {
         pub const Timeout = struct {
             timer: time.Timer,
-            timeout: u32 = 100,
+            timeout: u32 = 1_000,
 
             pub fn check(self: *@This()) bool {
                 const now: u64 = self.timer.read();
-                const timeout: u64 = self.timeout * time.ns_per_ms;
-                return @divFloor(now, time.ns_per_ms) >= timeout;
+                //log.info("Now: {d}ms, Timeout: {d}ms", .{ @divFloor(now, time.ns_per_ms), self.timeout });
+                return @divFloor(now, time.ns_per_ms) >= self.timeout;
             }
         };
 
@@ -102,6 +103,7 @@ pub const Handler = struct {
         while (seq_resp_iter.next()) |resp| resp.value_ptr.deinit(self._alloc);
         self._seq_responses.mutex.unlock();
         self._seq_responses.deinit(self._alloc);
+        //log.debug("Total Command Response Maps: {d}", .{ self._cmd_response_maps.count() });
         var cmd_resp_map_iter = self._cmd_response_maps.iterator();
         while (cmd_resp_map_iter.next()) |resp_map_entry| {
             const resp_map = resp_map_entry.value_ptr;
@@ -110,6 +112,8 @@ pub const Handler = struct {
             resp_map.mutex.unlock();
             resp_map.deinit(self._alloc);
         }
+        self._cmd_response_maps.mutex.unlock();
+        self._cmd_response_maps.deinit(self._alloc);
     }
 
     /// Track a specific Request
@@ -149,7 +153,8 @@ pub const Handler = struct {
     /// Check for Responses/Messages from a specific Command (`cmd`).
     pub fn checkCmdResponses(self: *@This(), cmd: u16) bool {
         defer self._cmd_response_maps.mutex.unlock();
-        return self._cmd_response_maps.getEntry(cmd) != null;
+        const map = self._cmd_response_maps.getEntry(cmd) orelse return false;
+        return map.value_ptr.map.count() > 0;
     }
 
     /// Get a Response for a specific Request (`seq_id`).
@@ -178,6 +183,7 @@ pub const Handler = struct {
     pub fn getCmdResponses(self: *@This(), cmd: u16) ![]const anyerror![]const u8 {
         defer self._cmd_response_maps.mutex.unlock();
         const cmd_map_entry = self._cmd_response_maps.getEntry(cmd) orelse return &.{};
+        //defer self._cmd_response_maps.map.remove(cmd_map_entry.key_ptr.*);
         const cmd_resp_map = cmd_map_entry.value_ptr;
         defer cmd_resp_map.mutex.unlock();
         var cmd_resp_iter = cmd_resp_map.iterator();
@@ -212,7 +218,6 @@ pub const Handler = struct {
             const response = respCtx: {
                 defer self._seq_responses.mutex.unlock();
                 if (self._seq_responses.getEntry(msg.hdr.seq)) |resp_entry| break :respCtx resp_entry.value_ptr;
-                //self._seq_responses.mutex.unlock();
                 const msg_cmd = self.detectCmd(msg.hdr, msg.data) catch |err| {
                     self.handleError(err);
                     continue;
@@ -242,6 +247,7 @@ pub const Handler = struct {
                 };
                 break :respCtx resp_entry.value_ptr;
             };
+            if (response.* == .ready) continue;
             const resp_bytes = respData: {
                 var msg_buf = switch (response.*) {
                     .working => |buf| buf,
@@ -314,8 +320,8 @@ pub const Handler = struct {
 
     /// Handle an Error with this Netlink Message Handler
     pub fn handleError(self: *@This(), err: anyerror) void {
-        if (self.err_fn) |errFn| return errFn(err);
         log.debug("An Error occured with the Handler: {s}", .{ @errorName(err) });
+        if (self.err_fn) |errFn| return errFn(err);
     }
 
     /// Detect the Command 'Type' of Netlink Message using the provided Netlink Message Header (`hdr`) and `data`.
@@ -402,6 +408,7 @@ pub const Loop = struct {
         while (active.load(.acquire) and self._active.load(.acquire)) {
             const event_count = posix.epoll_wait(self._epoll_fd, events[0..], -1);
             for (events[0..event_count]) |event| {
+                if (!active.load(.acquire) or !self._active.load(.acquire)) break;
                 //log.debug("Received event on: {d}", .{ event.data.fd });
                 const handler = self._handlers.get(event.data.fd) orelse continue;
                 handler.handleResponse();

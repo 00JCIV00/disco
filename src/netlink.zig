@@ -210,7 +210,7 @@ pub const RequestContext = struct {
     /// Optional Netlink Request Handler
     handler: ?*io.Handler = null,
     /// Async Request Timeout in milliseconds (ms)
-    timeout: u32 = 100,
+    timeout: u32 = 1_000,
 
     /// Current Unique Sequence ID f/ new Netlink Requests
     var unique_seq_id: atomic.Value(u32) = .init(1000);
@@ -222,7 +222,7 @@ pub const RequestContext = struct {
             /// Netlink Request Handler
             handler: *io.Handler,
             /// Request Timeout in milliseconds (ms)
-            timeout: u32 = 100,
+            timeout: u32 = 1_000,
         },
         /// POSIX ID of the Netlink Socket for this Request
         /// Use this if you already have an existing Netlink Socket

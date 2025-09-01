@@ -170,12 +170,12 @@ pub const setup_cmd = CommandT{
             .description = 
                 \\Provide Connection Info for a specific Network in JSON format. 
                 \\            Ex: '{ "ssid": "SomeNetwork", "passphrase": "somepassphrase1" }'
-                \\            A list of masks can be viewed w/ `list --config` under "Connect".
+                \\            A list of fields can be viewed w/ `list --config` under "Connect".
             ,
             .opt_group = "ACTIVE",
-            //.short_name = 'C',
+            .short_name = 'N',
             .long_name = "connect-info",
-            .alias_long_names = &.{ "connection" },
+            .alias_long_names = &.{ "connection", "network" },
             .val = ValueT.ofType(core.connections.Config, .{
                 .set_behavior = .Multi,
                 .max_entries = 32,

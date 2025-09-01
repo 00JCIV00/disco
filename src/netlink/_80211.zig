@@ -601,6 +601,8 @@ pub const Interface = struct {
     WIPHY: u32,
     /// MAC address for the interface
     MAC: [6]u8,
+    /// Generation of the Interface, often incremented on each update
+    GENERATION: ?u32 = null,
     /// Interface flags (up, down, etc.)
     FLAGS: ?u32 = null,
     /// MAC address mask, used in virtual MAC configurations
@@ -609,6 +611,8 @@ pub const Interface = struct {
     FOUR_ADDR: ?bool = null,
     /// SSID to be broadcasted in case of AP mode
     SSID: ?[]const u8 = null,
+    ///// BSSID of the connnected AP
+    //BSSID: ?[6]u8 = null,
     /// WPA versions supported by the interface
     WPA_VERSIONS: ?u32 = null,
     /// Cipher suites supported by the interface
@@ -632,7 +636,7 @@ pub const Interface = struct {
 pub const Wiphy = struct {
     pub const AttrE = ATTR;
 
-    pub const BAND_ATTR = enum(u32) {
+    pub const BAND_ATTR = enum(u16) {
         __INVALID,
         FREQS,
         RATES,
@@ -658,7 +662,7 @@ pub const Wiphy = struct {
         pub const AttrE = BAND_ATTR;
         pub const _grouped_attr = {};
 
-        pub const FREQUENCY_ATTR = enum(u32) {
+        pub const FREQUENCY_ATTR = enum(u16) {
             __INVALID,
             FREQ,
             DISABLED,
@@ -704,7 +708,7 @@ pub const Wiphy = struct {
             /// The frequency in MHz
             FREQ: u32,
             /// Indicates if the frequency is disabled
-            DISABLED: bool = false,
+            DISABLED: ?bool = null,
             /// No Initiating Radiation (IR); prevents starting transmissions
             NO_IR: ?bool = null,
             /// Radar detection requirement for this frequency
@@ -856,7 +860,7 @@ pub const Wiphy = struct {
     /// Supported interface types, such as station, AP, monitor, etc.
     SUPPORTED_IFTYPES: ?[]const u32 = null,
     /// Supported frequency bands for the WIPHY
-    WIPHY_BANDS: ?[]const Band= null,
+    WIPHY_BANDS: ?[]const Band = null,
     /// Supported commands for the WIPHY
     SUPPORTED_COMMANDS: ?[]const u32 = null,
     /// Maximum duration for remain-on-channel operations
@@ -870,11 +874,13 @@ pub const Wiphy = struct {
     /// Feature flags supported by the WIPHY
     FEATURE_FLAGS: ?u32 = null,
     /// High Throughput (HT) capability mask
-    HT_CAPABILITY_MASK: [26]u8 = .{ 0 } ** 26,
+    //HT_CAPABILITY_MASK: [26]u8 = .{ 0 } ** 26,
+    HT_CAPABILITY_MASK: ?[26]u8 = null,
     /// High Throughput (HT) capability
     HT_CAPABILITY: u32 = 0,
     /// Very High Throughput (HT) capability mask
-    VHT_CAPABILITY_MASK: [12]u8 = .{ 0 } ** 12,
+    //VHT_CAPABILITY_MASK: [12]u8 = .{ 0 } ** 12,
+    VHT_CAPABILITY_MASK: ?[12]u8 = null,
     /// Very High Throughput (VHT) capability
     VHT_CAPABILITY: u32 = 0,
     /// Use RRM
@@ -882,7 +888,7 @@ pub const Wiphy = struct {
 };
 
 /// Scan Flags
-pub const SCAN_FLAG = enum(u32) {
+pub const SCAN_FLAG = enum(u16) {
     /// Scan with low priority to minimize interference with other traffic
     LOW_PRIORITY = 1 << 0,
     /// Flush cached scan results before starting a new scan
@@ -1054,7 +1060,8 @@ pub const SecurityInfo = struct {
 };
 
 /// Basic Service Set (BSS)
-pub const BSS = enum(u32) {
+//pub const BSS = enum(u32) {
+pub const BSS = enum(u16) {
     /// Invalid value for BSS attributes
     INVALID = 0,
     /// Basic Service Set Identifier (BSSID)
@@ -1922,6 +1929,21 @@ pub const STA_INFO = enum(u16) {
     CONNECTED_TO_AS = 43,
 };
 
+/// Result of `NEW_STATION`
+pub const Station = struct {
+    pub const AttrE = ATTR;
+
+    /// Interface Index on which this Station was found
+    IFINDEX: u32,
+    /// MAC address for the interface
+    MAC: [6]u8,
+    /// Generation of the Interface, often incremented on each update
+    GENERATION: ?u32 = null,
+    /// Station Info
+    STA_INFO: StationInfo,
+};
+
+/// Station Info
 pub const StationInfo = struct {
     pub const AttrE = STA_INFO;
     const StationFlag = packed struct {
@@ -2301,6 +2323,7 @@ pub fn requestStation(
                 .len = 0,
                 .type = info.FAMILY_ID,
                 .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                //.flags = c(nl.NLM_F).REQUEST,
                 .seq = 0,
                 .pid = 0,
             },
@@ -2310,7 +2333,7 @@ pub fn requestStation(
             },
         },
         &.{
-            .{ 
+            .{
                 .hdr = .{ .type = c(ATTR).IFINDEX },
                 .data = mem.toBytes(if_index)[0..],
             },
@@ -2324,69 +2347,53 @@ pub fn requestStation(
 }
 /// Get the details for a Station.
 pub fn getStation(
-    alloc: mem.Allocator, 
-    if_index: i32, 
+    alloc: mem.Allocator,
+    if_index: i32,
     bssid: [6]u8,
-) !StationInfo {
+) !Station {
     var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestStation(alloc, &req_ctx, if_index, bssid);
-    const buf_size = 5_000;
-    var resp_buf: [buf_size]u8 = undefined;
-    const resp_len = try posix.recv(
-        req_ctx.sock,
-        resp_buf[0..],
-        0,
+    defer posix.close(req_ctx.sock);
+    const resp_buf = try handleStationSock(alloc, req_ctx.sock);
+    if (resp_buf.len == 0) return error.NoStationFound;
+    return resp_buf[0];
+}
+/// Parse the provided `bytes` to a Station Info instance.
+pub fn parseStation(alloc: mem.Allocator, bytes: []const u8) !Station {
+    return try nl.parse.fromBytes(alloc, Station, bytes[@sizeOf(nl.generic.Header)..]);
+}
+/// Handle a NEW_STATION response from the provided `msg_buf`.
+pub fn handleStationBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Station {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    var handle_ctx: nl.HandleContext = .{
+        .config = .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_STATION,
+        },
+    };
+    return try nl.handleTypeBuf(
+        alloc,
+        msg_buf,
+        nl.generic.Request,
+        Station,
+        parseStation,
+        &handle_ctx,
     );
-    var offset: usize = 0;
-    var inner_count: usize = 1;
-    while (offset < resp_len) : (inner_count += 1) {
-        // Netlink Header
-        var start: usize = offset;
-        var end: usize = offset + @sizeOf(nl.MessageHeader);
-        const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-        log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
-        if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-            return error.InvalidMessage;
-        if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-            start = end;
-            end += @sizeOf(nl.ErrorHeader);
-            const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-            switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-                .SUCCESS => {},
-                .BUSY => return error.BUSY,
-                else => |err| {
-                    log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-                    return error.OSError;
-                },
-            }
-        }
-        // General Header
-        start = end;
-        end += @sizeOf(nl.generic.Header);
-        const gen_hdr: *const nl.generic.Header = @alignCast(@ptrCast(resp_buf[start..end]));
-        if (gen_hdr.cmd != c(CMD).NEW_STATION) return error.NonStationResponse;
-        log.debug("Received Scan Results. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-        // Data
-        while (end < nl_resp_hdr.len - @sizeOf(nl.MessageHeader)) {
-            defer end = mem.alignForward(usize, end, 4);
-            start = end;
-            end += nl.attr_hdr_len;
-            const attr_hdr: *const nl.AttributeHeader = @alignCast(@ptrCast(resp_buf[start..end]));
-            start = end;
-            end += attr_hdr.len - nl.attr_hdr_len;
-            switch (attr_hdr.type) {
-                c(ATTR).STA_INFO => {
-                    return nl.parse.fromBytes(alloc, StationInfo, resp_buf[start..end]) catch {
-                        offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-                        continue;
-                    };
-                },
-                //c(ATTR).GENERATION => attr_gen = @alignCast(@ptrCast(resp_buf[start..end])),
-                else => continue,
-            }
-        }
-    }
-    return error.NoStationFound;
+}
+/// Handle a NEW_STATION response on the provided Netlink Socket (`nl_sock`).
+pub fn handleStationSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Station {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    return try nl.handleTypeSock(
+        alloc,
+        nl_sock,
+        nl.generic.Request,
+        Station,
+        parseStation,
+        .{
+            .nl_type = info.FAMILY_ID,
+            .fam_cmd = c(CMD).NEW_STATION,
+        },
+    );
 }
 
 /// Request the details for the Wireless Interface (`if_index`).
@@ -2437,7 +2444,7 @@ pub fn requestAllInterfaces(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !
         req_ctx,
     );
 }
-/// Get the details for a Wireless Interface.
+/// Get the details for a Wireless Interface (`if_index`).
 pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
     var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestInterface(alloc, &req_ctx, if_index);
@@ -2477,7 +2484,7 @@ pub fn handleInterfaceBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const In
         &handle_ctx,
     );
 }
-/// Handle a NEW_INTERFACE response.
+/// Handle a NEW_INTERFACE response on the provided Netlink Interface (`nl_sock`).
 pub fn handleInterfaceSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Interface {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     return try nl.handleTypeSock(
@@ -3266,8 +3273,8 @@ pub fn requestRegisterFrames(
                     },
                 );
             }
-            break :attrs try attr_list.toOwnedSlice(alloc);
         }
+        break :attrs try attr_list.toOwnedSlice(alloc);
     };
     defer {
         for (attrs) |attr| alloc.free(attr.data);
@@ -3398,7 +3405,7 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
     for (bands) |band| {
         for (band.FREQS orelse return error.MissingFreqs) |freq| {
             if (freq.FREQ != ie_freq) continue;
-            if (freq.DISABLED) return .{ null, null };
+            if (freq.DISABLED orelse false) return .{ null, null };
             const ht = ht: {
                 var buf: [26]u8 = undefined;
                 @memcpy(buf[0..2], mem.toBytes(band.HT_CAPA)[0..]);
@@ -3540,11 +3547,55 @@ pub fn handleAuthResponseSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]
     );
 }
 
+/// Request to Deauthenticate the given Station (`mac`) from the provided Interface (`if_index`).
+/// Note, this works from both AP and Station modes.
+pub fn requestDeauthenticate(
+    alloc: mem.Allocator,
+    req_ctx: *nl.RequestContext,
+    if_index: i32,
+    mac: [6]u8,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.request(
+        alloc, 
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).DEAUTHENTICATE,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = mac[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).REASON_CODE },
+                .data = mem.toBytes(@as(u16, 1))[0..],
+            },
+        },
+        req_ctx,
+    );
+    //try nl.handleAck(nl_sock);
+}
+
 /// Request to Associate to the provided Network `ssid`.
 pub fn requestAssociate(
     alloc: mem.Allocator,
-    req_ctx: nl.RequestContext,
-    net_if: Interface,
+    req_ctx: *nl.RequestContext,
+    net_if: i32,
     wiphy: Wiphy,
     ssid: []const u8,
     scan_results: ScanResults,
@@ -3562,7 +3613,7 @@ pub fn requestAssociate(
     try attr_list.appendSlice(alloc, &.{
         .{ 
             .hdr = .{ .type = c(ATTR).IFINDEX },
-            .data = mem.toBytes(net_if.IFINDEX)[0..],
+            .data = mem.toBytes(net_if)[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).SOCKET_OWNER },
@@ -3590,7 +3641,7 @@ pub fn requestAssociate(
         },
         .{
             .hdr = .{ .type = c(ATTR).HT_CAPABILITY_MASK, .len = 30 },
-            .data = (wiphy.HT_CAPABILITY_MASK)[0..],
+            .data = (wiphy.HT_CAPABILITY_MASK orelse @as([26]u8, .{ 0 } ** 26))[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).VHT_CAPABILITY },
@@ -3598,7 +3649,7 @@ pub fn requestAssociate(
         },
         .{
             .hdr = .{ .type = c(ATTR).VHT_CAPABILITY_MASK },
-            .data = (wiphy.VHT_CAPABILITY_MASK)[0..],
+            .data = (wiphy.VHT_CAPABILITY_MASK orelse @as([12]u8, .{ 0 } ** 12))[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE, .len = 6 },
@@ -3677,8 +3728,9 @@ pub fn requestAssociate(
     //try nl.handleAck(nl_sock);
 }
 
-/// Request to Disconnect the corresponding Interface (`if_index`)
-pub fn requestDisconnect(
+/// Request to Disassociate the given Station (`mac`) from the provided Interface (`if_index`).
+/// Note, this works from both AP and Station modes.
+pub fn requestDisassociate(
     alloc: mem.Allocator,
     req_ctx: *nl.RequestContext,
     if_index: i32,
@@ -3820,7 +3872,7 @@ pub fn requestAuthPort(
 }
 
 /// Request to Add a `key` to the given `key_index` for a specific connection.
-pub fn addKey(
+pub fn requestAddKey(
     alloc: mem.Allocator,
     req_ctx: *nl.RequestContext,
     if_index: i32,
@@ -3847,7 +3899,7 @@ pub fn addKey(
             },
         },
         if (mac) |_mac| &.{
-            .{ 
+            .{
                 .hdr = .{ .type = c(ATTR).IFINDEX },
                 .data = mem.toBytes(if_index)[0..],
             },
