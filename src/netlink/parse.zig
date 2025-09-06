@@ -154,7 +154,7 @@ pub fn setOptFromBytes(
     if (raw_info != .optional) return error.NotAnOptional;
     const info = raw_info.optional;
     const child_info = @typeInfo(info.child);
-    errdefer freeOptBytes(alloc, T, instance.*);
+    //errdefer freeOptBytes(alloc, T, instance.*);
     if (instance.*) |*_instance| {
         if (child_info == .pointer and child_info.pointer.size == .slice)
             return try setPtrFromBytes(alloc, info.child, _instance, bytes)
@@ -225,7 +225,7 @@ pub fn baseFromBytes(
     if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed"))
         return try rawFromBytes(T, bytes);
     var instance = base_instance;
-    errdefer freeBytes(alloc, T, instance);
+    //errdefer freeBytes(alloc, T, instance);
     comptime var req_fields = 0;
     inline for (meta.fields(T)) |field| {
         const field_info = @typeInfo(field.type);
@@ -547,8 +547,11 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
 /// Clone an `instance` of Netlink Type (`T`) using the provided Allocator (`alloc`).
 /// TODO: Make this less wasteful with Allocations
 pub fn clone(alloc: mem.Allocator, T: type, instance: T) !T {
-    const bytes = try toBytes(alloc, T, instance);
-    defer alloc.free(bytes);
+    var buf: [16_000]u8 = undefined;
+    var fba: heap.FixedBufferAllocator = .init(buf[0..]);
+    const bytes = try toBytes(fba.allocator(), T, instance);
+    //const bytes = try toBytes(alloc, T, instance);
+    //defer alloc.free(bytes);
     //log.debug("Clone: {d}B\n{s}", .{ bytes.len, HexF{ .bytes = bytes } });
     return try fromBytes(alloc, T, bytes);
 }
@@ -603,6 +606,7 @@ pub fn Iterator(
             end = self.index + iter_len;
             //if (self.bytes.len -| end == 0) return null;
             if (!is_peek) self.index = end;
+            if (end > self.bytes.len) return null;
             return .{ .hdr = hdr, .data = self.bytes[start..end] };
         }
         pub fn next(self: *@This()) ?IterT {
