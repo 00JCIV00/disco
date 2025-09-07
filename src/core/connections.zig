@@ -115,14 +115,15 @@ pub const Context = struct {
     /// Deinitialize all Maps.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         self.statuses.deinit(alloc);
+        alloc.destroy(self.statuses);
         self._candidates.deinit(alloc);
+        alloc.destroy(self._candidates);
     }
 
     /// Update Connections
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
-        //if (self.timer.read() < 5 * time.ns_per_s) return;
-        //self.timer.reset();
         try self.scoreCandidates(core_ctx);
+        //log.debug("Candidates: {d}", .{ self._candidates.items.len });
         const statuses = self.statuses.items();
         defer self.statuses.mutex.unlock();
         core_ctx.if_ctx.interfaces.mutex.lock();
@@ -133,11 +134,16 @@ pub const Context = struct {
             if (conn_if.usage != .connect) continue;
             conn_if.usage.connect.handle(core_ctx) catch |err| {
                 switch (err) {
-                    error.NODEV,
-                    error.OSError,
-                    => {
+                    error.OSError => {
                         conn_if.penalty = conn_if.max_penalty;
-                        log.warn("Potential issue with Interface '{s}' while connected. Cooling off for '{d}'ms.", .{ conn_if.name, conn_if.max_penalty });
+                        log.warn("Potential issue with the Interface '{s}' or the Network '{s}'. Cooling off for '{d}'ms.", .{ conn_if.name, conn_if.usage.connect.ssid, conn_if.max_penalty });
+                    },
+                    error.NODEV,
+                    error.BUSY,
+                    => {
+                        log.warn("The Interface '{s}' is in an unrecoverable state ('{s}'). Please try unplugging it for 5 seconds then plugging it back in.", .{ conn_if.name, @errorName(err) });
+                        conn_if.usage.connect.deinit(core_ctx.alloc);
+                        conn_if.usage = .{ .err = err };
                     },
                     else => {},
                 }
@@ -203,7 +209,7 @@ pub const Context = struct {
                     const age = @min(now - last_seen, max_age);
                     //log.debug("- Age: {d}ms", .{ age });
                     //const percentage: u8 = @intFromFloat(@as(f128, @floatFromInt(@divFloor(age, max_age) * 100)));
-                    const percent: f16 = @as(f16, @floatFromInt(age)) / @as(f16, @floatFromInt(max_age)) * 100; 
+                    const percent: f16 = @as(f16, @floatFromInt(age)) / @as(f16, @floatFromInt(max_age)) * 100;
                     //log.debug("- Percent: {d}", .{ percent });
                     const diff = 100.0 - percent;
                     break :timeScore @intFromFloat(@min(diff * 0.5, 50));
@@ -221,6 +227,7 @@ pub const Context = struct {
                     .score = @min(100, time_score +| sig_score),
                     .bssid = network.bssid,
                     .conn_if = net_meta_entry.key_ptr.*,
+                    .channel = network.channel,
                     .config = config,
                     .network = network.bssid,
                 };
@@ -245,6 +252,7 @@ const Candidate = struct {
     score: u8,
     bssid: [6]u8,
     conn_if: [6]u8,
+    channel: u32,
     config: Config,
     network: [6]u8,
 
@@ -266,11 +274,13 @@ const Candidate = struct {
             \\- Score:   {d}
             \\- BSSID:   {s}
             \\- Conn IF: {s}
+            \\- Channel: {d}
             \\
             , .{
                 self.score,
                 MACF{ .bytes = self.bssid[0..] },
                 MACF{ .bytes = self.conn_if[0..] },
+                self.channel,
             },
         );
     }
@@ -316,6 +326,7 @@ pub const Connection = struct {
         //search,
         /// Authenticating to the Network
         auth: struct {
+            auth_timer: time.Timer,
             sae_state: enum {
                 setup,
                 commit,
@@ -495,6 +506,9 @@ pub const Connection = struct {
             .setup => {
                 nl_state: switch (self._nl_state) {
                     .ready, .request => {
+                        self._nl_state = .ready;
+                        self._thread_state = .ready;
+                        conn_if.resetPenalty();
                         self._nl80211_req_ctx.nextSeqID();
                         try nl._80211.requestRegisterFrames(
                             core_ctx.alloc,
@@ -527,22 +541,24 @@ pub const Connection = struct {
                     },
                     .parse => {
                         const setup_resp = self._nl80211_req_ctx.getResponse().?;
-                        if (setup_resp) |resp_data| {
-                            core_ctx.alloc.free(resp_data);
-                            self._nl_state = .request;
-                        }
+                        if (setup_resp) |resp_data| //
+                            core_ctx.alloc.free(resp_data)
                         else |err| regFrameErr: {
                             if (err == error.ALREADY) break :regFrameErr;
                             log.warn("Could not set up Interface '{s}' for a Connection: {s}", .{ conn_if.name, @errorName(err) });
                             return err;
                         }
                         log.debug("Finished setup for Connection: {s} | {s}", .{ self.ssid, conn_if.name });
-                        self._state = .{ .auth = .{} };
+                        self._nl_state = .request;
+                        self._state = .{ .auth = .{ .auth_timer = try .start() } };
                         continue :state self._state;
                     },
                 }
             },
             .auth => |*auth_ctx| {
+                errdefer {
+                    auth_ctx.auth_timer.reset();
+                }
                 // Authenticate
                 switch (self.security) {
                     .open, .wpa2, .wpa3t => {
@@ -563,6 +579,10 @@ pub const Connection = struct {
                             },
                             .await_response => {
                                 //log.debug("Awaiting Auth Response...", .{});
+                                if (@divFloor(auth_ctx.auth_timer.read(), time.ns_per_ms) > 1_000) {
+                                    log.warn("Connection {s} | {s}: Failed Authentication (Timed Out)", .{ self.ssid, conn_if.name });
+                                    return error.AuthTimeout;
+                                }
                                 if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).AUTHENTICATE)) return;
                                 self._nl_state = .parse;
                                 continue :nlState self._nl_state;
@@ -571,6 +591,10 @@ pub const Connection = struct {
                                 //log.debug("Received Auth Response...", .{});
                                 const auth_resps = try self._nl80211_req_ctx.handler.?.getCmdResponses(c(nl._80211.CMD).AUTHENTICATE);
                                 defer core_ctx.alloc.free(auth_resps);
+                                if (auth_resps.len == 0) {
+                                    log.warn("Connection {s} | {s}: Failed Authentication (No Response)", .{ self.ssid, conn_if.name });
+                                    return error.NoResponse;
+                                }
                                 var valid = false;
                                 var auth_err: anyerror = undefined;
                                 for (auth_resps) |auth_resp| {
@@ -578,11 +602,10 @@ pub const Connection = struct {
                                         core_ctx.alloc.free(resp_data);
                                         valid = true;
                                     } //
-                                    else |err| //
-                                        auth_err = err;
+                                    else |err| auth_err = err;
                                 }
                                 if (!valid) {
-                                    log.warn("Could not Authenticate with Interface '{s}': {s}", .{ conn_if.name, @errorName(auth_err) });
+                                    log.warn("Connection {s} | {s}: Failed Authentication ({s})", .{ self.ssid, conn_if.name, @errorName(auth_err) });
                                     return auth_err;
                                 }
                                 log.debug("Connection {s} | {s}: Authenticated ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
@@ -751,14 +774,21 @@ pub const Connection = struct {
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
                                 self._nl80211_req_ctx.nextSeqID();
-                                try nl._80211.requestAssociate(
+                                nl._80211.requestAssociate(
                                     core_ctx.alloc,
                                     &self._nl80211_req_ctx,
                                     conn_if.index,
                                     conn_if.wiphy,
                                     self.ssid,
                                     self._scan_result,
-                                );
+                                ) catch |err| {
+                                    log.warn("Connection {s} | {s}: Association Error: {s}", .{ self.ssid, conn_if.name, @errorName(err) });
+                                    switch (err) {
+                                        //error.MissingOperatingClasses => self._retries = self.max_retries,
+                                        else => {},
+                                    }
+                                    return err;
+                                };
                                 self._nl_state = .await_response;
                                 continue :nlState self._nl_state;
                             },
@@ -768,6 +798,9 @@ pub const Connection = struct {
                                 continue :nlState self._nl_state;
                             },
                             .parse => {
+                                errdefer {
+                                    self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
+                                }
                                 if (self._nl80211_req_ctx.getResponse()) |assoc_resp| {
                                     if (assoc_resp) |resp_data| {
                                         core_ctx.alloc.free(resp_data);
@@ -777,6 +810,7 @@ pub const Connection = struct {
                                         continue :state self._state;
                                     }
                                     else |err| {
+                                        log.warn("Connection {s} | {s}: Association Error: {s}", .{ self.ssid, conn_if.name, @errorName(err) });
                                         log.warn("Could not Associate to '{s}': {s}", .{ self.ssid, @errorName(err) });
                                         return err;
                                     }
@@ -1002,6 +1036,11 @@ pub const Connection = struct {
                                         if (err == error.EXIST) "There's already a Default Gateway."
                                         else @errorName(err),
                                     });
+                                    if (err == error.EXIST) {
+                                        dhcp_setup.* = .ip;
+                                        self._state = .{ .conn = .init };
+                                        continue :state self._state;
+                                    }
                                     return err;
                                 };
                                 defer core_ctx.alloc.free(add_gw_data);
@@ -1020,6 +1059,10 @@ pub const Connection = struct {
                         if (self._dhcp_info.?.dns_ips.len == 0) {
                             self._state = .{ .conn = .init };
                             continue :state self._state;
+                        }
+                        errdefer {
+                            self._thread_state = .ready;
+                            self._state = .{ .conn = .init };
                         }
                         switch (self._thread_state) {
                             .ready => {
@@ -1088,7 +1131,7 @@ pub const Connection = struct {
                         }
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
-                                log.debug("Requesting Station Info...", .{});
+                                //log.debug("Requesting Station Info...", .{});
                                 self._nl80211_req_ctx.nextSeqID();
                                 self._nl80211_req_ctx.seq_id = 11111;
                                 try nl._80211.requestStation(
@@ -1106,7 +1149,7 @@ pub const Connection = struct {
                                 continue :nlState self._nl_state;
                             },
                             .parse => {
-                                log.debug("Received Station Info Response.", .{});
+                                //log.debug("Received Station Info Response.", .{});
                                 const station_resp = self._nl80211_req_ctx.getResponse() orelse error.NoStationInfo;
                                 const station_data = station_resp catch |err| {
                                     log.warn("Could not update Station Status: {s}", .{ @errorName(err) });

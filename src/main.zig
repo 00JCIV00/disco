@@ -83,9 +83,9 @@ pub fn main() !void {
             log.err("Memory leak detected!", .{});
     }
     const gpa_alloc = gpa.allocator();
-    var sfba = heap.stackFallback(1_000_000, gpa_alloc);
-    const alloc = sfba.get();
-    //const alloc = gpa.allocator();
+    //var sfba = heap.stackFallback(1_000_000, gpa_alloc);
+    //const alloc = sfba.get();
+    const alloc = gpa.allocator();
 
     // Get NL80211 Control Info
     try nl._80211.initCtrlInfo(alloc);

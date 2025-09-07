@@ -395,6 +395,8 @@ pub const Core = struct {
         log.info("- Deinitialized File Serving.", .{});
         //self.arena.deinit();
         self.nl_event_loop.deinit(self.alloc);
+        self.alloc.destroy(self.nl80211_handler);
+        self.alloc.destroy(self.rtnetlink_handler);
         //self.nl_event_loop.stop(self.alloc);
         log.info("- Deinitialized Netlink Event Loop.", .{});
         log.info("- Deinitialized All Contexts.", .{});

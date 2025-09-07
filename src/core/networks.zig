@@ -40,7 +40,6 @@ pub const Network = struct {
     //beacon_interval: ?u16 = null,
     //bss_tsf: ?u64 = null,
     net_meta: *ThreadHashMap([6]u8, Meta),
-    /// Note, this should be cloned if it's used beyond one call of `core.Core.update()`.
     scan_result: nl._80211.ScanResults,
 
     /// Meta Information about how a Network was Seen
@@ -150,8 +149,12 @@ pub const NetworkScanContext = union(enum) {
     },
 };
 
-/// Network Context
+/// Network Contextrtnetlink_handler
 pub const Context = struct {
+    /// Buffer
+    _buffer: [512_000]u8 = undefined,
+    /// Fixed Buffer Allocator
+    _arena_fba: *heap.FixedBufferAllocator,
     /// Arena
     _arena: *heap.ArenaAllocator,
     /// Arena Allocator
@@ -164,8 +167,11 @@ pub const Context = struct {
     /// Initialize all Maps.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
+        self._arena_fba = core_ctx.alloc.create(heap.FixedBufferAllocator) catch @panic("OOM");
+        self._arena_fba.* = .init(self._buffer[0..]);
         self._arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
-        self._arena.* = .init(core_ctx.alloc);
+        self._arena.* = .init(self._arena_fba.allocator());
+        //self._arena.* = .init(core_ctx.alloc);
         self._a_alloc = self._arena.allocator();
         self.scan_configs = core_ctx.alloc.create(ThreadHashMap([]const u8, nl._80211.TriggerScanConfig)) catch @panic("OOM");
         self.scan_configs.* = .empty;
@@ -206,6 +212,7 @@ pub const Context = struct {
         alloc.destroy(self.networks);
         self._arena.deinit();
         alloc.destroy(self._arena);
+        alloc.destroy(self._arena_fba);
     }
 
     /// Update Networks
@@ -231,10 +238,11 @@ pub const Context = struct {
             const scan_results_ready: bool = resultsReady: {
                 for (scan_result_resps) |response| {
                     const data = response catch continue;
+                    //log.debug("Scan Results Len: {d}B", .{ data.len });
                     const results = try nl._80211.handleScanResultsBuf(self._a_alloc, data);
                     for (results) |result| {
                         if (result.IFINDEX != scan_if.index) continue;
-                        log.debug("Found New Scan Results!", .{});
+                        //log.debug("Found New Scan Results! ({s})", .{ scan_if.name });
                         break :resultsReady true;
                     }
                 }
@@ -314,6 +322,8 @@ pub const Context = struct {
                                         },
                                         .results => results: {
                                             defer scan_if.usage = .available;
+                                            var parse_time: time.Timer = try .start();
+                                            defer log.debug("Parse Time: {d}ms", .{ @divFloor(parse_time.read(), time.ns_per_ms) });
                                             const scan_result_data: []const u8 = nl_ctx.req_ctx.getResponse().? catch |err| {
                                                 log.warn("Could not get Scan Results for Interface '{s}': {s}", .{ scan_if.name, @errorName(err) });
                                                 break :results;
@@ -365,6 +375,13 @@ pub const Context = struct {
                                                         .net_meta = net_meta_map,
                                                         .scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, result),
                                                     };
+                                                    //log.debug("{s}===================\n", .{ new_network });
+                                                    confs: for (core_ctx.config.connect_configs) |conf| {
+                                                        if (mem.eql(u8, conf.ssid, new_network.ssid)) {
+                                                            log.debug("{s}===================\n", .{ new_network });
+                                                            break :confs;
+                                                        }
+                                                    }
                                                     valid = true;
                                                     if (old_network_entry) |entry| {
                                                         const old_network = entry.value_ptr;
@@ -374,7 +391,6 @@ pub const Context = struct {
                                                     break :newNetwork new_network;
                                                 };
                                                 self.networks.put(core_ctx.alloc, bss.BSSID, new_network) catch @panic("OOM");
-                                                log.debug("{s}===================\n", .{ new_network });
                                             }
                                         },
                                     }
