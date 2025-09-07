@@ -35,7 +35,7 @@ pub const Interface = struct {
     penalty_time: ?zeit.Instant = null,
     penalty: usize = 0,
     min_penalty: usize = 100,
-    max_penalty: usize = 10_000,
+    max_penalty: usize = 6_000,
     raw_sock: ?posix.socket_t = null,
     usage: UsageState = .unavailable,
     last_upd: zeit.Instant,
@@ -159,6 +159,12 @@ pub const Interface = struct {
     pub fn subtractPenalty(self: *@This()) void {
         self.setPenalty(.down);
         self.penalty_time = null;
+    }
+
+    /// Reset the Penalty of the Interface.
+    pub fn resetPenalty(self: *@This()) void {
+        self.penalty_time = null;
+        self.penalty = 0;
     }
 
     /// Modify this Interface
