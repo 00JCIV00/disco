@@ -133,6 +133,7 @@ pub const Handler = struct {
 
     /// Track a specific Command
     pub fn trackCommand(self: *@This(), cmd: u16) !void {
+        if (self._cmd_response_maps.get(cmd)) |_| return;
         try self._cmd_response_maps.put(self._alloc, cmd, .empty);
     }
 
@@ -153,8 +154,14 @@ pub const Handler = struct {
     /// Check for Responses/Messages from a specific Command (`cmd`).
     pub fn checkCmdResponses(self: *@This(), cmd: u16) bool {
         defer self._cmd_response_maps.mutex.unlock();
-        const map = self._cmd_response_maps.getEntry(cmd) orelse return false;
-        return map.value_ptr.map.count() > 0;
+        const map_entry = self._cmd_response_maps.getEntry(cmd) orelse return false;
+        const map = map_entry.value_ptr;
+        defer map.mutex.unlock();
+        var map_iter = map.iterator();
+        while (map_iter.next()) |resp| {
+            if (resp.value_ptr.* == .ready) return true;
+        }
+        return false;
     }
 
     /// Get a Response for a specific Request (`seq_id`).
@@ -203,6 +210,7 @@ pub const Handler = struct {
                 },
             }
         }
+        //log.debug("Total Responses: {d}", .{ resp_list.items.len });
         return try resp_list.toOwnedSlice(self._alloc);
     }
 
@@ -243,11 +251,16 @@ pub const Handler = struct {
                         self.handleError(err);
                         continue;
                     };
+                    //log.debug("MAP COUNT: {d} | CMD: {d}", .{ cmd_resp_map.map.count(), msg_cmd });
                     break :respEntry cmd_resp_map.map.getEntry(msg.hdr.seq).?;
                 };
                 break :respCtx resp_entry.value_ptr;
             };
             if (response.* == .ready) continue;
+            //if (response.* == .ready) freeOld: {
+            //    const old_data = response.ready catch break :freeOld;
+            //    self._alloc.free(old_data);
+            //}
             const resp_bytes = respData: {
                 var msg_buf = switch (response.*) {
                     .working => |buf| buf,
