@@ -3601,8 +3601,8 @@ pub fn requestAssociate(
     scan_results: ScanResults,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy) orelse return error.MissingOperatingClasses;
-    defer alloc.free(op_classes);
+    const op_classes = try InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy); //orelse return error.MissingOperatingClasses;
+    defer if (op_classes) |ocs| alloc.free(ocs);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY;
     log.debug("Ch: {d}, Freq: {d}MHz", .{ try channelFromFreq(wiphy_freq), wiphy_freq });
@@ -3666,12 +3666,10 @@ pub fn requestAssociate(
     defer alloc.free(ie_bytes);
     switch (security) {
         .wpa2, .wpa3t, .wpa3 => {
-            const rsn = ies.RSN orelse return error.MissingRSN;
-            const ext_capa = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10);
             const new_ies: InformationElements = .{
-                .RSN = rsn,
+                .RSN = ies.RSN orelse return error.MissingRSN,
+                .EXTENDED_CAPABILITIES = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10),
                 .SUPPORTED_OPER_CLASSES = op_classes,
-                .EXTENDED_CAPABILITIES = ext_capa,
             };
             alloc.free(ie_bytes);
             ie_bytes = try nl.parse.toBytes(alloc, InformationElements, new_ies);
