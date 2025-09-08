@@ -397,11 +397,11 @@ pub const Connection = struct {
         const security = candidate.config.security orelse network.security;
         const auth = candidate.config.auth orelse network.auth;
         const psk = switch (security) {
-            .wpa2, .wpa3t => wpa.genKey(security, candidate.config.ssid, candidate.config.passphrase) catch |err| {
+            .wpa2 => wpa.genKey(security, candidate.config.ssid, candidate.config.passphrase) catch |err| {
                 log.err("Key Generation Error: {s}", .{ @errorName(err) });
                 return error.UnableToGenKey;
             },
-            .open, .wpa3 => .{ 0 } ** 32,
+            .open, .wpa3t, .wpa3 => .{ 0 } ** 32,
             else => {
                 log.err("Could not connect to '{s}' due to unimplemented Security Type '{s}'", .{ network.ssid, @tagName(network.security) });
                 return error.UnimplementedSecurityType;
@@ -412,7 +412,11 @@ pub const Connection = struct {
         const rsn_bytes = rsnBytes: {
             const bss = scan_result.BSS orelse return error.MissingBSS;
             const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
-            const rsn = ies.RSN orelse return error.MissingRSN;
+            var rsn = ies.RSN orelse return error.MissingRSN;
+            if (security == .wpa3t) {
+                rsn.AKM_SUITES = &.{ .{ .OUI = [_]u8{ 0x00, 0x0F, 0xAC }, .TYPE = 0x08 } };
+                rsn.AKM_SUITE_COUNT = 1;
+            }
             const bytes = try nl.parse.toBytes(core_ctx.alloc, nl._80211.InformationElements.RobustSecurityNetwork, rsn);
             var buf = ArrayList(u8).fromOwnedSlice(bytes);
             errdefer buf.deinit(core_ctx.alloc);
@@ -561,7 +565,7 @@ pub const Connection = struct {
                 }
                 // Authenticate
                 switch (self.security) {
-                    .open, .wpa2, .wpa3t => {
+                    .open, .wpa2 => {
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
                                 log.debug("Connection {s} | {s}: Authenticating ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
@@ -615,7 +619,7 @@ pub const Connection = struct {
                             },
                         }
                     },
-                    .wpa3 => {
+                    .wpa3t, .wpa3 => {
                         errdefer {
                             auth_ctx.sae_state = .setup;
                         }
@@ -648,15 +652,26 @@ pub const Connection = struct {
                                             self._scan_result,
                                             sae_commit[0..],
                                         );
+                                        self._nl_state = .await_response;
+                                        continue :nlState self._nl_state;
                                     },
                                     .await_response => {
-                                        if (!self._nl80211_req_ctx.checkResponse()) return;
+                                        if (@divFloor(auth_ctx.auth_timer.read(), time.ns_per_ms) > 1_000) {
+                                            log.warn("Connection {s} | {s}: Failed Authentication (Timed Out)", .{ self.ssid, conn_if.name });
+                                            return error.AuthTimeout;
+                                        }
+                                        if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).AUTHENTICATE)) return;
                                         self._nl_state = .parse;
                                         continue :nlState self._nl_state;
                                     },
                                     .parse => {
-                                        const commit_resp = self._nl80211_req_ctx.getResponse().?;
-                                        const resp_data = try commit_resp;
+                                        const commit_resps = try self._nl80211_req_ctx.handler.?.getCmdResponses(c(nl._80211.CMD).AUTHENTICATE);
+                                        defer core_ctx.alloc.free(commit_resps);
+                                        if (commit_resps.len == 0) {
+                                            log.warn("Connection {s} | {s}: Failed Authentication (No Response)", .{ self.ssid, conn_if.name });
+                                            return error.NoResponse;
+                                        }
+                                        const resp_data = try commit_resps[0];
                                         defer core_ctx.alloc.free(resp_data);
                                         const sae_commit_resp_data = try nl._80211.handleAuthResponseBuf(core_ctx.alloc, resp_data);
                                         defer {
@@ -710,15 +725,26 @@ pub const Connection = struct {
                                             self._scan_result,
                                             sae_confirm[0..],
                                         );
+                                        self._nl_state = .await_response;
+                                        continue :nlState self._nl_state;
                                     },
                                     .await_response => {
-                                        if (!self._nl80211_req_ctx.checkResponse()) return;
+                                        if (@divFloor(auth_ctx.auth_timer.read(), time.ns_per_ms) > 1_000) {
+                                            log.warn("Connection {s} | {s}: Failed Authentication (Timed Out)", .{ self.ssid, conn_if.name });
+                                            return error.AuthTimeout;
+                                        }
+                                        if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).AUTHENTICATE)) return;
                                         self._nl_state = .parse;
                                         continue :nlState self._nl_state;
                                     },
                                     .parse => {
-                                        const confirm_resp = self._nl80211_req_ctx.getResponse().?;
-                                        const resp_data = try confirm_resp;
+                                        const confirm_resps = try self._nl80211_req_ctx.handler.?.getCmdResponses(c(nl._80211.CMD).AUTHENTICATE);
+                                        defer core_ctx.alloc.free(confirm_resps);
+                                        if (confirm_resps.len == 0) {
+                                            log.warn("Connection {s} | {s}: Failed Authentication (No Response)", .{ self.ssid, conn_if.name });
+                                            return error.NoResponse;
+                                        }
+                                        const resp_data = try confirm_resps[0];
                                         defer core_ctx.alloc.free(resp_data);
                                         const sae_confirm_resp_data = try nl._80211.handleAuthResponseBuf(core_ctx.alloc, resp_data);
                                         defer {
@@ -831,8 +857,6 @@ pub const Connection = struct {
                         switch (self.security) {
                             .wpa2, .wpa3t, .wpa3 => {
                                 log.debug("Connection {s} | {s}: Handling EAPoL ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
-                                    // TODO: Fix this timing issue properly
-                                    //if (conn.security == .wpa3) time.sleep(1_000);
                                 self._thread = try Thread.spawn(
                                     .{},
                                     handle4WHS,

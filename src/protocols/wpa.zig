@@ -27,7 +27,7 @@ const l2 = netdata.l2;
 pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
     var key: [32]u8 = .{ 0 } ** 32;
     switch (protocol) {
-        .wpa2, .wpa3t => {
+        .wpa2 => {
             // PBKDF2 HMAC-SHA1 Key Derivation
             try crypto.pwhash.pbkdf2(
                 key[0..],
@@ -83,7 +83,7 @@ pub fn genPTK(
     var ptk_buf: [48]u8 = undefined;
     //_ = sha1PRF(pmk[0..], label, data[0..], ptk[0..]);
     switch (security) {
-        .wpa2, .wpa3t => {
+        .wpa2 => {
             log.debug("Using PRF(SHA1)", .{});
             prf(
                 hmac.HmacSha1,
@@ -419,11 +419,11 @@ const HandshakeState = enum {
 
 /// Handle a 4-Way Handshake
 pub fn handle4WHS(
-    if_index: i32, 
-    pmk: [32]u8, 
+    if_index: i32,
+    pmk: [32]u8,
     m2_data: []const u8,
     security: nl._80211.SecurityType,
-) !nl._80211.EAPoLKeys { //struct{ [48]u8, [16]u8 } {
+) !nl._80211.EAPoLKeys {
     var state: HandshakeState = .start;
     log.debug("Starting 4WHS...", .{});
     defer {
@@ -467,7 +467,7 @@ pub fn handle4WHS(
     const hdrs_len = eth_hdr_len + eap_hdr_len + kf_hdr_len;
     const KeyInfo = l2.EAPOL.KeyFrame.KeyInfo;
     const desc_info = switch(security) {
-        .wpa2, .wpa3t => c(KeyInfo).Version2,
+        .wpa2 => c(KeyInfo).Version2,
         else => 0,
     };
     const ptk_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack);
@@ -537,9 +537,11 @@ pub fn handle4WHS(
                 mem.bigToNative(u64, m1_kf_hdr.replay_counter),
             },
         );
-        if (
-            m1_kf_hdr.key_info & ptk_flags != ptk_flags and
-            (security == .wpa3 and m1_kf_hdr.key_info != (ptk_flags))
+        if ( //
+            m1_kf_hdr.key_info & ptk_flags != ptk_flags and ( //
+                (security == .wpa3t or security == .wpa3) and //
+                m1_kf_hdr.key_info != (ptk_flags) //
+            )
         ) return error.ExpectedPTK;
         if (m1_kf_hdr.key_info & c(KeyInfo).MIC == c(KeyInfo).MIC) return error.UnexpectedMIC;
         const ap_mac = m1_eth_hdr.src_mac_addr;
@@ -587,7 +589,7 @@ pub fn handle4WHS(
         end += m2_data.len;
         @memcpy(m2_mic_buf[start..end], m2_data);
         const m2_mic: [16]u8 = switch (security) {
-            .wpa3 => cmacAes128: {
+            .wpa3t, .wpa3 => cmacAes128: {
                 var m2_mic: [16]u8 = undefined;
                 CmacAes128.create(m2_mic[0..], m2_mic_buf[0..end], kck);
                 break :cmacAes128 m2_mic;
@@ -732,7 +734,7 @@ pub fn handle4WHS(
         @memset(m3_mic_buf[(mic_offset)..(mic_offset + 16)], 0);
         end -= eth_hdr_len;
         const m3_mic_valid: [16]u8 = switch (security) {
-            .wpa3 => cmacAes128: {
+            .wpa3t, .wpa3 => cmacAes128: {
                 var m3_mic_valid: [16]u8 = undefined;
                 CmacAes128.create(m3_mic_valid[0..], m3_mic_buf[0..end], kck);
                 break :cmacAes128 m3_mic_valid;
@@ -806,7 +808,7 @@ pub fn handle4WHS(
         //    break :hmacSha1 m4_mic[0..16].*;
         //};
         const m4_mic: [16]u8 = switch (security) {
-            .wpa3 => cmacAes128: {
+            .wpa3t, .wpa3 => cmacAes128: {
                 var m4_mic: [16]u8 = undefined;
                 CmacAes128.create(m4_mic[0..], m4_mic_buf[0..end], kck);
                 break :cmacAes128 m4_mic;

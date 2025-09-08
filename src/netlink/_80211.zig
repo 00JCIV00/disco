@@ -12,6 +12,7 @@ const mem = std.mem;
 const meta = std.meta;
 const os = std.os;
 const posix = std.posix;
+const sort = std.sort;
 const time = std.time;
 const ArrayList = std.ArrayListUnmanaged;
 
@@ -1197,25 +1198,25 @@ pub const BasicServiceSet = struct {
                 }
             }
             // Set security type
-            security.type = 
-                if (has_sae and has_psk) .wpa3t
-                else if (has_sae) .wpa3
+            security.type = //
+                if (has_sae and has_psk) .wpa3t //
+                else if (has_sae) .wpa3 //
                 else .wpa2;
             // Set auth type
-            security.auth =
-                if (has_sae) .sae
-                else if (has_eap) .eap
-                else if (has_psk) .psk
+            security.auth = //
+                if (has_sae) .sae //
+                else if (has_eap) .eap //
+                else if (has_psk) .psk //
                 else .open;
             return security;
         }
         // Check for WPA1 in vendor specific IEs
         if (ies.VENDOR_SPECIFIC) |vendors| {
             for (vendors) |vendor| {
-                if (
-                    vendor.len >= 4 and 
-                    std.mem.eql(u8, vendor[0..4], &.{ 0x00, 0x50, 0xF2, 0x01 }) and
-                    security.type == .open
+                if ( //
+                    vendor.len >= 4 and //
+                    std.mem.eql(u8, vendor[0..4], &.{ 0x00, 0x50, 0xF2, 0x01 }) and //
+                    security.type == .open //
                 ) {
                     security.type = .wpa1;
                     security.auth = .psk; // WPA1 typically uses PSK
@@ -3203,7 +3204,18 @@ pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
     const rsn = ies.RSN orelse return .OPEN;
     const akms = rsn.AKM_SUITES orelse return .OPEN;
     // TODO: Let this error?
-    const akm_type = meta.intToEnum(InformationElements.RobustSecurityNetwork.RSN.AKM, akms[0].TYPE) catch {
+    const akmLessThan = struct {
+        pub fn lessThan(_: void, a: InformationElements.RobustSecurityNetwork.Suite, b: InformationElements.RobustSecurityNetwork.Suite) bool {
+            return a.TYPE < b.TYPE;
+        }
+    }.lessThan;
+    const akm = sort.max(
+        InformationElements.RobustSecurityNetwork.Suite,
+        akms,
+        {},
+        akmLessThan,
+    ) orelse return .OPEN;
+    const akm_type = meta.intToEnum(InformationElements.RobustSecurityNetwork.RSN.AKM, akm.TYPE) catch {
         log.err("'{X}' is not a valid AKM. Defaulting to OPEN.", .{ akms[0].TYPE });
         return .OPEN;
     };
@@ -3444,6 +3456,7 @@ pub fn requestAuthenticate(
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const auth_type = determineAuthAlg(scan_results);
+    log.debug("Auth Type: {s}", .{ @tagName(auth_type) });
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY;
     const bssid = bss.BSSID;
@@ -3666,8 +3679,15 @@ pub fn requestAssociate(
     defer alloc.free(ie_bytes);
     switch (security) {
         .wpa2, .wpa3t, .wpa3 => {
+            var rsn = ies.RSN orelse return error.MissingRSN;
+            if (security == .wpa3t) {
+                rsn.AKM_SUITES = &.{ .{ .OUI = [_]u8{ 0x00, 0x0F, 0xAC }, .TYPE = 0x08 } };
+                rsn.AKM_SUITE_COUNT = 1;
+                //rsn.PMKID_LIST = null;
+                //rsn.PMKID_COUNT = null;
+            }
             const new_ies: InformationElements = .{
-                .RSN = ies.RSN orelse return error.MissingRSN,
+                .RSN = rsn,
                 .EXTENDED_CAPABILITIES = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10),
                 .SUPPORTED_OPER_CLASSES = op_classes,
             };
