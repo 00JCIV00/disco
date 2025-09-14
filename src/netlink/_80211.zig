@@ -764,7 +764,7 @@ pub const Wiphy = struct {
             /// A-MPDU Parameters field (defines max A-MPDU length and minimum MPDU spacing)
             ampdu_params: u8 = 0,
             /// Supported MCS Set (defines MIMO spatial streams and supported MCS rates)
-            supported_mcs_set: [16]u8 = .{ 0 } ** 16,
+            supported_mcs_set: [16]u8 = @splat(0),
             /// HT Extended Capabilities (contains additional HT features such as SM Power Save)
             ht_extended_capabilities: u16 = 0,
             /// Transmit Beamforming Capabilities (optional support for TX beamforming features)
@@ -3650,19 +3650,19 @@ pub fn requestAssociate(
         },
         .{
             .hdr = .{ .type = c(ATTR).HT_CAPABILITY, .len = 30 },
-            .data = (ht_attr orelse @as([26]u8, .{ 0 } ** 26))[0..],
+            .data = (ht_attr orelse @as([26]u8, @splat(0)))[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).HT_CAPABILITY_MASK, .len = 30 },
-            .data = (wiphy.HT_CAPABILITY_MASK orelse @as([26]u8, .{ 0 } ** 26))[0..],
+            .data = (wiphy.HT_CAPABILITY_MASK orelse @as([26]u8, @splat(0)))[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).VHT_CAPABILITY },
-            .data = (vht_attr orelse @as([12]u8, .{ 0 } ** 12))[0..],
+            .data = (vht_attr orelse @as([12]u8, @splat(0)))[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).VHT_CAPABILITY_MASK },
-            .data = (wiphy.VHT_CAPABILITY_MASK orelse @as([12]u8, .{ 0 } ** 12))[0..],
+            .data = (wiphy.VHT_CAPABILITY_MASK orelse @as([12]u8, @splat(0)))[0..],
         },
         .{
             .hdr = .{ .type = c(ATTR).CONTROL_PORT_ETHERTYPE, .len = 6 },
@@ -3688,7 +3688,7 @@ pub fn requestAssociate(
             }
             const new_ies: InformationElements = .{
                 .RSN = rsn,
-                .EXTENDED_CAPABILITIES = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, .{ 0 } ** 10),
+                .EXTENDED_CAPABILITIES = ies.EXTENDED_CAPABILITIES orelse &@as([10]u8, @splat(0)),
                 .SUPPORTED_OPER_CLASSES = op_classes,
             };
             alloc.free(ie_bytes);

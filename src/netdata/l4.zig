@@ -106,7 +106,7 @@ pub const TCP = struct {
     pub fn from(alloc: mem.Allocator, byte_buf: []const u8) !@This() {
         const hdr_end = @bitSizeOf(Header) / 8;
         if (byte_buf.len < hdr_end) return error.UnexpectedlySmallBuffer;
-        var size_buf: [@sizeOf(Header)]u8 = .{ 0 } ** @sizeOf(Header);
+        var size_buf: [@sizeOf(Header)]u8 = @splat(0);
         for (size_buf[0..hdr_end], byte_buf[0..hdr_end]) |*s, b| s.* = b;
         var hdr: Header = mem.bytesToValue(Header, size_buf[0..]);
         try hdr.toLSB();

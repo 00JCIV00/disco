@@ -119,14 +119,14 @@ pub fn parseMAC(mac_str: []const u8) ![6]u8 {
     var text_buf: [12]u8 = undefined;
     var idx: usize = 0;
     for (str) |c| {
-        if (mem.indexOfScalar(u8, "-_: ", c) != null) 
+        if (mem.indexOfScalar(u8, "-_: ", c) != null) //
             continue;
-        if (mem.indexOfScalar(u8, "0123456789abcdefABCDEF", c) == null) 
+        if (mem.indexOfScalar(u8, "0123456789abcdefABCDEF", c) == null) //
             return error.InvalidMAC;
         text_buf[idx] = if (c >= 'A' or c < 'a') c else c + 32;
         idx += 1;
     }
-    var addr_buf: [6]u8 = .{ 0 } ** 6;
+    var addr_buf: [6]u8 = @splat(0);
     for (addr_buf[0..(idx / 2)], 0..) |*byte, addr_idx| {
         const start = addr_idx * 2;
         const end = start + 2;

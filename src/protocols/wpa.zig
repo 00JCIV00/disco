@@ -25,7 +25,7 @@ const l2 = netdata.l2;
 
 /// Calculate a WEP Key or WPA Pre-Shared Key (PSK) using MD5 or PBKDF2 with HMAC-SHA1.
 pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
-    var key: [32]u8 = .{ 0 } ** 32;
+    var key: [32]u8 = @splat(0);
     switch (protocol) {
         .wpa2 => {
             // PBKDF2 HMAC-SHA1 Key Derivation
@@ -342,11 +342,11 @@ pub fn aesKeyUnwrap(kek: []const u8, cipher: []const u8, out: []u8) !usize {
     }
     const n = (cipher.len / 8) - 1;
     // Initial variable setup
-    var a: [8]u8 = .{ 0 } ** 8;
+    var a: [8]u8 = @splat(0);
     @memcpy(a[0..], cipher[0..8]);
     @memcpy(out[0..n * 8], cipher[8..]);
     // Compute intermediate values
-    var b: [16]u8 = .{ 0 } ** 16;
+    var b: [16]u8 = @splat(0);
     var j: usize = 5;
     while (true) : (j -= 1) {
         var i: usize = n;
@@ -383,7 +383,7 @@ pub fn aesKeyUnwrap(kek: []const u8, cipher: []const u8, out: []u8) !usize {
             \\Invalid AES Integrity Check
             \\- Derived:  {X:0>2}
             \\- Expected: {X:0>2}
-            , .{ a, @as([8]u8, .{ 0xA6 } ** 8) },
+            , .{ a, @as([8]u8, @splat(0xA6)) },
         );
         return error.UnwrapFailed;
     }
@@ -445,7 +445,7 @@ pub fn handle4WHS(
         .hatype = 0,
         .pkttype = 0,
         .halen = 6,
-        .addr = .{ 0 } ** 8,
+        .addr = @splat(0),
     };
     try posix.setsockopt(
         hs_sock,
@@ -491,9 +491,8 @@ pub fn handle4WHS(
     while (true) {
         state = .start;
         const snonce: [32]u8 = snonce: {
-            var bytes: [32]u8 = .{ 0 } ** 32;
+            var bytes: [32]u8 = undefined;
             crypto.random.bytes(bytes[0..]);
-            //mem.reverse(u8, bytes[0..]);
             break :snonce bytes;
         };
         var recv_buf: [1600]u8 = undefined;
@@ -503,7 +502,7 @@ pub fn handle4WHS(
         var start: usize = 0;
         var end: usize = eth_hdr_len;
         log.debug("Start: {d}B, End: {d}B", .{ start, end });
-        const m1_eth_hdr: *const l2.Eth.Header = @alignCast(@ptrCast(m1_buf[start..end]));
+        const m1_eth_hdr = mem.bytesAsValue(l2.Eth.Header, m1_buf[start..end]);
         if (mem.bigToNative(u16, m1_eth_hdr.ether_type) != c(l2.Eth.ETH_P).PAE) {
             log.warn("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m1_eth_hdr.ether_type) });
             continue;
@@ -511,7 +510,6 @@ pub fn handle4WHS(
         start = end;
         end += eap_hdr_len;
         //log.debug("Start: {d}B, End: {d}B", .{ start, end });
-        //const m1_eap_hdr: *const frames.EAPOL.Header = @alignCast(@ptrCast(m1_buf[start..end]));
         const m1_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m1_buf[start..end]);
         const eap_packet_type = mem.bigToNative(u8, m1_eap_hdr.packet_type);
         if (eap_packet_type != c(l2.EAPOL.EAP).KEY) {
@@ -644,7 +642,7 @@ pub fn handle4WHS(
         );
         state = .m2;
         // Message 3
-        recv_buf = .{ 0 } ** 1600;
+        recv_buf = @splat(0);
         const m3_len = try posix.recv(hs_sock, recv_buf[0..], 0);
         const m3_buf = recv_buf[0..m3_len];
         start = 0;
@@ -759,7 +757,7 @@ pub fn handle4WHS(
             return error.Message3MICMismatch;
         }
         // - Handle Key Data
-        var m3_uw_buf: [500]u8 = .{ 0 } ** 500;
+        var m3_uw_buf: [500]u8 = undefined;
         const m3_uw_data = uwKeyData: {
             //log.debug(
             //    \\Encrypted M3 Data:
@@ -795,7 +793,7 @@ pub fn handle4WHS(
         m4_kf_hdr.key_mic = 0;
         m4_kf_hdr.key_nonce = 0;
         m4_kf_hdr.key_data_len = 0;
-        var m4_mic_buf: [hdrs_len]u8 = .{ 0 } ** hdrs_len;
+        var m4_mic_buf: [hdrs_len]u8 = @splat(0);
         start = 0;
         end = eap_hdr_len;
         @memcpy(m4_mic_buf[start..end], mem.toBytes(m4_eap_hdr)[0..]);
@@ -821,7 +819,7 @@ pub fn handle4WHS(
         };
         m4_kf_hdr.key_mic = mem.bytesToValue(u128, m4_mic[0..]);
         // - Send M4
-        var m4_buf: [hdrs_len]u8 = .{ 0 } ** hdrs_len;
+        var m4_buf: [hdrs_len]u8 = @splat(0);
         start = 0;
         end = eth_hdr_len;
         @memcpy(m4_buf[start..end], mem.toBytes(m4_eth_hdr)[0..]);
@@ -859,7 +857,6 @@ pub fn handle4WHS(
             },
         );
         state = .m4;
-
         return .{ .ptk = ptk, .gtk = gtk };
     }
 }

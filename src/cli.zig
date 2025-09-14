@@ -210,7 +210,7 @@ pub const setup_cmd = CommandT{
                 .parse_fn = struct {
                     pub fn parseMask(raw_name: []const u8, _: mem.Allocator) !core.profiles.Mask {
                         const map = core.profiles.Mask.map;
-                        var lower_buf: [50]u8 = .{ 0 } ** 50;
+                        var lower_buf: [50]u8 = undefined;
                         const name = mem.trim(u8, ascii.lowerString(lower_buf[0..], raw_name), ascii.whitespace[0..]);
                         return map.get(name) orelse getClosest: {
                             for (map.keys()) |key| {

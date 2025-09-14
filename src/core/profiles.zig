@@ -10,6 +10,7 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
+const StaticStringMap = std.StaticStringMap;
 
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
@@ -37,7 +38,7 @@ pub const Profile = struct {
         "aireplay-ng",
         "kismet",
     },
-    /// Require Conflict PIDs Acknowledgement.
+    /// Require Conflict PIDs Acknowledgement on Startup.
     require_conflicts_ack: bool = true,
 };
 
@@ -67,7 +68,7 @@ pub const Mask = struct {
             \\- User Agent: {s}
             \\
             , .{
-                MACF{ .bytes = oui[0..] }, try netdata.oui.findOUI(.short, oui ++ .{ 0 } ** 3),
+                MACF{ .bytes = oui[0..] }, try netdata.oui.findOUI(.short, oui ++ [3]u8{ 0, 0, 0 }),
                 self.hostname,
                 self.ttl,
                 self.ua_str orelse "[Unknown]",
@@ -83,7 +84,7 @@ pub const Mask = struct {
     }
 
     /// DisCo's built-in Masks.
-    pub const map = std.StaticStringMap(@This()).initComptime(&.{
+    pub const map: StaticStringMap(@This()) = .initComptime(&.{
         .{ "google pixel 6 pro", google_pixel_6_pro },
         .{ "intel windows 11 pc", intel_windows_11_pc },
         .{ "iphone 13 pro max", iphone_13_pro_max },

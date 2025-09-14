@@ -570,8 +570,8 @@ pub const Context = struct {
                         core_ctx.alloc.free(phy_name);
                     };
                     const ips, const cidrs = ipAddrs: {
-                        var ips: [10]?[4]u8 = .{ null } ** 10;
-                        var cidrs: [10]?u8 = .{ null } ** 10;
+                        var ips: [10]?[4]u8 = @splat(null);
+                        var cidrs: [10]?u8 = @splat(null);
                         var idx: u8 = 0;
                         for (nl_addrs) |addr| {
                             if (addr.info.index != wifi_if.IFINDEX) continue;

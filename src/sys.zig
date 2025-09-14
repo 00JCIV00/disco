@@ -89,7 +89,7 @@ pub fn getPIDs(alloc: mem.Allocator, proc_names: []const []const u8) ![]const u3
         defer pid_dir.close();
         var comm = pid_dir.openFile("comm", .{}) catch continue;
         defer comm.close();
-        var pid_name_buf: [posix.PATH_MAX]u8 = .{ 0 } ** posix.PATH_MAX;
+        var pid_name_buf: [posix.PATH_MAX]u8 = @splat(0);
         const pid_name_len = comm.readAll(pid_name_buf[0..]) catch continue;
         for (proc_names) |proc_name| {
             if (mem.indexOf(u8, pid_name_buf[0..pid_name_len], proc_name) == null) continue;

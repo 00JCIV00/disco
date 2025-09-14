@@ -49,7 +49,7 @@ pub fn findOUI(
 
 /// Get an OUI from the provided `manufacturer`.
 pub fn getOUI(manufacturer: []const u8) ![3]u8 {
-    var man_buf: [100]u8 = .{ 0 } ** 100;
+    var man_buf: [100]u8 = undefined;
     const man = ascii.lowerString(
         man_buf[0..], 
         mem.trim(
@@ -63,7 +63,7 @@ pub fn getOUI(manufacturer: []const u8) ![3]u8 {
     while (true) : (start = 0) {
         var iter_idx: usize = 0;
         while (oui_rows_iter.next()) |oui_row| : (iter_idx += 1) {
-            var cur_man_buf: [100]u8 = .{ 0 } ** 100;
+            var cur_man_buf: [100]u8 = undefined;
             if (iter_idx < start) continue;
             var oui_iter = mem.tokenizeScalar(u8, oui_row, '\t');
             const cur_oui = oui_iter.next() orelse continue;

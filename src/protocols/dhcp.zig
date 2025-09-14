@@ -31,7 +31,7 @@ fn sendDHCPMsg(
     msg: []u8,
 ) !void {
     var eth_hdr: netdata.l2.Eth.Header = .{
-        .dst_mac_addr = .{ 0xFF } ** 6,
+        .dst_mac_addr = @splat(0xFF),
         .src_mac_addr = client_mac,
         .ether_type = mem.nativeToBig(u16, c(netdata.l2.Eth.ETH_P).IPv4),
     };
@@ -126,6 +126,8 @@ pub const LeaseConfig = struct {
     hostname: ?[]const u8 = null,
     /// Error on Request/Offer Mismatch
     err_on_mismatch: bool = true,
+    /// Max Retries
+    max_attempts: u8 = 3,
 };
 
 /// DHCP Info. This is returned from `handleDHCP()` and passed to `releasedDHCP()`.
@@ -154,7 +156,7 @@ pub fn handleDHCP(
         .hatype = 0,
         .pkttype = 0,
         .halen = 6,
-        .addr = .{ 0 } ** 8,
+        .addr = @splat(0),
     };
     // Bind to the Interface
     try posix.setsockopt(
@@ -172,9 +174,8 @@ pub fn handleDHCP(
     );
     try posix.bind(dhcp_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
     const bootp_hdr_len = @sizeOf(l5.BOOTP.Header);
-    const attempts_max: u8 = 3;
     var attempts: u8 = 0;
-    while (attempts < attempts_max) {
+    while (attempts < config.max_attempts) {
         defer attempts += 1;
         const transaction_id: u32 = transaction_id: {
             var bytes: [4]u8 = undefined;
@@ -263,10 +264,10 @@ pub fn handleDHCP(
         disc_buf[start] = c(l5.DHCP.OptionCode).END;
         // - Send Discovery
         try sendDHCPMsg(
-            dhcp_sock, 
-            mac_addr, 
-            .{ 255 } ** 4,
-            disc_buf[0..end], 
+            dhcp_sock,
+            mac_addr,
+            @splat(0xFF),
+            disc_buf[0..end],
         );
         log.debug(
             \\
@@ -284,7 +285,7 @@ pub fn handleDHCP(
         );
         // OFFER
         var offer_buf: [1500]u8 = undefined;
-        const offer_len = offerLen: while (attempts < attempts_max) {
+        const offer_len = offerLen: while (attempts < config.max_attempts) {
             break :offerLen recvDHCPMsg(
                 dhcp_sock,
                 mac_addr,
@@ -544,7 +545,7 @@ pub fn handleDHCP(
         try sendDHCPMsg(
             dhcp_sock,
             mac_addr,
-            .{ 255 } ** 4,
+            @splat(0xFF),
             req_buf[0..end],
         );
         log.debug(
@@ -599,7 +600,7 @@ pub fn handleDHCP(
         var ack_lease_time_buf: ?u32 = null;
         var ack_subnet_mask_buf: ?[4]u8 = null;
         var ack_router_buf: ?[4]u8 = null;
-        var ack_dns_buf: [4]?[4]u8 = .{ null } ** 4;
+        var ack_dns_buf: [4]?[4]u8 = @splat(null);
         start = end;
         while (start < ack_len) {
             const opt_code = ack_buf[start];
@@ -734,7 +735,7 @@ pub fn releaseDHCP(
         .hatype = 0,
         .pkttype = 0,
         .halen = 6,
-        .addr = .{ 0 } ** 8,
+        .addr = @splat(0),
     };
     // Bind to the Interface
     try posix.setsockopt(

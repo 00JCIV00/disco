@@ -243,7 +243,7 @@ pub fn genConfirm(ctx: *Context, peer: Commit) !void {
     };
     // Derive Keyseed
     const keyseed: [32]u8 = keyseed: {
-        const ks_salt: [32]u8 = .{ 0 } ** 32;
+        const ks_salt: [32]u8 = @splat(0);
         var ks_h = hmac256.init(ks_salt[0..]);
         ks_h.update(k[0..]);
         var ks_buf: [32]u8 = undefined;

@@ -58,14 +58,14 @@ pub fn authenticateDBus(sock: net.Stream) !void {
     // Send initial null byte
     try sock.writeAll(&[_]u8{ 0 });
     // Get UID string
-    var uid_buf: [1024]u8 = .{ 0 } ** 1024;
+    var uid_buf: [1024]u8 = @splat(0);
     const uid_str = try fmt.bufPrint(uid_buf[0..], "{d}", .{ try sys.getUID() });
     //log.debug("UID: {s}", .{ uid_str });
     // Convert UID to hex
-    var uid_hex_buf: [1024]u8 = .{ 0 } ** 1024;
+    var uid_hex_buf: [1024]u8 = @splat(0);
     const uid_hex = try fmt.bufPrint(uid_hex_buf[0..], "{s}", .{ fmt.fmtSliceHexLower(uid_str) });
     // Create authentication message
-    var auth_buf: [1024]u8 = .{ 0 } ** 1024;
+    var auth_buf: [1024]u8 = @splat(0);
     const auth_msg = try fmt.bufPrint(
         auth_buf[0..],
         "AUTH EXTERNAL {s}\r\n",
@@ -76,7 +76,7 @@ pub fn authenticateDBus(sock: net.Stream) !void {
     try sock.writeAll(auth_msg);
     // Read response
     //log.debug("Reading Auth Response", .{});
-    var response_buf: [4096]u8 = .{ 0 } ** 4096;
+    var response_buf: [4096]u8 = @splat(0);
     const auth_read = try sock.read(response_buf[0..]);
     //log.debug("Auth Response:\n{s}", .{ response_buf[0..auth_read] });
     if (!mem.startsWith(u8, response_buf[0..auth_read], "OK "))
@@ -120,7 +120,7 @@ pub fn helloDBus(sock: net.Stream, uuid_buf: []u8) ![]const u8 {
         },
     };
     // Set up Buffer
-    var msg_buf: [4096]u8 = .{ 0 } ** 4096;
+    var msg_buf: [4096]u8 = @splat(0);
     // Send Hello
     try sendMsg(
         msg_buf[0..],
@@ -129,7 +129,7 @@ pub fn helloDBus(sock: net.Stream, uuid_buf: []u8) ![]const u8 {
         &.{},
     );
     // Verify Response
-    var response_buf: [4096]u8 = .{ 0 } ** 4096;
+    var response_buf: [4096]u8 = @splat(0);
     const read = try sock.read(response_buf[0..]);
     if (read == 0) return error.DBusReadError;
     //log.debug("Hello Response:\n{s}\n---\n{s}", .{ response_buf[0..read], HexF{ .bytes = response_buf[0..read] } });

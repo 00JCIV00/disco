@@ -42,7 +42,7 @@ pub fn updateDNS(config: DNSConfig) !void {
 pub fn updateDNSResConf(config: DNSConfig) !void {
     const cwd = fs.cwd();
     var res_conf_file = try cwd.openFile("/etc/resolv.conf", .{ .mode = .read_write });
-    var res_conf_buf: [16_000]u8 = .{ 0 } ** 16_000;
+    var res_conf_buf: [16_000]u8 = undefined;
     const start = try res_conf_file.readAll(res_conf_buf[0..]);
     _ = start;
     const res_conf_writer = res_conf_file.writer();
@@ -61,7 +61,7 @@ pub fn updateDNSResConf(config: DNSConfig) !void {
 pub fn updateDNSDBus(config: DNSConfig) !void {
     //log.debug("Using `systemd-resolved`", .{});
     // Connect to system DBus
-    var uuid_buf: [286]u8 = .{ 0 } ** 286;
+    var uuid_buf: [286]u8 = undefined;
     const dbus_ctx = try dbus.connectSysBus(uuid_buf[0..]);
     // Array of header fields
     const header_fields = [_]dbus.HeaderField{
@@ -105,12 +105,12 @@ pub fn updateDNSDBus(config: DNSConfig) !void {
     defer dbus_ctx.sock.close();
     // Construct the DBus message to update DNS settings
     //log.debug("Building DBus DNS Message.", .{});
-    var data_buf: [2048]u8 = .{ 0 } ** 2048;
+    var data_buf: [2048]u8 = undefined;
     const dns_msg = try buildSetDNSData(data_buf[0..], config);
     //log.debug("DBus DNS Message:\n{s}\n---\n{s}", .{ dns_msg, HexF{ .bytes = dns_msg } });
     // Send the message
     //log.debug("Sending DBus DNS Message.", .{});
-    var msg_buf: [4096]u8 = .{ 0 } ** 4096;
+    var msg_buf: [4096]u8 = undefined;
     //try sock.writeAll(dns_msg);
     try dbus.sendMsg(
         msg_buf[0..],
@@ -119,7 +119,7 @@ pub fn updateDNSDBus(config: DNSConfig) !void {
         dns_msg,
     );
     // Read and Verify response
-    var response_buf: [4096]u8 = .{ 0 } ** 4096;
+    var response_buf: [4096]u8 = undefined;
     //log.debug("Reading DBus DNS Response.", .{});
     //const read = try posix.read(sock, response_buf[0..]);
     const read = try dbus_ctx.sock.read(response_buf[0..]);
@@ -168,7 +168,7 @@ fn buildSetDNSData(buf: []u8, config: DNSConfig) ![]const u8 {
 /// Set or Unset the provided Interface (`if_index`) as the Default Route for DNS Queries.
 pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
     // Connect to system DBus
-    var uuid_buf: [286]u8 = .{ 0 } ** 286;
+    var uuid_buf: [286]u8 = undefined;
     const dbus_ctx = try dbus.connectSysBus(uuid_buf[0..]);
     // Array of header fields
     const header_fields = [_]dbus.HeaderField{
@@ -212,7 +212,7 @@ pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
     defer dbus_ctx.sock.close();
     // Construct the DBus Route message to update DNS settings
     //log.debug("Building DBus DNS Route Message.", .{});
-    var dns_msg: [8]u8 = .{ 0 } ** 8;
+    var dns_msg: [8]u8 = @splat(0);
     mem.writeInt(
         i32,
         dns_msg[0..4],
@@ -228,7 +228,7 @@ pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
     //log.debug("DBus DNS Route Message:\n{s}\n---\n{s}", .{ dns_msg, HexF{ .bytes = dns_msg } });
     // Send the message
     //log.debug("Sending DBus DNS Message.", .{});
-    var msg_buf: [4096]u8 = .{ 0 } ** 4096;
+    var msg_buf: [4096]u8 = undefined;
     //try sock.writeAll(dns_msg);
     try dbus.sendMsg(
         msg_buf[0..],
@@ -237,7 +237,7 @@ pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
         dns_msg[0..],
     );
     // Read and Verify response
-    var response_buf: [4096]u8 = .{ 0 } ** 4096;
+    var response_buf: [4096]u8 = undefined;
     //log.debug("Reading DBus DNS Response.", .{});
     //const read = try posix.read(sock, response_buf[0..]);
     const read = try dbus_ctx.sock.read(response_buf[0..]);

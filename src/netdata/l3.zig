@@ -199,7 +199,7 @@ pub const IP = struct {
     pub fn from(alloc: mem.Allocator, byte_buf: []const u8) !@This() {
         const hdr_end: u16 = @bitSizeOf(Header) / 8;
         if (byte_buf.len < hdr_end) return error.UnexpectedlySmallBuffer;
-        var size_buf: [@sizeOf(Header)]u8 = .{ 0 } ** @sizeOf(Header);
+        var size_buf: [@sizeOf(Header)]u8 = @splat(0);
         for (size_buf[0..hdr_end], byte_buf[0..hdr_end]) |*s, b| s.* = b;
         var hdr: Header = mem.bytesToValue(Header, size_buf[0..]);
         try hdr.toLSB();
@@ -227,7 +227,7 @@ pub const IP = struct {
             .pseudo_header = 
                 if (p_hdr_end -| hdr_end > 0) pHdr: {
                     const pseudo_size = @bitSizeOf(SegmentPseudoHeader) / 8;
-                    var pseudo_buf: [@sizeOf(SegmentPseudoHeader)]u8 = .{ 0 } ** @sizeOf(SegmentPseudoHeader);
+                    var pseudo_buf: [@sizeOf(SegmentPseudoHeader)]u8 = @splat(0);
                     for (pseudo_buf[0..pseudo_size], byte_buf[hdr_end..(hdr_end + pseudo_size)]) |*s, b| s.* = b;
                     break :pHdr mem.bytesToValue(SegmentPseudoHeader, pseudo_buf[0..]);
                 }

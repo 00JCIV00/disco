@@ -381,7 +381,7 @@ pub fn main() !void {
                 var user_buf: [100]u8 = undefined;
                 const user = sys.getUser(user_buf[0..]) orelse break :defaultConf;
                 log.debug("Current User: {s}", .{ user });
-                var path_buf: [fs.max_path_bytes]u8 = .{ 0 } ** fs.max_path_bytes;
+                var path_buf: [fs.max_path_bytes]u8 = undefined;
                 const user_conf_path = confPath: {
                     if (mem.eql(u8, user, "root")) break :confPath "/root/.config/disco/config.json";
                     break :confPath fmt.bufPrint(path_buf[0..], "/home/{s}/.config/disco/config.json", .{ user }) catch break :defaultConf;

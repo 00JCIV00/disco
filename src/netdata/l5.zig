@@ -27,22 +27,22 @@ pub const BOOTP = struct {
         /// Flags
         flags: u16 = 0,
         /// Client IP address (if known)
-        client_addr: [4]u8 align(1) = .{ 0 } ** 4,
+        client_addr: [4]u8 align(1) = @splat(0),
         /// 'Your' (client) IP address
-        self_addr: [4]u8 align(1) = .{ 0 } ** 4,
+        self_addr: [4]u8 align(1) = @splat(0),
         /// Server IP address
-        server_addr: [4]u8 align(1) = .{ 0 } ** 4,
+        server_addr: [4]u8 align(1) = @splat(0),
         /// Relay agent IP address
-        gw_addr: [4]u8 align(1) = .{ 0 } ** 4,
+        gw_addr: [4]u8 align(1) = @splat(0),
         /// Client hardware address
         //client_hw_addr: u128 = 0,
-        client_hw_addr: [16]u8 align(1) = .{ 0 } ** 16,
+        client_hw_addr: [16]u8 align(1) = @splat(0),
         /// Server host name
         //server_hostname: u512 = 0,
-        server_hostname: [64]u8 align(1) = .{ 0 } ** 64,
+        server_hostname: [64]u8 align(1) = @splat(0),
         /// Boot file name
         //file: u1024 = 0,
-        file: [128]u8 align(1) = .{ 0 } ** 128,
+        file: [128]u8 align(1) = @splat(0),
         /// Magic cookie
         cookie: [4]u8 align(1) = [_]u8{ 0x63, 0x82, 0x53, 0x63 },
     };

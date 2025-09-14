@@ -409,7 +409,7 @@ pub fn resetNLMap(
 ) void {
     // Clean
     var map_iter = map.iterator();
-    var rm_idxs: [16_000]?K = .{ null } ** 16_000;
+    var rm_idxs: [16_000]?K = @splat(null);
     var rm_count: u16 = 0;
     while (map_iter.next()) |val| {
         nl.parse.freeBytes(alloc, V, val.value_ptr.*);

@@ -107,9 +107,9 @@ pub const ARP = struct {
         hw_addr_len: u8 = 6,
         proto_addr_len: u8 = 4,
         op_code: u16 = OpCodes.REQUEST,
-        sender_hw_addr: [6]u8 = .{ 0 } ** 6,
+        sender_hw_addr: [6]u8 = @splat(0),
         sender_proto_addr: u32 = 0,
-        tgt_hw_addr: [6]u8 = .{ 0 } ** 6,
+        tgt_hw_addr: [6]u8 = @splat(0),
         tgt_proto_addr: u32 = 0,
     };
 

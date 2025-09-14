@@ -303,7 +303,7 @@ pub const Connection = struct {
     thread_timeout: usize = 1_000,
     // Derived
     _if_index: ?i32 = null,
-    _psk: [32]u8 = .{ 0 } ** 32,
+    _psk: [32]u8 = @splat(0),
     _scan_result: nl._80211.ScanResults,
     _rsn_bytes: []const u8 = &.{},
     _eapol_keys: ?nl._80211.EAPoLKeys = null,
@@ -769,7 +769,7 @@ pub const Connection = struct {
                                             .confirm = sae_confirm_resp_data[0].FRAME[32..64].*,
                                             .commit = auth_ctx.sae_peer.?,
                                             .pwe = P256.basePoint,
-                                            .private = .{ 0 } ** 32,
+                                            .private = @splat(0),
                                         }; 
                                         sae.checkConfirm(peer_ctx.confirm.?, auth_ctx.sae_ctx.?.commit, peer_ctx) catch {
                                             log.warn("Issue handling WPA3 SAE Confirm response: Confirm Token Verification Mismatch", .{});
