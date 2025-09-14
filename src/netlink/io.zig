@@ -257,10 +257,6 @@ pub const Handler = struct {
                 break :respCtx resp_entry.value_ptr;
             };
             if (response.* == .ready) continue;
-            //if (response.* == .ready) freeOld: {
-            //    const old_data = response.ready catch break :freeOld;
-            //    self._alloc.free(old_data);
-            //}
             const resp_bytes = respData: {
                 var msg_buf = switch (response.*) {
                     .working => |buf| buf,
@@ -386,11 +382,12 @@ pub const Loop = struct {
     };
 
     /// Initialize a new Event Loop
-    pub fn init(init_config: InitConfig) @This() {
+    pub fn init(init_config: InitConfig) !@This() {
         return .{
             .err_fn = init_config.err_fn,
             .diag = init_config.diag,
-            ._epoll_fd = undefined,
+            //._epoll_fd = undefined,
+            ._epoll_fd = @intCast(try posix.epoll_create1(0)),
         };
     }
 
@@ -403,8 +400,9 @@ pub const Loop = struct {
 
     /// Start the Event Loop on its own Thread
     pub fn start(self: *@This(), alloc: mem.Allocator, active: *atomic.Value(bool)) !void {
+        if (self._active.load(.acquire)) return;
         self._active.store(true, .monotonic);
-        self._epoll_fd = @intCast(try posix.epoll_create1(0));
+        //self._epoll_fd = @intCast(try posix.epoll_create1(0));
         self._thread = try .spawn(
             .{ .allocator = alloc },
             startThread,

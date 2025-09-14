@@ -334,7 +334,7 @@ pub const setup_cmd = CommandT{
                     .description = "Set the WiFi Secruity Protocol. (open, wep, or wpa2 | Default = wpa2)",
                     .long_name = "security",
                     .short_name = 's',
-                    .val = ValueT.ofType(nl._80211.SecurityType, .{ .default_val = .wpa2 }),
+                    .val = ValueT.ofType(nl._80211.SecurityType, .{}),
                 },
                 .{
                     .name = "dhcp",
@@ -601,16 +601,6 @@ pub const setup_cmd = CommandT{
                         .parse_fn = parseIPv4,
                     }),
                 },
-                //.{
-                //    .name = "subnet",
-                //    .description = "Specify a Subnet Mask (in CIDR or IP notation) for the IP Address or Route being added to given Interface. (Used in conjunction with `--ip` or `--route`. Default = 24)",
-                //    .long_name = "subnet",
-                //    .short_name = 's',
-                //    .val = ValueT.ofType(u8, .{
-                //        .default_val = 24,
-                //        .parse_fn = address.parseCIDR,
-                //    }),
-                //},
             },
         },
         .{
@@ -647,16 +637,6 @@ pub const setup_cmd = CommandT{
                         .parse_fn = parseIPv4,
                     }),
                 },
-                //.{
-                //    .name = "subnet",
-                //    .description = "Specify a Subnet Mask to identify the IP Address or Route being removed from the given Interface. (Used in conjunction with `--ip` or `--route`)",
-                //    .long_name = "subnet",
-                //    .short_name = 's',
-                //    .val = ValueT.ofType(u8, .{
-                //        .default_val = 24,
-                //        .parse_fn = address.parseCIDR,
-                //    }),
-                //},
             },
         },
         .{

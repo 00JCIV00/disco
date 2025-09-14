@@ -401,7 +401,7 @@ pub const Connection = struct {
                 log.err("Key Generation Error: {s}", .{ @errorName(err) });
                 return error.UnableToGenKey;
             },
-            .open, .wpa3t, .wpa3 => .{ 0 } ** 32,
+            .open, .wpa3t, .wpa3 => @as([32]u8, @splat(0)),
             else => {
                 log.err("Could not connect to '{s}' due to unimplemented Security Type '{s}'", .{ network.ssid, @tagName(network.security) });
                 return error.UnimplementedSecurityType;

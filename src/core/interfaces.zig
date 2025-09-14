@@ -474,6 +474,28 @@ pub const Context = struct {
                 }
             },
             .parse => {
+                defer if (core_ctx.run_condition) |*condition| {
+                    switch (condition.*) {
+                        .list_interfaces => |*list| list.updated = true,
+                        .mod_interfaces => |*mod| {
+                            var if_iter = self.interfaces.iterator();
+                            defer self.interfaces.mutex.unlock();
+                            mod.complete = modified: {
+                                while (if_iter.next()) |mod_if_entry| {
+                                    const mod_if = mod_if_entry.value_ptr;
+                                    switch (mod_if.usage) {
+                                        .modify => |mod_list| {
+                                            if (mod_list.items.len > 0) break :modified false;
+                                        },
+                                        else => continue,
+                                    }
+                                }
+                                break :modified true;
+                            };
+                        },
+                        else => {},
+                    }
+                };
                 defer self.state = .request;
                 //log.debug("Parsing Interface Updates...", .{});
                 // Ensure all requests got a successful response
@@ -607,7 +629,15 @@ pub const Context = struct {
                         core_ctx.alloc.free(upd_if.phy_name);
                         nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
                     }
-                    else {
+                    else newIFMsg: {
+                        if (core_ctx.run_condition) |condition| {
+                            switch (condition) {
+                                .list_interfaces,
+                                .mod_interfaces,
+                                    => break :newIFMsg,
+                                else => {}, 
+                            }
+                        }
                         log.info("New Interface Seen: ({s}) {s}", .{ MACF{ .bytes = add_if.mac[0..] }, add_if.name });
                     }
                     valid = true;
@@ -630,6 +660,14 @@ pub const Context = struct {
                         //log.debug("- Check name: {s} ({d}B) vs {s} ({d}B)", .{ net_if.name, net_if.name.len, avail_if_name, avail_if_name.len });
                         if (!mem.eql(u8, net_if.name, avail_if_name)) continue;
                         net_if.usage = .available;
+                        if (core_ctx.run_condition) |condition| {
+                            switch (condition) {
+                                .list_interfaces,
+                                .mod_interfaces,
+                                    => continue,
+                                else => {}, 
+                            }
+                        }
                         log.info("Available Interface Found:\n{s}", .{ net_if });
                         if (core_ctx.config.profile.mask) |pro_mask| {
                             var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);

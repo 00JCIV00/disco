@@ -65,6 +65,7 @@ pub const Core = struct {
     //arena: heap.ArenaAllocator,
     /// Config
     config: Config,
+    run_condition: ?RunCondition = null,
     /// Interval for Thread Checks.
     interval: usize = 100 * time.ns_per_ms,
     /// Active Status of the overall program.
@@ -112,7 +113,7 @@ pub const Core = struct {
             .alloc = alloc,
             //.arena = arena,
             .config = config,
-            .nl_event_loop = .init(.{}),
+            .nl_event_loop = try .init(.{}),
             .nl80211_handler = nl80211_handler,
             .rtnetlink_handler = rtnetlink_handler,
             .og_hostname = og_hostname,
@@ -121,6 +122,8 @@ pub const Core = struct {
             .conn_ctx = undefined,
             .serve_ctx = undefined,
         };
+        try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
+        try self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
         //// Context Initialization
         self.if_ctx = try .init(&self);
         errdefer self.if_ctx.deinit(alloc);
@@ -149,13 +152,13 @@ pub const Core = struct {
         return self;
     }
 
-    /// Start the Core Context (Async)
+    /// Start the Core Context
     /// This is the main loop for how DisCo is typically run.
-    pub fn startAsync(self: *@This()) !void {
-        self.active.store(true, .release);
+    pub fn start(self: *@This()) !void {
         if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
         log.info("Core Locked!", .{});
         log.info("Starting DisCo Core...", .{});
+        self.active.store(true, .release);
         defer {
             log.info("Core Unlocked!", .{});
             self._mutex.unlock();
@@ -219,8 +222,6 @@ pub const Core = struct {
         log.debug("Searching for the following Interfaces: {s}", .{ self.config.avail_if_names });
         // Event Loop
         try self.nl_event_loop.start(self.alloc, &self.active); 
-        try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
-        try self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
         // Core Loop
         log.info("Started DisCo Core.", .{});
         while (self.active.load(.acquire)) {
@@ -239,113 +240,36 @@ pub const Core = struct {
 
     /// Run Condition for `runTo()`.
     pub const RunCondition = union(enum) {
-        list_interfaces,
-        mod_interfaces,
-        network_scan,
+        list_interfaces: struct {
+            updated: bool = false,
+        },
+        mod_interfaces: struct {
+            complete: bool = false,
+        },
+        network_scan: struct {
+            _cur_passes: u8 = 0,
+            max_passes: u8 = 10,
+        },
     };
-    /// Run the Core Context up To the provided `condition`.
+    /// (WIP) Run the Core Context up To the provided `condition`.
     /// This is useful for getting info from all Interfaces, doing a single Scan, etc
     pub fn runTo(self: *@This(), condition: RunCondition) !void {
-        self.active.store(true, .release);
         if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
         defer self._mutex.unlock();
+        self.active.store(true, .release);
+        self.run_condition = condition;
         // Event Loop
-        self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
-        self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
         try self.nl_event_loop.start(self.alloc, &self.active);
         // Core Loop
-        while (switch (condition) {
-            .list_interfaces => self.if_ctx.interfaces.count() == 0,
+        try self.if_ctx.update(self);
+        while (switch (self.run_condition.?) {
+            .list_interfaces => |list_cond| !list_cond.updated,
             //TODO: WIP
-            .mod_interfaces => false, 
-            .scan => self.network_ctx.networks.count() == 0,
+            .mod_interfaces => |mod_cond| !mod_cond.complete,
+            .network_scan => |scan_cond| scan_cond._cur_passes < scan_cond.max_passes,
         }) {
             try self.if_ctx.update(self);
         }
-    }
-
-    /// Start the Core Context.
-    /// Deprecating after Async Update
-    pub fn start(self: *@This()) !void {
-        self.active.store(true, .release);
-        if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
-        log.info("Core Locked!", .{});
-        log.info("Starting DisCo Core...", .{});
-        defer {
-            log.info("Core Unlocked!", .{});
-            self._mutex.unlock();
-        }
-        try self._thread_pool.init(.{ .allocator = self.alloc, .n_jobs = 3 });
-        // Interface Tracking
-        self._thread_pool.spawnWg(
-            &self._wait_group,
-            interfaces.trackInterfaces,
-            .{
-                self.alloc,
-                &self.active,
-                &self.interval,
-                &self.if_ctx,
-                &self.config,
-            },
-        );
-        log.info("- Started Interface Tracking.", .{});
-        // WiFi Network Scanning
-        self._thread_pool.spawnWg(
-            &self._wait_group,
-            networks.trackScans,
-            .{
-                self.alloc,
-                &self.active,
-                &self.interval,
-                self.if_ctx.interfaces,
-                &self.network_ctx,
-                &self.config,
-            },
-        );
-        log.info("- Started WiFi Scan Tracking.", .{});
-        self._thread_pool.spawnWg(
-            &self._wait_group,
-            networks.trackNetworks,
-            .{
-                self.alloc,
-                &self.active,
-                &self.interval,
-                self.if_ctx.interfaces,
-                &self.network_ctx,
-            },
-        );
-        log.info("- Started WiFi Network Tracking.", .{});
-        // Connection Tracking
-        self._thread_pool.spawnWg(
-            &self._wait_group,
-            connections.trackConnections,
-            .{
-                self.alloc,
-                &self.active,
-                &self.interval,
-                &self.config,
-                &self.conn_ctx,
-                &self.if_ctx,
-                &self.network_ctx,
-            },
-        );
-        log.info("- Started Connection Tracking.", .{});
-        // File Serving
-        if (self.config.serve_config) |_| {
-            self._thread_pool.spawnWg(
-                &self._wait_group,
-                serve.serveDir,
-                .{
-                    self.alloc,
-                    &self.serve_ctx,
-                    &self.active,
-                },
-            );
-            log.info("- Started File Serving.", .{});
-        }
-        log.info("Started DisCo Core.", .{});
-        self._thread_pool.waitAndWork(&self._wait_group);
-        self._thread_pool.deinit();
     }
 
     /// Stop the Core Context
@@ -403,26 +327,43 @@ pub const Core = struct {
         log.info("Cleaned up DisCo Core.", .{});
     }
 
+    /// Print Config
+    pub const PrintConfig = struct {
+        sys_info: bool = true,
+        if_info: IFInfo = .all,
+
+        pub const IFInfo = enum {
+            none,
+            available,
+            all,
+        };
+    };
     /// Print System & Interface Info
-    pub fn printInfo(self: *@This(), writer: anytype) !void {
-        var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
-        try writer.print(
-            \\DisCo Info:
-            \\-----------
-            \\Hostname: {s}
-            \\-----------
-            \\
-            , .{ try posix.gethostname(hn_buf[0..]) }
-        );
+    pub fn printInfo(self: *@This(), writer: anytype, config: PrintConfig) !void {
+        try writer.print("DisCo Info:\n", .{});
+        if (config.sys_info) {
+            var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
+            try writer.print(
+                //\\DisCo Info:
+                \\-----------
+                \\Hostname: {s}
+                \\-----------
+                \\
+                , .{ try posix.gethostname(hn_buf[0..]) }
+            );
+        }
         try writer.print("Interface Details:\n", .{});
-        var if_iter = self.if_ctx.interfaces.iterator();
+        if (config.if_info == .none) return;
+        var if_iter = self.if_ctx.interfaces.iterator(); 
         defer if_iter.unlock();
-        while (if_iter.next()) |print_if| {
+        while (if_iter.next()) |print_if_entry| {
+            const print_if = print_if_entry.value_ptr;
+            if (config.if_info == .available and print_if.usage != .available) continue;
             try writer.print(
                 \\{s}
                 \\-----------
                 \\
-                , .{ print_if.value_ptr }
+                , .{ print_if }
             );
         }
     }

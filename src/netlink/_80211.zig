@@ -2219,7 +2219,7 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
     var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestSetFreq(fba.allocator(), &req_ctx, if_index, freq, ch_width);
     defer posix.close(req_ctx.sock);
-    try nl.handleAck(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 /// Set the `channel` for the provided Interface (`if_index`)
 pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void {
@@ -2263,7 +2263,7 @@ pub fn takeOwnership(req_ctx: *nl.RequestContext, if_index: i32) !void {
     var req_buf: [buf_len]u8 = undefined;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     try requestTakeOwnership(fba.allocator(), req_ctx, if_index);
-    try nl.handleAck(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
 /// Request to Set the `mode` for the Interface (`if_index`)
@@ -2305,7 +2305,7 @@ pub fn setMode(if_index: i32, mode: u32) !void {
     var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestSetMode(fba.allocator(), &req_ctx, if_index, mode);
     defer posix.close(req_ctx.sock);
-    try nl.handleAck(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
 /// Request the details for a Station.
@@ -2767,7 +2767,7 @@ pub fn handleWIPHYSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const W
 //            attrs_buf.items,
 //        );
 //        defer posix.close(nl_sock);
-//        try nl.handleAck(nl_sock);
+//        try nl.handleAckSock(nl_sock);
 //        const buf_size: u32 = 64_000;
 //        var timeout: usize = 3;
 //        var res_sock = try posix.socket(nl.AF.NETLINK, posix.SOCK.RAW, nl.NETLINK.GENERIC);
@@ -2998,7 +2998,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
         config,
     );
     defer posix.close(req_ctx.sock);
-    try nl.handleAck(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
 /// Scheduled Scan Config
@@ -3082,7 +3082,7 @@ pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConf
     var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestStartSchedScan(alloc, &req_ctx, if_index, config);
     defer posix.close(req_ctx.sock);
-    try nl.handleAck(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
 /// Request to Stop a Scheduled Scan for the provided Interface (`if_index`).
@@ -3118,7 +3118,7 @@ pub fn stopSchedScan(
     var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestStopSchedScan(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
-    try nl.handleAck(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 
 /// Request Scan Results from Netlink.
@@ -3156,7 +3156,7 @@ pub fn getScanResults(alloc: mem.Allocator, if_index: ?i32) !void {
     var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestScanResults(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
-    try nl.handleAck(req_ctx.sock);
+    try nl.handleAckSock(req_ctx.sock);
 }
 /// Parse the provided `bytes` to a ScanResults instance.
 pub fn parseScanResults(alloc: mem.Allocator, bytes: []const u8) !ScanResults {
@@ -3328,7 +3328,7 @@ pub fn registerFrames(
         matches,
     );
     defer posix.close(req_ctx.sock);
-    nl.handleAck(req_ctx.sock) catch |err| switch (err) {
+    nl.handleAckSock(req_ctx.sock) catch |err| switch (err) {
         error.ALREADY => {},//log.debug("Frame Match 0x{?X:0>4} w/ Type {?X:0>2} is already registered.", .{ match, f_type }),
         else => return err,
     };
@@ -3372,7 +3372,7 @@ pub fn registerFrames(
 //            },
 //            req_config.autoSockKind(nl.NETLINK.GENERIC),
 //        ) orelse break :contKey;
-//        nl.handleAck(nl_sock) catch |err| switch (err) {
+//        nl.handleAckSock(nl_sock) catch |err| switch (err) {
 //            error.NOLINK => {},
 //            else => return err,
 //        };
@@ -3406,7 +3406,7 @@ pub fn registerFrames(
 //    ) orelse return;
 //    defer posix.close(nl_sock);
 //    // TODO: Handle faulty flushes
-//    nl.handleAck(nl_sock) catch {};
+//    nl.handleAckSock(nl_sock) catch {};
 //}
 
 /// Derive HT and VHT Capability Info from the provided `bss` and `wiphy`
@@ -3601,7 +3601,7 @@ pub fn requestDeauthenticate(
         },
         req_ctx,
     );
-    //try nl.handleAck(nl_sock);
+    //try nl.handleAckSock(nl_sock);
 }
 
 /// Request to Associate to the provided Network `ssid`.
@@ -3743,7 +3743,7 @@ pub fn requestAssociate(
         req_ctx,
     );
     //errdefer posix.close(nl_sock);
-    //try nl.handleAck(nl_sock);
+    //try nl.handleAckSock(nl_sock);
 }
 
 /// Request to Disassociate the given Station (`mac`) from the provided Interface (`if_index`).
@@ -3787,7 +3787,7 @@ pub fn requestDisassociate(
         },
         req_ctx,
     );
-    //try nl.handleAck(nl_sock);
+    //try nl.handleAckSock(nl_sock);
 }
 
 /// Request to Send Control Frame
@@ -3886,7 +3886,7 @@ pub fn requestAuthPort(
         },
         req_ctx,
     );
-    //try nl.handleAck(nl_sock);
+    //try nl.handleAckSock(nl_sock);
 }
 
 /// Request to Add a `key` to the given `key_index` for a specific connection.
@@ -3943,7 +3943,7 @@ pub fn requestAddKey(
         req_ctx,
     );
     //errdefer posix.close(nl_sock);
-    //try nl.handleAck(nl_sock);
+    //try nl.handleAckSock(nl_sock);
 }
 
 /// EAPoL Keys

@@ -321,7 +321,14 @@ pub const Context = struct {
                                             }
                                         },
                                         .results => results: {
-                                            defer scan_if.usage = .available;
+                                            defer resUpd: {
+                                                scan_if.usage = .available;
+                                                const condition: *core.Core.RunCondition = &(core_ctx.run_condition orelse break: resUpd);
+                                                switch (condition.*) {
+                                                    .network_scan => |*scan_cond| scan_cond._cur_passes += 1,
+                                                    else => {}
+                                                }
+                                            }
                                             var parse_time: time.Timer = try .start();
                                             defer log.debug("Parse Time: {d}ms", .{ @divFloor(parse_time.read(), time.ns_per_ms) });
                                             const scan_result_data: []const u8 = nl_ctx.req_ctx.getResponse().? catch |err| {
