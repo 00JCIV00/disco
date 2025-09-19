@@ -210,7 +210,7 @@ pub const RequestContext = struct {
     /// Optional Netlink Request Handler
     handler: ?*io.Handler = null,
     /// Async Request Timeout in milliseconds (ms)
-    timeout: u32 = 3_000,
+    timeout: u32 = 1_000,
 
     /// Current Unique Sequence ID f/ new Netlink Requests
     var unique_seq_id: atomic.Value(u32) = .init(1000);

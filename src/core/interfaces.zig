@@ -368,6 +368,8 @@ pub const Interface = struct {
 /// Interfaces Context
 pub const Context = struct {
     // INTERNAL USE
+    /// Timer
+    _timer: time.Timer,
     /// Arena
     _arena: *heap.ArenaAllocator,
     /// Arena Allocator
@@ -391,6 +393,7 @@ pub const Context = struct {
     /// Initialize the Interface Context.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
+        self._timer = try .start();
         self._arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
         self._arena.* = .init(core_ctx.alloc);
         self._a_alloc = self._arena.allocator();
@@ -429,6 +432,8 @@ pub const Context = struct {
     
     /// Update the status of all Interfaces
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+        if (@divFloor(self._timer.read(), time.ns_per_ms) < 1_000) return;
+        self._timer.reset();
         //log.debug("Updating Interfaces: {s}", .{ @tagName(self.state) });
         ifState: switch (self.state) {
             .ready => {
