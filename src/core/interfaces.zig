@@ -54,6 +54,7 @@ pub const Interface = struct {
     channel: ?u32 = null,
     ch_width: ?nl._80211.CHANNEL_WIDTH = null,
     ssid: ?[]const u8 = null,
+    supported_freqs: []const u32 = &.{},
     // Netlink Data
     wiphy: nl._80211.Wiphy,
 
@@ -122,6 +123,7 @@ pub const Interface = struct {
         }
         alloc.free(self.name);
         alloc.free(self.phy_name);
+        alloc.free(self.supported_freqs);
         nl.parse.freeBytes(alloc, nl._80211.Wiphy, self.wiphy);
         //if (self.ssid) |ssid| alloc.free(ssid);
         self._init = false;
@@ -312,18 +314,22 @@ pub const Interface = struct {
     ) !void {
         var last_ts_buf: [50]u8 = undefined;
         const last_ts = try self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339);
+        const cur_usage: []const u8 = switch (self.usage) {
+            .unavailable => "-",
+            else => @tagName(self.usage),
+        };
         try writer.print(
             \\({d}) {s} | {s}
             \\{s}
-            \\- Phy:     ({d}) {s}
-            \\- OG MAC:  {s} ({s})
-            \\- MAC:     {s} ({s})
-            \\- State:   {s}
-            \\- Mode:    {s}
-            \\- MTU:     {d}
+            \\- Phy:    ({d}) {s}
+            \\- OG MAC: {s} ({s})
+            \\- MAC:    {s} ({s})
+            \\- State:  {s}
+            \\- Mode:   {s}
+            \\- MTU:    {d}
             \\
             , .{
-                self.index, self.name, @tagName(self.usage),
+                self.index, self.name, cur_usage,
                 last_ts,
                 self.phy_index, self.phy_name,
                 MACF{ .bytes = self.og_mac[0..] }, try netdata.oui.findOUI(.short, self.og_mac),
@@ -333,15 +339,28 @@ pub const Interface = struct {
                 self.mtu,
             },
         );
-        if (self.channel) |ch| {
-            try writer.print("- Channel: {d} | {s}", .{ ch, if (self.ch_width) |width| @tagName(width) else "-" });
+        if (self.channel) |ch| //
+            try writer.print("- Channel: {d} | {s}MHz Wide\n", .{ ch, if (self.ch_width) |width| @tagName(width) else "-" });
+        if (self.ips[0] != null) ips: {
+            try writer.print("- IPs:\n", .{});
+            for (self.ips, self.cidrs) |_ip, _cidr| {
+                const ip = _ip orelse break :ips;
+                const cidr = _cidr orelse continue;
+                writer.print("  - {s}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
+            }
         }
-        if (self.ips[0] == null) return;
-        try writer.print("- IPs:\n", .{});
-        for (self.ips, self.cidrs) |_ip, _cidr| {
-            const ip = _ip orelse return;
-            const cidr = _cidr orelse continue;
-            try writer.print("  - {s}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr });
+        try writer.print(
+            \\- Support:
+            \\  - Channels: ({d} Channels)
+            \\
+            , .{ self.supported_freqs.len }
+        );
+        for (self.supported_freqs) |freq| {
+            const ch = nl._80211.channelFromFreq(freq) catch {
+                log.warn("Invalid Freq: {d}MHz", .{ freq });
+                continue;
+            };
+            try writer.print("    - {d} ({d})MHz\n", .{ ch, freq });
         }
     }
 };
@@ -421,14 +440,14 @@ pub const Context = struct {
                 self._req_wifi_ifs.nextSeqID();
                 try nl._80211.requestAllInterfaces(core_ctx.alloc, &self._req_wifi_ifs);
                 time.sleep(1 * time.ns_per_ms);
-                self._req_wiphys.nextSeqID();
-                try nl._80211.requestAllWIPHY(core_ctx.alloc, &self._req_wiphys);
-                time.sleep(1 * time.ns_per_ms);
                 self._req_links.nextSeqID();
                 try nl.route.requestAllIFLinks(core_ctx.alloc, &self._req_links);
                 time.sleep(1 * time.ns_per_ms);
                 self._req_addrs.nextSeqID();
                 try nl.route.requestAllIFAddrs(core_ctx.alloc, &self._req_addrs);
+                time.sleep(1 * time.ns_per_ms);
+                self._req_wiphys.nextSeqID();
+                try nl._80211.requestAllWIPHY(core_ctx.alloc, &self._req_wiphys);
                 time.sleep(1 * time.ns_per_ms);
                 self.state = .await_response;
                 //log.debug(
@@ -548,6 +567,8 @@ pub const Context = struct {
                 const nl_addrs = try nl.route.handleIFAddrsBuf(self._a_alloc, addr_data); 
                 // Update WiFi Interfaces Netlink Status
                 updateIfs: for (nl_wifi_ifs) |wifi_if| {
+                    const wifi_if_idx = wifi_if.IFINDEX orelse continue;
+                    const wifi_if_name = wifi_if.IFNAME orelse continue;
                     var valid: bool = false;
                     const wiphy: nl._80211.Wiphy = nlWiphy: {
                         for (nl_wiphys) |nl_wiphy| {
@@ -558,12 +579,12 @@ pub const Context = struct {
                     };
                     const link: nl.route.IFInfoAndLink = nlLink: {
                         for (nl_links) |nl_link| {
-                            if (wifi_if.IFINDEX != nl_link.info.index) continue;
+                            if (wifi_if_idx != nl_link.info.index) continue;
                             break :nlLink nl_link;
                         }
                         else continue :updateIfs;
                     };
-                    const if_name = core_ctx.alloc.dupe(u8, wifi_if.IFNAME[0..(wifi_if.IFNAME.len - 1)]) catch @panic("OOM");
+                    const if_name = core_ctx.alloc.dupe(u8, wifi_if_name[0..(wifi_if_name.len - 1)]) catch @panic("OOM");
                     const phy_name = core_ctx.alloc.dupe(u8, wiphy.WIPHY_NAME) catch @panic("OOM");
                     defer if (!valid) {
                         core_ctx.alloc.free(if_name);
@@ -574,7 +595,7 @@ pub const Context = struct {
                         var cidrs: [10]?u8 = @splat(null);
                         var idx: u8 = 0;
                         for (nl_addrs) |addr| {
-                            if (addr.info.index != wifi_if.IFINDEX) continue;
+                            if (addr.info.index != wifi_if_idx) continue;
                             const ip = addr.addr.ADDRESS orelse continue;
                             const cidr = addr.info.prefix_len;
                             ips[idx] = ip;
@@ -591,8 +612,12 @@ pub const Context = struct {
                         const raw_width = wifi_if.CHANNEL_WIDTH orelse break :chWidth null;
                         break :chWidth @enumFromInt(raw_width);
                     };
+                    //const wiphy_clone = nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy) catch |err| {
+                    //    log.debug("Couldn't clone `wiphy`: {s}", .{ @errorName(err) });
+                    //    return err;
+                    //};
                     var add_if: Interface = .{
-                        .index = @intCast(wifi_if.IFINDEX),
+                        .index = @intCast(wifi_if_idx),
                         .name = if_name,
                         .mac = wifi_if.MAC,
                         .mode = wifi_if.IFTYPE orelse continue :updateIfs,
@@ -607,6 +632,7 @@ pub const Context = struct {
                         .cidrs = cidrs,
                         .ssid = wifi_if.SSID,
                         .wiphy = try nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy),
+                        //.wiphy = wiphy_clone,
                         .last_upd = try zeit.instant(.{}),
                     };
                     self.interfaces.mutex.lock();
@@ -625,17 +651,34 @@ pub const Context = struct {
                         add_if.penalty = upd_if.penalty;
                         add_if.min_penalty = upd_if.min_penalty;
                         add_if.max_penalty = upd_if.max_penalty;
+                        add_if.supported_freqs = upd_if.supported_freqs;
                         core_ctx.alloc.free(upd_if.name);
                         core_ctx.alloc.free(upd_if.phy_name);
                         nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
                     }
                     else newIFMsg: {
+                        const bands = wiphy.WIPHY_BANDS orelse {
+                            log.warn("The Interface '{s}' did not provide Band/Frequency Info, so it can't be used.", .{ add_if.name });
+                            continue :updateIfs;
+                        };
+                        var freqs_list: ArrayList(u32) = .empty;
+                        errdefer freqs_list.deinit(core_ctx.alloc);
+                        for (bands) |band| {
+                            const freqs = band.FREQS orelse continue;
+                            for (freqs) |freq| //
+                                try freqs_list.append(core_ctx.alloc, freq.FREQ);
+                        }
+                        add_if.supported_freqs = try freqs_list.toOwnedSlice(core_ctx.alloc);
+                        if (add_if.supported_freqs.len == 0) {
+                            core_ctx.alloc.free(add_if.supported_freqs);
+                            log.debug("The Interface '{s}' did not report any available Channels." ,.{ add_if.name });
+                        }
                         if (core_ctx.run_condition) |condition| {
                             switch (condition) {
                                 .list_interfaces,
                                 .mod_interfaces,
                                     => break :newIFMsg,
-                                else => {}, 
+                                else => {},
                             }
                         }
                         log.info("New Interface Seen: ({s}) {s}", .{ MACF{ .bytes = add_if.mac[0..] }, add_if.name });
@@ -669,6 +712,24 @@ pub const Context = struct {
                             }
                         }
                         log.info("Available Interface Found:\n{s}", .{ net_if });
+                        core_ctx.network_ctx.scan_configs.mutex.lock();
+                        defer core_ctx.network_ctx.scan_configs.mutex.unlock();
+                        if (core_ctx.network_ctx.scan_configs.map.getEntry(net_if.name)) |scan_cfg_entry| scanCfg: {
+                            const scan_config = scan_cfg_entry.value_ptr;
+                            const freqs = scan_config.freqs orelse break :scanCfg;
+                            var scan_list: ArrayList(u32) = .empty;
+                            errdefer scan_list.deinit(core_ctx.alloc);
+                            for (freqs) |freq| {
+                                if (mem.indexOfScalar(u32, net_if.supported_freqs, freq) == null) continue;
+                                try scan_list.append(core_ctx.alloc, freq);
+                            }
+                            if (scan_list.items.len == 0) {
+                                log.warn("The provided Channels for '{s}' are not supported by the Interface. Defaulting to supported Channels.", .{ net_if.name });
+                                scan_config.freqs = null;
+                                break :scanCfg;
+                            }
+                            scan_config.freqs = try scan_list.toOwnedSlice(core_ctx.alloc);
+                        }
                         if (core_ctx.config.profile.mask) |pro_mask| {
                             var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
                             if (pro_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
@@ -676,8 +737,8 @@ pub const Context = struct {
                                 try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN });
                             if (mem.eql(u8, net_if.mac[0..], net_if.og_mac[0..]))
                                 try net_if.modify(core_ctx, .{ .mac = mask_mac });
-                            try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).UP });
                         }
+                        try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).UP });
                         break;
                     }
                 },

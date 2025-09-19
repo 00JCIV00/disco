@@ -122,6 +122,7 @@ pub const Core = struct {
             .conn_ctx = undefined,
             .serve_ctx = undefined,
         };
+        errdefer self.nl_event_loop.deinit(alloc);
         try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
         try self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
         //// Context Initialization
@@ -248,7 +249,7 @@ pub const Core = struct {
         },
         network_scan: struct {
             _cur_passes: u8 = 0,
-            max_passes: u8 = 10,
+            max_passes: u8 = 1,
         },
     };
     /// (WIP) Run the Core Context up To the provided `condition`.
@@ -268,7 +269,11 @@ pub const Core = struct {
             .mod_interfaces => |mod_cond| !mod_cond.complete,
             .network_scan => |scan_cond| scan_cond._cur_passes < scan_cond.max_passes,
         }) {
+            // Interface Tracking
             try self.if_ctx.update(self);
+            // Network Tracking
+            try self.network_ctx.update(self);
+            time.sleep(10 * time.ns_per_ms);
         }
     }
 

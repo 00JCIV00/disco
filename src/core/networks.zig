@@ -104,6 +104,13 @@ pub const Network = struct {
         _: fmt.FormatOptions,
         writer: anytype,
     ) !void {
+        const ssid: []const u8 = ssid: {
+            if (//
+                self.ssid.len > 0 and //
+                !mem.eql(u8, self.ssid, &.{ 0 }) //
+            ) break :ssid self.ssid;
+            break :ssid "[HIDDEN NETWORK] (DisCo)";
+        };
         try writer.print(
             \\{s}
             \\- BSSID:     {s} ({s})
@@ -112,7 +119,7 @@ pub const Network = struct {
             \\- Channel:   {d} ({d} MHz)
             \\
             , .{
-                self.ssid,
+                ssid,
                 MACF{ .bytes = self.bssid[0..] }, try netdata.oui.findOUI(.short, self.bssid),
                 @tagName(self.security),
                 @tagName(self.auth),
@@ -152,7 +159,8 @@ pub const NetworkScanContext = union(enum) {
 /// Network Contextrtnetlink_handler
 pub const Context = struct {
     /// Buffer
-    _buffer: [512_000]u8 = undefined,
+    /// TODO: Figure out StackFallback for this or a way to Stream through the data while parsing. (Or move back to Heap Allocation) 
+    _buffer: [666_000]u8 = undefined,
     /// Fixed Buffer Allocator
     _arena_fba: *heap.FixedBufferAllocator,
     /// Arena
@@ -177,8 +185,18 @@ pub const Context = struct {
         self.scan_configs.* = .empty;
         for (core_ctx.config.scan_configs) |config| {
             log.debug("Added Scan Config for '{s}'", .{ config.if_name });
+            const freqs: ?[]const u32 = freqs: {
+                const channels = config.channels orelse break :freqs null;
+                var freqs_list: ArrayList(u32) = .empty;
+                errdefer freqs_list.deinit(core_ctx.alloc);
+                for (channels) |ch| {
+                    const freq = try nl._80211.freqFromChannel(ch);
+                    try freqs_list.append(core_ctx.alloc, @truncate(freq));
+                }
+                break :freqs try freqs_list.toOwnedSlice(core_ctx.alloc);
+            };
             const trigger_config: nl._80211.TriggerScanConfig = .{
-                .freqs = &.{},
+                .freqs = freqs,
                 .ssids = config.ssids,
             };
             self.scan_configs.put(core_ctx.alloc, config.if_name, trigger_config) catch @panic("OOM");
@@ -273,12 +291,12 @@ pub const Context = struct {
                                             if (scan_if.checkPenalty()) continue;
                                             defer self.scan_configs.mutex.unlock();
                                             const scan_config_entry = self.scan_configs.getEntry(scan_if.name) orelse continue;
-                                            const scan_config = scan_config_entry.value_ptr;
+                                            const scan_config = scan_config_entry.value_ptr.*;
                                             try nl._80211.requestTriggerScan(
                                                 core_ctx.alloc,
                                                 &nl_ctx.req_ctx,
                                                 scan_if.index,
-                                                scan_config.*,
+                                                scan_config,
                                             );
                                         },
                                         .results => {

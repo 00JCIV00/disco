@@ -115,23 +115,25 @@ const OptionT = CommandT.OptionT;
 const ValueT = CommandT.ValueT;
 
 /// The Root Setup Command for DisCo
-pub const setup_cmd = CommandT{
+pub const setup_cmd: CommandT = .{
     .name = "disco",
     .description = "Discreetly Connect to networks.",
     .examples = &.{
         "disco -c config.json",
         "disco -i wlan0",
         "disco -i wlan0 --mask \"google pixel 6\"",
+        "disco -i wlan0 connect \"NetworkSSID\" -p \"network_passphrase\"",
         "disco -i wlan0 set --mac 00:11:22:aa:bb:cc",
         "disco -i wlan0 add --ip 192.168.10.10",
         "disco -i wlan0 del --route 192.168.0.0/16",
         "disco sys set --hostname 'shaggy'",
-        "disco host --dir '/tmp'",
+        "disco serve --dir '/tmp'",
     },
     .cmd_groups = &.{ "ACTIVE", "INTERFACE", "SETTINGS" },
     .opt_groups = &.{ "ACTIVE", "MASK", "SETTINGS" },
     .sub_cmds_mandatory = false,
     .vals_mandatory = false,
+    .allow_inheritable_opts = true,
     .opts = &.{
         .{
             .name = "config",
@@ -143,7 +145,7 @@ pub const setup_cmd = CommandT{
             .opt_group = "ACTIVE",
             .short_name = 'c',
             .long_name = "config",
-            .val = ValueT.ofType(fs.File, .{}),
+            .val = .ofType(fs.File, .{}),
         },
         .{
             .name = "interfaces",
@@ -151,7 +153,7 @@ pub const setup_cmd = CommandT{
             .opt_group = "ACTIVE",
             .short_name = 'i',
             .long_name = "interfaces",
-            .val = ValueT.ofType([]const u8, .{
+            .val = .ofType([]const u8, .{
                 .set_behavior = .Multi,
                 .max_entries = 32,
             }),
@@ -165,6 +167,7 @@ pub const setup_cmd = CommandT{
             .val = ssids_val,
         },
         channels_opt,
+        bands_opt,
         .{
             .name = "connect_info",
             .description = 
@@ -176,7 +179,7 @@ pub const setup_cmd = CommandT{
             .short_name = 'N',
             .long_name = "connect-info",
             .alias_long_names = &.{ "connection", "network" },
-            .val = ValueT.ofType(core.connections.Config, .{
+            .val = .ofType(core.connections.Config, .{
                 .set_behavior = .Multi,
                 .max_entries = 32,
                 .arg_delims = ";",
@@ -206,7 +209,7 @@ pub const setup_cmd = CommandT{
             .opt_group = "MASK",
             .short_name = 'm',
             .long_name = "mask",
-            .val = ValueT.ofType(core.profiles.Mask, .{
+            .val = .ofType(core.profiles.Mask, .{
                 .parse_fn = struct {
                     pub fn parseMask(raw_name: []const u8, _: mem.Allocator) !core.profiles.Mask {
                         const map = core.profiles.Mask.map;
@@ -234,7 +237,7 @@ pub const setup_cmd = CommandT{
             .description = "Provide an OUI or Manufacturer to hide your WiFi Interfaces. (This will provide a Link Local Random OUI if one can't be found.)",
             .opt_group = "MASK",
             .long_name = "mask-oui",
-            .val = ValueT.ofType([3]u8, .{
+            .val = .ofType([3]u8, .{
                 .parse_fn = struct {
                     pub fn parseOUI(oui_arg: []const u8, alloc: mem.Allocator) ![3]u8 {
                         return
@@ -251,14 +254,14 @@ pub const setup_cmd = CommandT{
             .opt_group = "MASK",
             .long_name = "mask-hostname",
             .alias_long_names = &.{ "mask-hn" },
-            .val = ValueT.ofType([]const u8, .{}),
+            .val = .ofType([]const u8, .{}),
         },
         .{
             .name = "mask_ttl",
             .description = "Provide a Time-to-Live (TTL) value to hide your System when connected to a network.",
             .opt_group = "MASK",
             .long_name = "mask-ttl",
-            .val = ValueT.ofType(u8, .{}),
+            .val = .ofType(u8, .{}),
         },
         .{
             .name = "mask_user_agent",
@@ -266,7 +269,7 @@ pub const setup_cmd = CommandT{
             .opt_group = "MASK",
             .long_name = "mask-user-agent",
             .alias_long_names = &.{ "mask-ua" },
-            .val = ValueT.ofType([]const u8, .{}),
+            .val = .ofType([]const u8, .{}),
         },
         // TODO Implement these Base Options
         .{
@@ -274,7 +277,7 @@ pub const setup_cmd = CommandT{
             .description = "Save the JSON output to the specified Log Path.",
             .short_name = 'l',
             .long_name = "log-path",
-            .val = ValueT.ofType(fs.File, .{
+            .val = .ofType(fs.File, .{
                 .name = "log_path",
                 .description = "Path to the save JSON Log File.",
             }),
@@ -302,7 +305,7 @@ pub const setup_cmd = CommandT{
             .description = "Connect to a WiFi Network using the specified Interface.",
             .cmd_group = "ACTIVE",
             .vals = &.{
-                ValueT.ofType([]const u8, .{
+                .ofType([]const u8, .{
                     .name = "ssid",
                     .description = "Set the SSID of the Network. (Up to 32 characters)",
                     .default_val = "",
@@ -321,7 +324,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "passphrase",
                     .alias_long_names = &.{ "password", "pwd" },
                     .short_name = 'p',
-                    .val = ValueT.ofType([]const u8, .{
+                    .val = .ofType([]const u8, .{
                         .valid_fn = struct {
                             pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
                                 return arg.len >= 8 and arg.len <= 63;
@@ -334,7 +337,7 @@ pub const setup_cmd = CommandT{
                     .description = "Set the WiFi Secruity Protocol. (open, wep, or wpa2 | Default = wpa2)",
                     .long_name = "security",
                     .short_name = 's',
-                    .val = ValueT.ofType(nl._80211.SecurityType, .{}),
+                    .val = .ofType(nl._80211.SecurityType, .{}),
                 },
                 .{
                     .name = "dhcp",
@@ -344,6 +347,12 @@ pub const setup_cmd = CommandT{
                 },
                 conn_gw_opt,
             },
+        },
+        .{
+            .name = "scan",
+            .description = "Scan for WiFi Networks.",
+            .cmd_group = "ACTIVE",
+            .allow_inheritable_opts = true,
         },
         .{
             .name = "list",
@@ -369,9 +378,14 @@ pub const setup_cmd = CommandT{
                     .long_name = "config",
                     .alias_long_names = &.{ "fields" },
                 },
+                .{
+                    .name = "interfaces",
+                    .description = "List the WiFi Interfaces of the system.",
+                    .long_name = "interfaces",
+                },
             },
             .vals = &.{
-                ValueT.ofType([]const u8, .{
+                .ofType([]const u8, .{
                     .name = "item_list",
                     .description = "List available Items from the provided List. (Look at the Options for this Command for valid Values.)",
                     .set_behavior = .Multi,
@@ -399,7 +413,6 @@ pub const setup_cmd = CommandT{
         },
         .{
             .name = "serve",
-            .alias_names = &.{ "host" },
             .description = "Serve files from the provided `--directory` on the designated `--port` using HTTP and TFTP.",
             .cmd_group = "ACTIVE",
             .opts = &.{
@@ -408,7 +421,7 @@ pub const setup_cmd = CommandT{
                     .description = "IP Address to serve on. (Default: 0.0.0.0)",
                     .long_name = "ip",
                     .short_name = 'i',
-                    .val = ValueT.ofType(address.IPv4, .{
+                    .val = .ofType(address.IPv4, .{
                         .default_val = .{ .addr = .{ 0, 0, 0, 0 } },
                         .parse_fn = parseIPv4,
                     }),
@@ -418,14 +431,14 @@ pub const setup_cmd = CommandT{
                     .description = "Port to serve on. (Default: 12070)",
                     .long_name = "port",
                     .short_name = 'p',
-                    .val = ValueT.ofType(u16, .{ .default_val = 12070 }),
+                    .val = .ofType(u16, .{ .default_val = 12070 }),
                 },
                 .{
                     .name = "directory",
                     .description = "Directory to serve. (Default: Current Directory '.')",
                     .long_name = "directory",
                     .short_name = 'd',
-                    .val = ValueT.ofType([]const u8, .{
+                    .val = .ofType([]const u8, .{
                         .default_val = ".",
                         .alias_child_type= "path",
                         .valid_fn = struct{
@@ -442,7 +455,7 @@ pub const setup_cmd = CommandT{
                     .description = "Protocols to serve on. (http, tftp, or all)",
                     .long_name = "protocols",
                     .short_name = 'P',
-                    .val = ValueT.ofType(core.serve.Protocol, .{
+                    .val = .ofType(core.serve.Protocol, .{
                         .default_val = .all,
                         .alias_child_type = "file_serve_protocol",
                         .max_entries = 10,
@@ -465,7 +478,7 @@ pub const setup_cmd = CommandT{
                     .opt_group = "CHANNEL",
                     .long_name = "channel",
                     .short_name = 'c',
-                    .val = ValueT.ofType(usize, .{
+                    .val = .ofType(usize, .{
                         .name = "chan",
                         .valid_fn = struct{
                             pub fn valCh(ch: usize, _: mem.Allocator) bool {
@@ -481,7 +494,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "channel-width",
                     .alias_long_names = &.{ "ch-width", "frequency-width", "freq-width" },
                     .short_name = 'C',
-                    .val = ValueT.ofType(nl._80211.CHANNEL_WIDTH, .{}),
+                    .val = .ofType(nl._80211.CHANNEL_WIDTH, .{}),
                 },
                 .{
                     .name = "frequency",
@@ -489,7 +502,7 @@ pub const setup_cmd = CommandT{
                     .opt_group = "CHANNEL",
                     .long_name = "frequency",
                     .short_name = 'f',
-                    .val = ValueT.ofType(usize, .{
+                    .val = .ofType(usize, .{
                         .name = "freq",
                         .valid_fn = struct{
                             pub fn valFreq(freq: usize, _: mem.Allocator) bool {
@@ -505,7 +518,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "mac",
                     .short_name = 'm',
                     .allow_empty = true,
-                    .val = ValueT.ofType([6]u8, .{
+                    .val = .ofType([6]u8, .{
                         .name = "address",
                         .parse_fn = parseMAC,
                     }),
@@ -517,7 +530,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "random",
                     .short_name = 'r',
                     .allow_empty = true,
-                    .val = ValueT.ofType(address.RandomMACKind, .{ .default_val = .ll }),
+                    .val = .ofType(address.RandomMACKind, .{ .default_val = .ll }),
                 },
                 .{
                     .name = "oui",
@@ -525,7 +538,7 @@ pub const setup_cmd = CommandT{
                     .opt_group = "MAC",
                     .long_name = "oui",
                     .short_name = 'o',
-                    .val = ValueT.ofType([3]u8, .{
+                    .val = .ofType([3]u8, .{
                         .default_val = .{ 0xF8, 0x63, 0xD9 },
                         .parse_fn = getOUI,
                     }),
@@ -536,7 +549,7 @@ pub const setup_cmd = CommandT{
                     .opt_group = "INTERFACE",
                     .long_name = "state",
                     .short_name = 's',
-                    .val = ValueT.ofType(nl.route.IFF, .{
+                    .val = .ofType(nl.route.IFF, .{
                         .set_behavior = .Multi,
                         .max_entries = 32,
                         .parse_fn = struct {
@@ -555,7 +568,7 @@ pub const setup_cmd = CommandT{
                     .opt_group = "INTERFACE",
                     .long_name = "mode",
                     .short_name = 'M',
-                    .val = ValueT.ofType(nl._80211.IFTYPE, .{
+                    .val = .ofType(nl._80211.IFTYPE, .{
                         .parse_fn = struct {
                             pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl._80211.IFTYPE {
                                 var mode_buf: [12]u8 = undefined;
@@ -577,7 +590,7 @@ pub const setup_cmd = CommandT{
                     .name = "ip",
                     .description = "Add an IP Address to the given Interface.",
                     .long_name = "ip",
-                    .val = ValueT.ofType(address.IPv4, .{
+                    .val = .ofType(address.IPv4, .{
                         .parse_fn = parseIPv4,
                     }),
                 },
@@ -587,7 +600,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "route",
                     .alias_long_names = &.{ "rt" },
                     .short_name = 'r',
-                    .val = ValueT.ofType(address.IPv4, .{
+                    .val = .ofType(address.IPv4, .{
                         .parse_fn = parseIPv4,
                     }),
                 },
@@ -597,7 +610,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "gateway",
                     .alias_long_names = &.{ "gw", "via" },
                     .short_name = 'g',
-                    .val = ValueT.ofType(address.IPv4, .{
+                    .val = .ofType(address.IPv4, .{
                         .parse_fn = parseIPv4,
                     }),
                 },
@@ -613,7 +626,7 @@ pub const setup_cmd = CommandT{
                     .name = "ip",
                     .description = "Remove an IP Address from the given Interface.",
                     .long_name = "ip",
-                    .val = ValueT.ofType(address.IPv4, .{
+                    .val = .ofType(address.IPv4, .{
                         .parse_fn = parseIPv4,
                     }),
                 },
@@ -623,7 +636,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "route",
                     .alias_long_names = &.{ "rt" },
                     .short_name = 'r',
-                    .val = ValueT.ofType(address.IPv4, .{
+                    .val = .ofType(address.IPv4, .{
                         .parse_fn = parseIPv4,
                     }),
                 },
@@ -633,7 +646,7 @@ pub const setup_cmd = CommandT{
                     .long_name = "gateway",
                     .alias_long_names = &.{ "gw", "via" },
                     .short_name = 'g',
-                    .val = ValueT.ofType(address.IPv4, .{
+                    .val = .ofType(address.IPv4, .{
                         .parse_fn = parseIPv4,
                     }),
                 },
@@ -653,7 +666,7 @@ pub const setup_cmd = CommandT{
                             .description = "Set a new Hostname.",
                             .long_name = "hostname",
                             .short_name = 'H',
-                            .val = ValueT.ofType([]const u8, .{}),
+                            .val = .ofType([]const u8, .{}),
                         },
                     },
                 },
@@ -681,7 +694,8 @@ const channels_opt: OptionT = .{
     .opt_group = "ACTIVE",
     .short_name = 'C',
     .long_name = "channels",
-    .val = ValueT.ofType(usize, .{
+    .inheritable = true,
+    .val = .ofType(usize, .{
         .set_behavior = .Multi,
         .max_entries = 50,
         .valid_fn = struct {
@@ -691,8 +705,26 @@ const channels_opt: OptionT = .{
         }.valCh,
     }),
 };
+/// Bands
+const bands_opt: OptionT = .{
+    .name = "bands",
+    .description = "Specify bands to be used. (Choices: 2, 5, and 6. By default, 2 and 5 will be used as able.)",
+    .opt_group = "ACTIVE",
+    .short_name = 'b',
+    .long_name = "bands",
+    .inheritable = true,
+    .val = .ofType(u8, .{
+        .set_behavior = .Multi,
+        .max_entries = 3,
+        .valid_fn = struct {
+            pub fn valBand(band: u8, _: mem.Allocator) bool {
+                return mem.indexOfScalar(u8, &.{ 2, 5, 6 }, band) != null;
+            }
+        }.valBand,
+    }),
+};
 /// SSIDs
-const ssids_val = ValueT.ofType([]const u8, .{
+const ssids_val: ValueT = .ofType([]const u8, .{
     .name = "ssid",
     .description = "Set the SSID of the Network. (Up to 32 characters)",
     .set_behavior = .Multi,

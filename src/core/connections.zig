@@ -800,6 +800,15 @@ pub const Connection = struct {
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
                                 self._nl80211_req_ctx.nextSeqID();
+                                totalFreqs: {
+                                    var total_freqs: usize = 0;
+                                    defer log.debug("Total Freqs: {d}", .{ total_freqs });
+                                    const bands = conn_if.wiphy.WIPHY_BANDS orelse break :totalFreqs;
+                                    for (bands) |band| {
+                                        const freqs = band.FREQS orelse continue;
+                                        total_freqs += freqs.len;
+                                    }
+                                }
                                 nl._80211.requestAssociate(
                                     core_ctx.alloc,
                                     &self._nl80211_req_ctx,

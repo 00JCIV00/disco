@@ -76,23 +76,23 @@ pub fn main() !void {
     const stdout = stdout_bw.writer().any();
     try stdout_file.print("{s}\n", .{ art.logo });
 
-    var gpa: switch (builtin.mode) {
-        .Debug => heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }),
-        else => heap.SmpAllocator,
-    } = switch (builtin.mode) {
-        .Debug => .init,
-        else => .{},
-    };
+    var gpa: heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }) = .init;
     defer {
         if (builtin.mode == .Debug and gpa.detectLeaks())
             log.err("Memory leak detected!", .{});
         //else if (gpa.deinit() == .leak)
         //    log.err("Memory leak detected!", .{});
     }
-    const gpa_alloc = gpa.allocator();
+    const gpa_alloc = switch (builtin.mode) {
+        .Debug => gpa.allocator(),
+        else => heap.smp_allocator,
+    };
     //var sfba = heap.stackFallback(1_000_000, gpa_alloc);
     //const alloc = sfba.get();
-    const alloc = gpa.allocator();
+    const alloc = switch (builtin.mode) {
+        .Debug => gpa.allocator(),
+        else => heap.smp_allocator,
+    };
 
     // Get NL80211 Control Info
     try nl._80211.initCtrlInfo(alloc);
@@ -245,7 +245,7 @@ pub fn main() !void {
             );
             try stdout_bw.flush();
         }
-        posix.exit(0);
+        if (!list_cmd.checkFlag("interfaces")) posix.exit(0);
     }
     // - File Serve
     if (main_cmd.matchSubCmd("serve")) |serve_cmd| {
@@ -275,6 +275,7 @@ pub fn main() !void {
     }
 
     // Set up Core Data
+    const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
     const main_opts = try main_cmd.getOpts(.{});
     var core_if_indexes: ArrayList(i32) = .{};
     defer core_if_indexes.deinit(alloc);
@@ -287,8 +288,19 @@ pub fn main() !void {
                 break :ssids try ssids_opt.val.getAllAs([]const u8);
             };
             const channels: ?[]const usize = getChs: {
-                const ch_opt = main_opts.get("channels") orelse break :getChs null;
-                break :getChs try ch_opt.val.getAllAs(usize);
+                if (main_opts.get("channels")) |ch_opt|
+                    break :getChs try ch_opt.val.getAllAs(usize)
+                else if (main_opts.get("bands")) |band_opt| {
+                    var ch_list: ArrayList(usize) = .empty;
+                    const bands = try band_opt.val.getAllAs(u8);
+                    for (bands) |band| switch (band) {
+                        2 => try ch_list.appendSlice(cova_alloc, nl._80211.Channels.band_2G),
+                        5 => try ch_list.appendSlice(cova_alloc, nl._80211.Channels.band_5G),
+                        else => {},
+                    };
+                    break :getChs try ch_list.toOwnedSlice(cova_alloc);
+                }
+                break :getChs null;
             };
             const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt &.{};
             for (if_names) |if_name| {
@@ -349,7 +361,6 @@ pub fn main() !void {
     };
     // Initialize Core Context
     const core_config: core.Core.Config = config: {
-        const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
         var config: core.Core.Config = importConf: {
             var config: core.Core.Config = .{
                 .avail_if_names = if_names,
@@ -512,9 +523,6 @@ pub fn main() !void {
         defer {
             if_iter.unlock();
             core_ctx.runTo(list_interfaces) catch {};
-            //core_ctx.printInfo(stdout) catch {};
-            //stdout_bw.flush() catch {};
-            //posix.exit(0);
         }
         while (if_iter.next()) |set_if_entry| {
             const set_if = set_if_entry.value_ptr;
@@ -687,9 +695,6 @@ pub fn main() !void {
         defer {
             if_iter.unlock();
             core_ctx.runTo(list_interfaces) catch {};
-            //core_ctx.printInfo(stdout) catch {};
-            //stdout_bw.flush() catch {};
-            //posix.exit(0);
         }
         while (if_iter.next()) |add_if_entry| {
             const add_if = add_if_entry.value_ptr;
@@ -753,9 +758,6 @@ pub fn main() !void {
         defer {
             if_iter.unlock();
             core_ctx.runTo(list_interfaces) catch {};
-            //core_ctx.printInfo(stdout) catch {};
-            //stdout_bw.flush() catch {};
-            //posix.exit(0);
         }
         while (if_iter.next()) |del_if_entry| {
             const del_if = del_if_entry.value_ptr;
@@ -807,131 +809,26 @@ pub fn main() !void {
             time.sleep(100 * time.ns_per_ms);
         }
     }
-    //// Active
-    //// - Connect
-    //if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
-    //    checkRoot(stdout_file.any());
-    //    try core.interfaces.updInterfaces(
-    //        alloc,
-    //        &core_ctx.if_ctx,
-    //        &core_ctx.config,
-    //        &core_ctx.interval,
-    //    );
-    //    const conn_ifs = core_ctx.if_ctx.interfaces;
-    //    if (num_avail_ifs == 0) checkIF(stdout, "connect");
-    //    var if_iter = conn_ifs.iterator();
-    //    defer {
-    //        if_iter.unlock();
-    //        if (conn_ifs.count() > 0) {
-    //            core.interfaces.updInterfaces(
-    //                alloc,
-    //                &core_ctx.if_ctx,
-    //                &core_ctx.config,
-    //                &core_ctx.interval,
-    //            ) catch |err|
-    //                log.err("Could not retrieve updated Interface info: {s}", .{ @errorName(err) });
-    //        }
-    //    }
-    //    const conn_if = connIF: while (if_iter.next()) |conn_if_entry| {
-    //        const conn_if = conn_if_entry.value_ptr;
-    //        if (conn_if.usage != .unavailable) break :connIF conn_if;
-    //    } else return error.NoAvailableInterfaces;
-    //    raw_net_if = conn_if.*;
-    //    const connect_vals = try connect_cmd.getVals(.{});
-    //    const connect_opts = try connect_cmd.getOpts(.{});
-    //    const ssid = (connect_vals.get("ssid").?).getAs([]const u8) catch {
-    //        log.err("DisCo needs to know the SSID of the network to connect.", .{});
-    //        return;
-    //    };
-    //    const security,
-    //    const pass = security: {
-    //        const security = try (connect_opts.get("security").?).val.getAs(nl._80211.SecurityType);
-    //        break :security switch (security) {
-    //            .open => .{ security, "" },
-    //            .wep, .wpa1, .wpa2, .wpa3t, .wpa3 => .{
-    //                security,
-    //                (connect_opts.get("passphrase").?).val.getAs([]const u8) catch {
-    //                    log.err("The {s} protocol requires a passhprase.", .{ @tagName(security) });
-    //                    return;
-    //                }
-    //            },
-    //        };
-    //    };
-    //    const freqs = freqs: {
-    //        const ch_opt = connect_opts.get("channels") orelse break :freqs null;
-    //        if (!ch_opt.val.isSet()) break :freqs null;
-    //        const channels = try ch_opt.val.getAllAs(usize);
-    //        var freqs_buf = try ArrayList(u32).initCapacity(alloc, 1);
-    //        for (channels) |ch|
-    //            try freqs_buf.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
-    //        break :freqs try freqs_buf.toOwnedSlice(alloc);
-    //    };
-    //    defer if (freqs) |_freqs| alloc.free(_freqs);
-    //    try stdout_file.print("Connecting to {s}...\n", .{ ssid });
-    //    switch (security) {
-    //        .open, .wep, .wpa1, .wpa3 => {
-    //            log.info("WIP!", .{});
-    //            return;
-    //        },
-    //        .wpa2, .wpa3t => {
-    //            const pmk = try wpa.genKey(.wpa2, ssid, pass);
-    //            _ = try nl._80211.connectWPA2(
-    //                alloc,
-    //                conn_if.index,
-    //                ssid,
-    //                pmk,
-    //                wpa.handle4WHS,
-    //                .{ .freqs = freqs },
-    //            );
-    //            try stdout_file.print("Connected to {s}.\n", .{ ssid });
-    //        }, 
-    //    }
-    //    if (connect_cmd.checkFlag("dhcp")) dhcp: {
-    //        try stdout_file.print("Obtaining an IP Address via DHCP...\n", .{});
-    //        const gateway = connect_cmd.checkFlag("gateway");
-    //        dhcp_info = dhcp.handleDHCP(
-    //            conn_if.name,
-    //            conn_if.index,
-    //            conn_if.mac,
-    //            .{},
-    //        ) catch |err| switch (err) {
-    //            error.WouldBlock => {
-    //                log.warn("The DHCP process timed out.", .{});
-    //                break :dhcp;
-    //            },
-    //            else => return err,
-    //        };
-    //        const dhcp_cidr = address.cidrFromSubnet(dhcp_info.?.subnet_mask);
-    //        nl.route.addIP(
-    //            alloc,
-    //            conn_if.index,
-    //            dhcp_info.?.assigned_ip,
-    //            dhcp_cidr,
-    //        ) catch |err| switch (err) {
-    //            error.EXIST => {
-    //                log.warn("The Interface already has an IP.", .{});
-    //                break :dhcp;
-    //            },
-    //            else => return err,
-    //        };
-    //        if (gateway) {
-    //            try nl.route.addRoute(
-    //                alloc,
-    //                conn_if.index,
-    //                address.IPv4.default.addr,
-    //                .{
-    //                    .cidr = address.IPv4.default.cidr,
-    //                    .gateway = dhcp_info.?.router,
-    //                }
-    //            );
-    //        }
-    //    }
-    //    //time.sleep(10 * time.ns_per_s);
-    //    //if_iter.unlock();
-    //    connected = true;
-    //    const stdin = io.getStdIn().reader();
-    //    _ = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
-    //}
+    // - Scan
+    if (main_cmd.matchSubCmd("scan")) |scan_cmd| {
+        _ = scan_cmd;
+        log.info("Scanning for WiFi Networks...", .{});
+        try core_ctx.runTo(.{ .network_scan = .{} });
+        var networks_iter = core_ctx.network_ctx.networks.iterator();
+        defer core_ctx.network_ctx.networks.mutex.unlock();
+        try stdout.print("WiFi Networks:\n\n", .{});
+        while (networks_iter.next()) |network_entry| {
+            const network = network_entry.value_ptr;
+            try stdout.print(
+                \\{s}
+                \\-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+                \\
+                \\
+                , .{ network.* },
+            );
+        }
+        try stdout_bw.flush();
+    }
 
     // Print Config
     const print_config: core.Core.PrintConfig = printConf: {
@@ -940,6 +837,17 @@ pub fn main() !void {
         if (mem.eql(u8, cmd_group, "INTERFACE")) break :printConf .{
             .sys_info = false,
             .if_info = .available,
+        };
+        if (main_cmd.matchSubCmd("list")) |list_cmd| {
+            if (list_cmd.checkFlag("interfaces")) {
+                log.debug("Printing Interfaces...", .{});
+                try core_ctx.runTo(list_interfaces);
+                break :printConf .{ .sys_info = false };
+            }
+        }
+        if (main_cmd.checkFlag("scan")) break :printConf .{
+            .sys_info = false,
+            .if_info = .none,
         };
         break :printConf .{};
     };
