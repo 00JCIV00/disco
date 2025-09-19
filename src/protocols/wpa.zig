@@ -386,7 +386,7 @@ pub fn aesKeyUnwrap(kek: []const u8, cipher: []const u8, out: []u8) !usize {
             \\Invalid AES Integrity Check
             \\- Derived:  {X:0>2}
             \\- Expected: {X:0>2}
-            , .{ a, @as([8]u8, @splat(0xA6)) },
+            , .{ InHexF{ .slices = a[0..] }, InHexF{ .slice = @as([8]u8, @splat(0xA6))[0..] } },
         );
         return error.UnwrapFailed;
     }
@@ -749,11 +749,11 @@ pub fn handle4WHS(
         if (!mem.eql(u8, mem.toBytes(m3_mic_actual)[0..], m3_mic_valid[0..])) {
             log.err(
                 \\MIC Mismatch:
-                \\- Received: {X:0>2}
-                \\- Expected: {X:0>2}
+                \\- Received: {f}
+                \\- Expected: {f}
                 , .{
-                    mem.toBytes(m3_mic_actual)[0..],
-                    m3_mic_valid[0..],
+                    InHexF{ .slice = mem.toBytes(m3_mic_actual)[0..] },
+                    InHexF{ .slice = m3_mic_valid[0..] },
                 },
             );
             //continue;

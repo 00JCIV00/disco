@@ -185,17 +185,17 @@ pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !P256 {
         }
         //log.debug(
         //    \\- Counter {d:0>2}:
-        //    \\  - Valid: {}
-        //    \\  - Found: {}
-        //    \\  - Seed:  {X:0>2}
-        //    \\  - Value: {X:0>2}
+        //    \\  - Valid: {any}
+        //    \\  - Found: {any}
+        //    \\  - Seed:  {f}
+        //    \\  - Value: {f}
         //    \\
         //, .{
         //    counter,
         //    x_valid,
         //    found_point != null,
-        //    pwd_seed[0..],
-        //    x_coord[0..],
+        //    InHexF{ .slice = pwd_seed[0..] },
+        //    InHexF{ .slice = x_coord[0..] },
         //});
     }
     if (found_point) |point| {
