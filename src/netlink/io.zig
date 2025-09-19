@@ -4,6 +4,7 @@ const std = @import("std");
 const atomic = std.atomic;
 const heap = std.heap;
 const log = std.log.scoped(.nl_io);
+const math = std.math;
 const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
@@ -18,6 +19,195 @@ const utils = @import("../utils.zig");
 const c = utils.toStruct;
 const HexF = utils.HexFormatter;
 const ThreadHashMap = utils.ThreadHashMap;
+
+
+/// Netlink Socket Config
+pub const NetlinkSocketConfig = struct {
+    /// Netlink Socket Kind
+    /// Derived from the `NETLINK` struct
+    //kind: ?comptime_int = null,
+    kind: u32,
+    /// Blocking I/O for the Netlink Socket
+    blocking: bool = true,
+    /// Optional Timeout period for the Netlink Socket
+    timeout: ?posix.timeval = null,
+    /// Process ID for the Netlink Socket
+    /// If this is left `null` a unique pid will be created
+    pid: ?u32 = null,
+    
+    /// Current Unique PID f/ new Netlink Sockets
+    var unique_pid: atomic.Value(u32) = .init(12321);
+};
+/// Initialize a Netlink Socket
+pub fn initSock(nl_sock_conf: NetlinkSocketConfig) !posix.socket_t {
+    defer if (nl_sock_conf.pid == null) {
+        _ = NetlinkSocketConfig.unique_pid.fetchAdd(1, .acquire);
+        if (NetlinkSocketConfig.unique_pid.load(.acquire) >= math.maxInt(u32)) NetlinkSocketConfig.unique_pid.store(12321, .monotonic);
+    };
+    const nl_sock = try posix.socket(nl.AF.NETLINK, nl.SOCK.RAW | nl.SOCK.CLOEXEC, nl_sock_conf.kind);
+    errdefer posix.close(nl_sock);
+    const nl_addr: posix.sockaddr.nl = .{
+        .pid = nl_sock_conf.pid orelse NetlinkSocketConfig.unique_pid.load(.acquire),
+        .groups = 0,
+    };
+    try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
+    if (!nl_sock_conf.blocking)
+        _ = try posix.fcntl(nl_sock, posix.F.SETFL, os.linux.SOCK.NONBLOCK);
+    if (nl_sock_conf.timeout) |timeout| {
+        try posix.setsockopt(
+            nl_sock,
+            posix.SOL.SOCKET,
+            posix.SO.RCVTIMEO,
+            mem.toBytes(timeout)[0..],
+        );
+    }
+    try posix.setsockopt(
+        nl_sock,
+        posix.SOL.NETLINK,
+        nl.NETLINK_OPT.NO_ENOBUFS,
+        mem.toBytes(@as(u32, 1))[0..],
+    );
+    return nl_sock;
+}
+
+/// Request Context
+pub const RequestContext = struct {
+    /// Netlink Sequence ID
+    seq_id: u32,
+    /// Netlink Socket
+    sock: i32,
+    /// Optional Netlink Request Handler
+    handler: ?*Handler = null,
+    /// Async Request Timeout in milliseconds (ms)
+    timeout: u32 = 1_000,
+
+    /// Current Unique Sequence ID f/ new Netlink Requests
+    var unique_seq_id: atomic.Value(u32) = .init(1000);
+
+    /// Netlink Socket Data
+    pub const NetlinkSocketData = union(enum) {
+        /// The Netlink Handler info that will be used to handle this Request
+        handler: struct {
+            /// Netlink Request Handler
+            handler: *Handler,
+            /// Request Timeout in milliseconds (ms)
+            timeout: u32 = 1_000,
+        },
+        /// POSIX ID of the Netlink Socket for this Request
+        /// Use this if you already have an existing Netlink Socket
+        id: posix.socket_t,
+        /// Netlink Socket Config
+        /// Use this to create a new Socket with this Request
+        conf: NetlinkSocketConfig,
+    };
+
+    /// Get a Unique Netlink Sequence ID
+    fn getSeqID() u32 {
+        defer if (unique_seq_id.load(.acquire) >= math.maxInt(u32) - 1)
+            unique_seq_id.store(1000, .monotonic);
+        return unique_seq_id.fetchAdd(1, .acquire);
+    }
+
+    /// Initialize a new Request Context
+    pub fn init(nl_sock_data: NetlinkSocketData) !@This() {
+        var self: @This() = .{
+            .seq_id = getSeqID(),
+            .sock = nlSock: switch (nl_sock_data) {
+                .handler => |handler| handler.handler.nl_sock,
+                .conf => |conf| {
+                    continue :nlSock .{ .id = try initSock(conf) };
+                },
+                .id => |id| id,
+            },
+        };
+        if (nl_sock_data == .handler) {
+            self.handler = nl_sock_data.handler.handler;
+            self.timeout = nl_sock_data.handler.timeout;
+        }
+        return self;
+    }
+
+    /// Get another Netlink Sequence ID for this Request Context
+    pub fn nextSeqID(self: *@This()) void {
+        self.seq_id = getSeqID();
+    }
+
+    /// Get the Response Data for this Request Context.
+    /// This only works if the Request Context was initialized with a `handler`.
+    pub fn getResponse(self: *const @This()) ?anyerror![]const u8 {
+        const handler = self.handler orelse return null;
+        return handler.getResponse(self.seq_id);
+    }
+
+    /// Check for the Response Data to this Request Context.
+    /// This only works if the Request Context was initialized with a `handler`.
+    pub fn checkResponse(self: *const @This()) bool {
+        const handler = self.handler orelse return false;
+        return handler.checkResponse(self.seq_id);
+    }
+};
+/// Send a Netlink Request
+pub fn request(
+    alloc: mem.Allocator,
+    /// Netlink Request Type
+    RequestT: type,
+    /// Raw Netlink Request (Before Length Calculation)
+    raw_req: RequestT,
+    /// Attributes (Before Length Calculation) Array
+    attrs_raw: []const nl.Attribute,
+    /// Netlink Request Context
+    ctx: *RequestContext,
+) !void {
+    // Netlink Request
+    const req_len = mem.alignForward(u32, @sizeOf(RequestT), 4);
+    const attrs,
+    const attrs_len: usize = attrsLen: {
+        if (attrs_raw.len == 0) break :attrsLen .{ &.{}, 0 };
+        var attrs_buf: ArrayList(nl.Attribute) = try .initCapacity(alloc, attrs_raw.len);
+        var len: usize = 0;
+        for (attrs_raw[0..], 0..) |raw_attr, idx| {
+            attrs_buf.appendAssumeCapacity(raw_attr);
+            var attr = &attrs_buf.items[idx];
+            if (attr.hdr.len == 0) attr.hdr.len = mem.alignForward(u16, @intCast(nl.attr_hdr_len + attr.data.len), 4);
+            len += mem.alignForward(u16, attr.hdr.len, 4);
+        }
+        break :attrsLen .{
+            try attrs_buf.toOwnedSlice(alloc),
+            mem.alignForward(usize, len, 4),
+        };
+    };
+    defer if (attrs.len > 0) alloc.free(@as([]align(8) const nl.Attribute, @alignCast(attrs)));
+    var req = raw_req;
+    const msg_len = mem.alignForward(u32, @intCast(req_len + attrs_len), 4);
+    var sock_info: posix.sockaddr.nl = undefined;
+    var sock_size: u32 = @sizeOf(posix.sockaddr.nl);
+    try posix.getsockname(ctx.sock, @ptrCast(&sock_info), &sock_size);
+    if (req.nlh.pid == 0) req.nlh.pid = sock_info.pid;
+    //log.debug("PID: {d}", .{ nl_req.nlh.pid });
+    if (req.nlh.seq == 0) req.nlh.seq = ctx.seq_id;
+    //log.debug("SID: {d}", .{ nl_req.nlh.seq });
+    req.nlh.len = msg_len;
+    var req_buf: ArrayList(u8) = try .initCapacity(alloc, msg_len);
+    defer req_buf.deinit(alloc);
+    try req_buf.appendSlice(alloc, mem.toBytes(req)[0..]);
+    if (attrs.len > 0) {
+        for (attrs[0..]) |attr| {
+            try req_buf.appendSlice(alloc, mem.toBytes(attr.hdr)[0..]);
+            try req_buf.appendSlice(alloc, attr.data[0..]);
+            const len = req_buf.items.len;
+            try req_buf.appendNTimes(alloc, 0, mem.alignForward(usize, len, 4) - len);
+        }
+    }
+    if (req_buf.items.len < msg_len) {
+        for (req_buf.items.len..msg_len) |_| req_buf.appendAssumeCapacity(0);
+    }
+    if (ctx.handler) |handler| try handler.trackRequest(ctx.*);
+    _ = try posix.send(
+        ctx.sock,
+        req_buf.items[0..],
+        0,
+    );
+}
 
 /// Netlink Message Handler
 pub const Handler = struct {
@@ -82,7 +272,7 @@ pub const Handler = struct {
 
     /// Initialize a new Netlink Message Handler
     pub fn init(alloc: mem.Allocator, nl_sock_proto: u32, init_config: InitConfig) !@This() {
-        const nl_sock = try nl.initSock(.{ .kind = nl_sock_proto });
+        const nl_sock = try initSock(.{ .kind = nl_sock_proto });
         return .{
             ._alloc = alloc,
             .nl_sock_proto = nl_sock_proto,
@@ -117,7 +307,7 @@ pub const Handler = struct {
     }
 
     /// Track a specific Request
-    pub fn trackRequest(self: *@This(), req_ctx: nl.RequestContext) !void {
+    pub fn trackRequest(self: *@This(), req_ctx: RequestContext) !void {
         try self._seq_responses.put(
             self._alloc,
             req_ctx.seq_id,

@@ -84,7 +84,7 @@ pub const Interface = struct {
 
     /// Modify Context
     const ModifyContext = struct {
-        req_ctx: nl.RequestContext,
+        req_ctx: nl.io.RequestContext,
         mod_field: ModifyField,
     };
 
@@ -367,13 +367,13 @@ pub const Context = struct {
     /// Arena Allocator
     _a_alloc: mem.Allocator,
     /// WiFi Interfaces Request Context
-    _req_wifi_ifs: nl.RequestContext,
+    _req_wifi_ifs: nl.io.RequestContext,
     /// WiFi Physical Devices Request Context
-    _req_wiphys: nl.RequestContext,
+    _req_wiphys: nl.io.RequestContext,
     /// Links Request Context
-    _req_links: nl.RequestContext,
+    _req_links: nl.io.RequestContext,
     /// Addresses Requeest Context
-    _req_addrs: nl.RequestContext,
+    _req_addrs: nl.io.RequestContext,
     // EXTERNAL USE
     /// Netlink Async State
     state: core.AsyncState,

@@ -137,7 +137,7 @@ pub const NetworkScanContext = union(enum) {
     monitor,
     /// Netlink Scan
     netlink: struct {
-        req_ctx: nl.RequestContext,
+        req_ctx: nl.io.RequestContext,
         scan_state: enum {
             trigger,
             results,

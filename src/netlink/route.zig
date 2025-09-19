@@ -786,8 +786,8 @@ pub const RTPROT = enum(u8) {
 };
 
 /// Request the Index of an Interface from the provided Interface Name (`if_name`).
-pub fn requestIFIdx(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_name: []const u8) !void {
-    try nl.request(
+pub fn requestIFIdx(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext, if_name: []const u8) !void {
+    try nl.io.request(
         alloc,
         RequestIFI,
         .{
@@ -815,7 +815,7 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
     const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + posix.IFNAMESIZE) * 2, 4);
     var req_buf: [buf_len]u8 = undefined;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestIFIdx(fba.allocator(), &req_ctx, if_name);
     defer posix.close(req_ctx.sock);
     var resp_idx: usize = 0;
@@ -875,8 +875,8 @@ pub const IFInfoAndLink = struct {
     link: InterfaceLink,
 };
 /// Request an Interface Link from the provided Interface (`if_index`).
-pub fn requestIFLink(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
-    try nl.request(
+pub fn requestIFLink(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext, if_index: i32) !void {
+    try nl.io.request(
         alloc,
         RequestIFI,
         .{
@@ -898,8 +898,8 @@ pub fn requestIFLink(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index
     );
 }
 /// Request All Interface Links w/ their Interface Info.
-pub fn requestAllIFLinks(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
-    try nl.request(
+pub fn requestAllIFLinks(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext) !void {
+    try nl.io.request(
         alloc,
         nl.RequestRaw,
         .{
@@ -917,7 +917,7 @@ pub fn requestAllIFLinks(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !voi
 /// Get an Interface Link from the provided Interface (`if_index`).
 pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
     // Request
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestIFLink(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
     // Response
@@ -958,7 +958,7 @@ pub fn getIFLink(alloc: mem.Allocator, if_index: i32) !InterfaceLink {
 /// Get All Interface Links w/ their Interface Info.
 pub fn getAllIFLinks(alloc: mem.Allocator) ![]const IFInfoAndLink {
     // Request
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestAllIFLinks(alloc, &req_ctx);
     defer posix.close(req_ctx.sock);
     // Response
@@ -979,8 +979,8 @@ pub fn parseIFInfoAndLink(alloc: mem.Allocator, data: []const u8) !IFInfoAndLink
 }
 /// Handle Interface Links and Info on the provided `msg_buf`.
 pub fn handleIFLinksBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const IFInfoAndLink {
-    var handle_ctx: nl.HandleContext = .{ .config = .{ .nl_type = c(RTM).NEWLINK } };
-    return try nl.handleTypeBuf(
+    var handle_ctx: nl.parse.HandleContext = .{ .config = .{ .nl_type = c(RTM).NEWLINK } };
+    return try nl.parse.handleTypeBuf(
         alloc,
         msg_buf,
         RequestIFI,
@@ -991,7 +991,7 @@ pub fn handleIFLinksBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const IFIn
 }
 /// Handle Interface Links and Info on the provided Netlink Socket (`nl_sock`).
 pub fn handleIFLinksSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]IFInfoAndLink {
-    return try nl.handleTypeSock(
+    return try nl.parse.handleTypeSock(
         alloc,
         nl_sock,
         RequestIFI,
@@ -1007,8 +1007,8 @@ pub const IFInfoAndAddr = struct {
     addr: InterfaceAddress,
 };
 /// Request the Interface IP Address for the provided Interface (`if_index`)
-pub fn requestIFAddr(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
-    try nl.request(
+pub fn requestIFAddr(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext, if_index: i32) !void {
+    try nl.io.request(
         alloc,
         RequestIFI,
         .{
@@ -1030,8 +1030,8 @@ pub fn requestIFAddr(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index
     );
 }
 /// Request All Interface Addresses w/ their Interface Info
-pub fn requestAllIFAddrs(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
-    try nl.request(
+pub fn requestAllIFAddrs(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext) !void {
+    try nl.io.request(
         alloc,
         nl.RequestRaw,
         .{
@@ -1048,14 +1048,14 @@ pub fn requestAllIFAddrs(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !voi
 }
 /// Get the Interface IP Addresses for the provided Interface (`if_index`).
 pub fn getIFAddr(alloc: mem.Allocator, if_index: i32) ![]const IFInfoAndAddr {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestIFAddr(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
     return try handleIFAddrsSock(alloc, req_ctx.sock);
 }
 /// Get All Interface Addresses w/ their Interface Info
 pub fn getAllIFAddrs(alloc: mem.Allocator) ![]const IFInfoAndAddr {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestAllIFAddrs(alloc, &req_ctx);
     defer posix.close(req_ctx.sock);
     return try handleIFAddrsSock(alloc, req_ctx.sock);
@@ -1068,8 +1068,8 @@ pub fn parseIFInfoAndAddr(alloc: mem.Allocator, data: []const u8) !IFInfoAndAddr
 }
 /// Handle Interface Address Responses from the provided `msg_buf`.
 pub fn handleIFAddrsBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const IFInfoAndAddr {
-    var handle_ctx: nl.HandleContext = .{ .config = .{ .nl_type = c(RTM).NEWADDR } };
-    return try nl.handleTypeBuf(
+    var handle_ctx: nl.parse.HandleContext = .{ .config = .{ .nl_type = c(RTM).NEWADDR } };
+    return try nl.parse.handleTypeBuf(
         alloc,
         msg_buf,
         RequestIFA,
@@ -1080,7 +1080,7 @@ pub fn handleIFAddrsBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const IFIn
 }
 /// Handle Interface Address Responses on the provided `nl_sock`.
 pub fn handleIFAddrsSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const IFInfoAndAddr {
-    return try nl.handleTypeSock(
+    return try nl.parse.handleTypeSock(
         alloc,
         nl_sock,
         RequestIFA,
@@ -1093,11 +1093,11 @@ pub fn handleIFAddrsSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const
 /// Request that the provided Interface (`if_index`) be Set to the Up or Down State (`state`).
 pub fn requestSetState(
     alloc: mem.Allocator, 
-    req_ctx: *nl.RequestContext, 
+    req_ctx: *nl.io.RequestContext, 
     if_index: i32,
     state: u32,
 ) !void {
-    try nl.request(
+    try nl.io.request(
         alloc,
         RequestIFI,
         .{
@@ -1124,20 +1124,20 @@ pub fn setState(if_index: i32, state: u32) !void {
     const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 4) * 2, 4);
     var req_buf: [buf_len]u8 = undefined;
     var fba: heap.FixedBufferAllocator = .init(req_buf[0..]);
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestSetState(fba.allocator(), &req_ctx, if_index, state);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request that the provided Interface (`if_index`) be given the provided MAC (`mac`).
 pub fn requestSetMAC(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     mac: [6]u8,
 ) !void {
-    try nl.request(
+    try nl.io.request(
         alloc,
         RequestIFI,
         .{
@@ -1163,7 +1163,7 @@ pub fn setMAC(if_index: i32, mac: [6]u8) !void {
     const buf_len = comptime mem.alignForward(usize, (RequestIFI.len + nl.attr_hdr_len + 6) * 2, 4);
     var req_buf: [buf_len]u8 = undefined;
     var fba: heap.FixedBufferAllocator = .init(req_buf[0..]);
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     //try setState(if_index, c(IFF).DOWN);
     try requestSetMAC(
         fba.allocator(), 
@@ -1172,7 +1172,7 @@ pub fn setMAC(if_index: i32, mac: [6]u8) !void {
         mac
     );
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
     //try setState(if_index, c(IFF).UP);
 }
 
@@ -1180,13 +1180,13 @@ pub fn setMAC(if_index: i32, mac: [6]u8) !void {
 /// Request to Add IP address (`ip`) to the Interface (`if_index`)
 pub fn requestAddIP(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     ip: [4]u8,
     prefix_len: u8,
 ) !void {
     const flags = c(IFA_F).PERMANENT;
-    try nl.request(
+    try nl.io.request(
         alloc,
         RequestIFA,
         .{
@@ -1223,21 +1223,21 @@ pub fn addIP(
     ip: [4]u8,
     prefix_len: u8,
 ) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestAddIP(alloc, &req_ctx, if_index, ip, prefix_len);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request to Delete IP address from Interface (`if_index`)
 pub fn requestDeleteIP(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     ip: [4]u8,
     prefix_len: u8,
 ) !void {
-    try nl.request(
+    try nl.io.request(
         alloc,
         RequestIFA,
         .{
@@ -1271,10 +1271,10 @@ pub fn deleteIP(
     ip: [4]u8,
     prefix_len: u8,
 ) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestDeleteIP(alloc, &req_ctx, if_index, ip, prefix_len);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Route Config
@@ -1286,7 +1286,7 @@ pub const RouteConfig = struct {
 /// Request to Add the Route Destination (`dest`) to the provided Interface's (`if_index`) routing table
 pub fn requestAddRoute(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     dest: [4]u8,
     config: RouteConfig,
@@ -1310,7 +1310,7 @@ pub fn requestAddRoute(
         .hdr = .{ .type = c(RTA).OIF },
         .data = mem.toBytes(if_index)[0..],
     });
-    try nl.request(
+    try nl.io.request(
         alloc,
         RequestRTM,
         .{
@@ -1342,16 +1342,16 @@ pub fn addRoute(
     dest: [4]u8,
     config: RouteConfig,
 ) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestAddRoute(alloc, &req_ctx, if_index, dest, config);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request the Delete the Route Destination (`dest`) from the provided Interface's (`if_index`) routing table
 pub fn requestDeleteRoute(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     dest: [4]u8,
     config: RouteConfig,
@@ -1375,7 +1375,7 @@ pub fn requestDeleteRoute(
         .hdr = .{ .type = c(RTA).OIF },
         .data = mem.toBytes(if_index)[0..],
     });
-    try nl.request(
+    try nl.io.request(
         alloc,
         RequestRTM,
         .{
@@ -1407,9 +1407,8 @@ pub fn deleteRoute(
     dest: [4]u8,
     config: RouteConfig,
 ) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestDeleteRoute(alloc, &req_ctx, if_index, dest, config);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
-

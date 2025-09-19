@@ -8,11 +8,259 @@ const log = std.log.scoped(.netlink);
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
+const posix = std.posix;
 const ArrayList = std.ArrayList;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
+const c = utils.toStruct;
 const HexF = utils.HexFormatter;
+
+
+/// Handle a Netlink ACK Response from the provided `msg_buf`
+pub fn handleAckBuf(msg_buf: []const u8) !void {
+    var start: usize = 0;
+    var end: usize = (start + @sizeOf(nl.MessageHeader));
+    const nl_resp_hdr: nl.MessageHeader = mem.bytesToValue(nl.MessageHeader, msg_buf[start..end]);
+    if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+        return error.InvalidMessage;
+    if (nl_resp_hdr.type > 4) return;
+    if (@as(nl.NLMSG, @enumFromInt(nl_resp_hdr.type)) == .ERROR) {
+        start = end;
+        end += @sizeOf(nl.ErrorHeader);
+        const nl_err: nl.ErrorHeader = mem.bytesToValue(nl.ErrorHeader, msg_buf[start..end]);
+        switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+            .SUCCESS => return,
+            .BUSY => return error.BUSY,
+            .NOLINK => return error.NOLINK,
+            .ALREADY => return error.ALREADY,
+            .EXIST => return error.EXIST,
+            .ADDRNOTAVAIL => return error.ADDRNOTAVAIL,
+            .SRCH => return error.SRCH,
+            .NETUNREACH => return error.NETUNREACH,
+            .INPROGRESS => return error.INPROGRESS,
+            .NODEV => return error.NODEV,
+            else => |err| {
+                log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
+                return error.OSError;
+            },
+        }
+    }
+    return error.NetlinkAckError;
+}
+/// Handle a Netlink ACK Response on the provided Netlink Socket `nl_sock`.
+pub fn handleAckSock(nl_sock: posix.socket_t) !void {
+    var resp_buf: [4096]u8 = undefined;
+    const resp_len = try posix.recv(
+        nl_sock,
+        resp_buf[0..],
+        0,
+    );
+    return try handleAckBuf(resp_buf[0..resp_len]);
+}
+
+/// Config for Handling Responses
+pub const HandleConfig = struct {
+    /// Netlink Header Type / Family ID
+    nl_type: u16,
+    /// Family Command Value (only applies for Generic Netlink Headers)
+    fam_cmd: ?u8 = null,
+    /// Log Parsing Errors as Warnings
+    warn_parse_err: bool = false,
+    /// Split Field
+    split_field: ?[]const u8 = null,
+    /// Repeated Fields
+    repeated_fields: []const []const u8 = &.{},
+    /// Array Fields
+    slice_fields: []const []const u8 = &.{},
+};
+
+/// Context for Handling Responses.
+/// Note, this is only used for `handleTypeBuf()`.
+pub const HandleContext = struct {
+    /// Handle Config
+    config: HandleConfig,
+    /// Done Flag
+    done: ?bool = null,
+};
+
+/// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`) from the provided `msg_buf`.
+pub fn handleTypeBuf(
+    alloc: mem.Allocator,
+    msg_buf: []const u8,
+    /// This must be a derivative of the `Request()` Type.
+    ResponseHdrT: type,
+    ResponseT: type,
+    /// Function to Parse data. (Typically, this will be `nl.parse.fromBytes(ResponseT)`.)
+    parseFn: *const fn(mem.Allocator, []const u8) anyerror!ResponseT,
+    ctx: *HandleContext,
+) ![]const ResponseT {
+    const FamHdrT = comptime famHdrT: {
+        for (meta.fields(ResponseHdrT)) |field| {
+            if (mem.eql(u8, field.name, "msg")) break :famHdrT field.type;
+        }
+        else @compileError(fmt.comptimePrint("The Type `{s}` is not a `Request` Type.", .{ @typeName(ResponseHdrT) }));
+    };
+    const fam_hdr_len = @sizeOf(FamHdrT);
+    var resp_list: ArrayList(ResponseT) = .empty;
+    var msg_iter: Iterator(nl.MessageHeader, .{}) = .{ .bytes = msg_buf[0..] };
+    var base_instance: ?ResponseT = null;
+    while (msg_iter.next()) |msg| {
+        defer {
+            if (msg.hdr.flags & c(nl.NLM_F).MULTI == 0) //
+                ctx.done = true;
+        }
+        if (msg.hdr.type == c(nl.NLMSG).DONE) {
+            ctx.done = true;
+            break;
+        }
+        const match_hdr = msg.hdr.type == ctx.config.nl_type;
+        const match_cmd = matchCmd: {
+            const cmd = ctx.config.fam_cmd orelse break :matchCmd true;
+            inline for (meta.fields(FamHdrT)) |field| {
+                if (mem.eql(u8, field.name, "cmd")) {
+                    const fam_hdr = mem.bytesToValue(FamHdrT, msg.data[0..fam_hdr_len]);
+                    break :matchCmd @field(fam_hdr, field.name) == cmd; // Wtf Zig? This is convoluted!
+                }
+            }
+            log.err("The Generic Family Command '{d}' was provided for the non-Generic Header '{s}'", .{ cmd, @typeName(FamHdrT) });
+            return error.GenericHeaderRequired;
+        };
+        if (!(match_hdr and match_cmd)) continue;
+        const next_instance = parseFn(alloc, msg.data) catch |err| {
+            if (ctx.config.warn_parse_err) //
+                log.warn("Parsing Error: {s}", .{ @errorName(err) });
+            continue;
+        };
+        if (ctx.config.split_field) |split| {
+            const instance = instance: {
+                if (base_instance) |*inst| //
+                    break :instance inst //
+                else {
+                    base_instance = next_instance;
+                    continue;
+                }
+            };
+            const fields = meta.fields(ResponseT);
+            var same_instance: bool = false;
+            inline for (fields) |field| {
+                if (mem.eql(u8, split, field.name)) {
+                    same_instance = switch (@typeInfo(field.type)) {
+                        .int, .float => @field(instance.*, field.name) == @field(next_instance, field.name),
+                        .pointer => |ptr_info| //
+                            ptr_info.size == .slice and mem.eql(ptr_info.child, @field(instance.*, field.name), @field(next_instance, field.name)),
+                        else => return error.IncompatibleSplitID,
+                    };
+                }
+            }
+            if (!same_instance) {
+                try resp_list.append(alloc, base_instance.?);
+                base_instance = next_instance;
+                continue;
+            }
+            inline for (fields) |field| {
+                const non_repeat = nonRepeat: {
+                    for (ctx.config.repeated_fields) |r_field| {
+                        if (mem.eql(u8, field.name, r_field)) break :nonRepeat false;
+                    }
+                    break :nonRepeat true;
+                };
+                if (non_repeat) nonRepeat: {
+                    const is_slice = isSlice: {
+                        for (ctx.config.slice_fields) |slice_field| {
+                            if (mem.eql(u8, field.name, slice_field)) break :isSlice true;
+                        }
+                        break :isSlice false;
+                    };
+                    if (is_slice) sliceField: {
+                        const next_field = @field(next_instance, field.name);
+                        const type_info = @typeInfo(@TypeOf(next_field));
+                        const opt_child_info = switch (type_info) {
+                            .optional => |opt| @typeInfo(opt.child),
+                            else => break :sliceField,
+                        };
+                        if (opt_child_info != .pointer or opt_child_info.pointer.size != .slice) //
+                            break :nonRepeat;
+                        const next_slice = next_field orelse break :nonRepeat;
+                        if (@field(instance, field.name)) |*base_field| {
+                            const SliceChildT = switch (opt_child_info) {
+                                .pointer => |ptr| ptr.child,
+                                else => break :sliceField,
+                            };
+                            base_field.* = try mem.concat(
+                                alloc,
+                                SliceChildT,
+                                &.{ base_field.*, next_slice },
+                            );
+                            break :nonRepeat;
+                        }
+                    }
+                    @field(instance, field.name) = @field(next_instance, field.name);
+                } //
+                else //
+                    baseFreeBytes(alloc, field.type, @field(next_instance, field.name));
+            }
+        } //
+        else {
+            base_instance = next_instance;
+            try resp_list.append(alloc, base_instance.?);
+        }
+        //log.debug("Parsed {d} '{s}'", .{ resp_list.items.len, @typeName(ResponseT) });
+    }
+    if (ctx.config.split_field) |_| if (base_instance) |instance| //
+        try resp_list.append(alloc, instance);
+    return try resp_list.toOwnedSlice(alloc);
+}
+
+/// Handle one ore more Netlink Responses containing a specific Type (`ResponseT`) on the provided Netlink Socket `nl_sock`.
+pub fn handleTypeSock(
+    alloc: mem.Allocator,
+    nl_sock: posix.socket_t,
+    /// This must be a derivative of the `Request()` Type.
+    ResponseHdrT: type,
+    ResponseT: type,
+    /// Function to Parse data. (Typically, this will be `nl.parse.fromBytes(ResponseT)`.)
+    parseFn: *const fn(mem.Allocator, []const u8) anyerror!ResponseT,
+    config: HandleConfig,
+) ![]const ResponseT {
+    const buf_size: u32 = 64_000;
+    try posix.setsockopt(
+        nl_sock,
+        posix.SOL.SOCKET,
+        nl.NETLINK_OPT.RX_RING,
+        mem.toBytes(buf_size)[0..],
+    );
+    // Parse Links
+    var resp_list: ArrayList(ResponseT) = .empty;
+    errdefer {
+        for (resp_list.items) |item| freeBytes(alloc, ResponseT, item);
+        resp_list.deinit(alloc);
+    }
+    // - Handle Multi-part
+    var handle_ctx: HandleContext = .{
+        .config = config,
+    };
+    multiPart: while (!handle_ctx.done or resp_list.items.len == 0) {
+        var resp_buf: [buf_size]u8 = undefined;
+        const resp_len = try posix.recv(
+            nl_sock,
+            resp_buf[0..],
+            0,
+        );
+        if (resp_len == 0) break :multiPart;
+        // Handle Dump
+        const resp_slice: []const ResponseT = try handleTypeBuf(
+            alloc,
+            resp_buf[0..resp_len],
+            ResponseHdrT,
+            ResponseT,
+            parseFn,
+            &handle_ctx,
+        );
+        resp_list.appendSlice(alloc, resp_slice);
+    }
+    return try resp_list.toOwnedSlice(alloc);
+}
 
 /// Get an Instance of a Primitive Type (`T`) from the given `bytes`.
 pub fn primFromBytes(T: type, bytes: []const u8) !T {

@@ -309,8 +309,8 @@ pub const Connection = struct {
     _state: State = .setup,
     _retries: u8 = 0,
     _nl_state: core.AsyncState = .ready,
-    _nl80211_req_ctx: nl.RequestContext,
-    _rtnetlink_req_ctx: nl.RequestContext,
+    _nl80211_req_ctx: nl.io.RequestContext,
+    _rtnetlink_req_ctx: nl.io.RequestContext,
     _thread_state: ThreadState = .ready,
     _thread: Thread = undefined,
 

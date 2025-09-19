@@ -128,11 +128,11 @@ pub const CtrlInfo = struct {
     /// Initialize Control Info for the specified `family`.
     pub fn init(alloc: mem.Allocator, family: []const u8) !@This() {
         // Request
-        var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+        var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
         const buf_len = comptime mem.alignForward(usize, (Request.len + nl.attr_hdr_len + 7) * 2, 4);
         var req_buf: [buf_len]u8 = undefined;
         var fba: heap.FixedBufferAllocator = .init(req_buf[0..]);
-        try nl.request(
+        try nl.io.request(
             fba.allocator(),
             Request,
             .{

@@ -384,9 +384,9 @@ pub fn aesKeyUnwrap(kek: []const u8, cipher: []const u8, out: []u8) !usize {
         log.err(
             \\
             \\Invalid AES Integrity Check
-            \\- Derived:  {X:0>2}
-            \\- Expected: {X:0>2}
-            , .{ InHexF{ .slices = a[0..] }, InHexF{ .slice = @as([8]u8, @splat(0xA6))[0..] } },
+            \\- Derived:  {f}
+            \\- Expected: {f}
+            , .{ InHexF{ .slice = a[0..] }, InHexF{ .slice = @as([8]u8, @splat(0xA6))[0..] } },
         );
         return error.UnwrapFailed;
     }

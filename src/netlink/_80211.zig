@@ -2187,7 +2187,7 @@ pub fn validateFreq(freq: usize) bool {
 /// Request to Set the Frequency (`freq`) for the provided Interface (`if_index`)
 pub fn requestSetFreq(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     freq: usize, 
     ch_width: CHANNEL_WIDTH,
@@ -2197,7 +2197,7 @@ pub fn requestSetFreq(
     const freq_bytes = mem.toBytes(@as(u32, @intCast(freq)))[0..];
     const width_bytes = mem.toBytes(@intFromEnum(ch_width))[0..];
     const type_bytes = mem.toBytes(@intFromEnum(CHANNEL_TYPE.fromWidth(ch_width, try channelFromFreq(freq))))[0..];
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2230,10 +2230,10 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
     const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 12, 4);
     var req_buf: [buf_len]u8 = undefined;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestSetFreq(fba.allocator(), &req_ctx, if_index, freq, ch_width);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 /// Set the `channel` for the provided Interface (`if_index`)
 pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void {
@@ -2245,10 +2245,10 @@ pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void 
 
 /// Request to Take Ownership of a Wireless Interface.
 /// This ensures that only the provided socket (`req_ctx.sock`) can manipulate the given Interface (`if_index`).
-pub fn requestTakeOwnership(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
+pub fn requestTakeOwnership(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext, if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const fam_id = info.FAMILY_ID;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2272,23 +2272,23 @@ pub fn requestTakeOwnership(alloc: mem.Allocator, req_ctx: *nl.RequestContext, i
     );
 }
 /// Take Ownership of a Wireless Interface.
-pub fn takeOwnership(req_ctx: *nl.RequestContext, if_index: i32) !void {
+pub fn takeOwnership(req_ctx: *nl.io.RequestContext, if_index: i32) !void {
     const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
     var req_buf: [buf_len]u8 = undefined;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     try requestTakeOwnership(fba.allocator(), req_ctx, if_index);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request to Set the `mode` for the Interface (`if_index`)
 pub fn requestSetMode(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32, 
     mode: u32, 
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2316,21 +2316,21 @@ pub fn setMode(if_index: i32, mode: u32) !void {
     const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
     var req_buf: [buf_len]u8 = undefined;
     var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestSetMode(fba.allocator(), &req_ctx, if_index, mode);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request the details for a Station.
 pub fn requestStation(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     bssid: [6]u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2366,7 +2366,7 @@ pub fn getStation(
     if_index: i32,
     bssid: [6]u8,
 ) !Station {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestStation(alloc, &req_ctx, if_index, bssid);
     defer posix.close(req_ctx.sock);
     const resp_buf = try handleStationSock(alloc, req_ctx.sock);
@@ -2380,13 +2380,13 @@ pub fn parseStation(alloc: mem.Allocator, bytes: []const u8) !Station {
 /// Handle a NEW_STATION response from the provided `msg_buf`.
 pub fn handleStationBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Station {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var handle_ctx: nl.HandleContext = .{
+    var handle_ctx: nl.parse.HandleContext = .{
         .config = .{
             .nl_type = info.FAMILY_ID,
             .fam_cmd = c(CMD).NEW_STATION,
         },
     };
-    return try nl.handleTypeBuf(
+    return try nl.parse.handleTypeBuf(
         alloc,
         msg_buf,
         nl.generic.Request,
@@ -2398,7 +2398,7 @@ pub fn handleStationBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Stat
 /// Handle a NEW_STATION response on the provided Netlink Socket (`nl_sock`).
 pub fn handleStationSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Station {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleTypeSock(
+    return try nl.parse.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -2412,9 +2412,9 @@ pub fn handleStationSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const
 }
 
 /// Request the details for the Wireless Interface (`if_index`).
-pub fn requestInterface(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
+pub fn requestInterface(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext, if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2437,9 +2437,9 @@ pub fn requestInterface(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_in
     );
 }
 /// Request the details for all Wireless Interfaces.
-pub fn requestAllInterfaces(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
+pub fn requestAllInterfaces(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2461,7 +2461,7 @@ pub fn requestAllInterfaces(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !
 }
 /// Get the details for a Wireless Interface (`if_index`).
 pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestInterface(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
     const if_buf = try handleInterfaceSock(alloc, req_ctx.sock);
@@ -2471,7 +2471,7 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
 }
 /// Get the details for all Wireless Interfaces.
 pub fn getAllInterfaces(alloc: mem.Allocator) ![]const Interface {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestAllInterfaces(alloc, &req_ctx);
     defer posix.close(req_ctx.sock);
     return try handleInterfaceSock(alloc, req_ctx.sock);
@@ -2483,14 +2483,14 @@ pub fn parseInterface(alloc: mem.Allocator, bytes: []const u8) !Interface {
 /// Handle a NEW_INTERFACE response from the provided `msg_buf`.
 pub fn handleInterfaceBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Interface {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var handle_ctx: nl.HandleContext = .{
+    var handle_ctx: nl.parse.HandleContext = .{
         .config = .{
             .nl_type = info.FAMILY_ID,
             .fam_cmd = c(CMD).NEW_INTERFACE,
             .warn_parse_err = @import("builtin").mode == .Debug
         },
     };
-    return try nl.handleTypeBuf(
+    return try nl.parse.handleTypeBuf(
         alloc,
         msg_buf,
         nl.generic.Request,
@@ -2502,7 +2502,7 @@ pub fn handleInterfaceBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const In
 /// Handle a NEW_INTERFACE response on the provided Netlink Interface (`nl_sock`).
 pub fn handleInterfaceSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Interface {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleTypeSock(
+    return try nl.parse.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -2519,12 +2519,12 @@ pub fn handleInterfaceSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]con
 /// Request details for a Wireless Physical Device (WIPHY) (`phy_index`).
 pub fn requestWIPHY(
     alloc: mem.Allocator, 
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32, 
     phy_index: u32,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2550,9 +2550,9 @@ pub fn requestWIPHY(
     );
 }
 /// Request details for all Wireless Physical Devices (WIPHY),
-pub fn requestAllWIPHY(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void {
+pub fn requestAllWIPHY(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -2577,7 +2577,7 @@ pub fn requestAllWIPHY(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void 
 }
 /// Get details for a Wireless Physical Device (WIPHY) (`phy_index`).
 pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestWIPHY(
         alloc, 
         &req_ctx,
@@ -2655,7 +2655,7 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
 
 /// Get details for all Wireless Physical Devices (WIPHYs).
 pub fn getAllWIPHY(alloc: mem.Allocator) ![]const Wiphy {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestAllWIPHY(alloc, &req_ctx);
     defer posix.close(req_ctx.sock);
     return try handleWIPHYSock(alloc, req_ctx.sock);
@@ -2667,7 +2667,7 @@ pub fn parseWIPHY(alloc: mem.Allocator, bytes: []const u8) !Wiphy {
 /// Handle a NEW_WIPHY response from the provided `msg_buf`.
 pub fn handleWIPHYBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Wiphy {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var handle_ctx: nl.HandleContext = .{
+    var handle_ctx: nl.parse.HandleContext = .{
         .config = .{
             .nl_type = info.FAMILY_ID,
             .fam_cmd = c(CMD).NEW_WIPHY,
@@ -2676,7 +2676,7 @@ pub fn handleWIPHYBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Wiphy 
             .slice_fields = &.{ "WIPHY_BANDS" },
         },
     };
-    return try nl.handleTypeBuf(
+    return try nl.parse.handleTypeBuf(
         alloc,
         msg_buf,
         nl.generic.Request,
@@ -2688,7 +2688,7 @@ pub fn handleWIPHYBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Wiphy 
 /// Handle a NEW_WIPHY response.
 pub fn handleWIPHYSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const Wiphy {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleTypeSock(
+    return try nl.parse.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -2764,7 +2764,7 @@ pub fn handleWIPHYSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const W
 //    }
 //    attemptScan: for (0..config.retries) |attempt| {
 //        log.debug("Scan Attempt {d}/{d} for SSID '{s}'", .{ attempt + 1, config.retries, ssid });
-//        const nl_sock = try nl.request(
+//        const nl_sock = try nl.io.request(
 //            alloc,
 //            nl.NETLINK.GENERIC,
 //            nl.generic.Request,
@@ -2784,7 +2784,7 @@ pub fn handleWIPHYSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const W
 //            attrs_buf.items,
 //        );
 //        defer posix.close(nl_sock);
-//        try nl.handleAckSock(nl_sock);
+//        try nl.parse.handleAckSock(nl_sock);
 //        const buf_size: u32 = 64_000;
 //        var timeout: usize = 3;
 //        var res_sock = try posix.socket(nl.AF.NETLINK, posix.SOCK.RAW, nl.NETLINK.GENERIC);
@@ -2835,7 +2835,7 @@ pub fn handleWIPHYSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const W
 //                    tried_get = true;
 //                    //log.debug("Attempting to Get Scan.", .{});
 //                    posix.close(res_sock);
-//                    res_sock = try nl.request(
+//                    res_sock = try nl.io.request(
 //                        alloc,
 //                        nl.NETLINK.GENERIC,
 //                        nl.generic.Request,
@@ -2927,7 +2927,7 @@ pub const TriggerScanConfig = struct {
 /// Request to Trigger a Scan on the provided Interface (`if_index`) using the provided Trigger Scan Config (`config`).
 pub fn requestTriggerScan(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     config: TriggerScanConfig,
 ) !void {
@@ -2985,7 +2985,7 @@ pub fn requestTriggerScan(
         });
     }
     //const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
-    try nl.request (
+    try nl.io.request (
         alloc,
         nl.generic.Request,
         .{
@@ -3007,7 +3007,7 @@ pub fn requestTriggerScan(
 }
 /// Trigger a Scan on the provided Interface (`if_index`) using the provided Trigger Scan Config (`config`).
 pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfig) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestTriggerScan(
         alloc, 
         &req_ctx, 
@@ -3015,7 +3015,7 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
         config,
     );
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Scheduled Scan Config
@@ -3037,7 +3037,7 @@ pub const SchedScanConfig = struct {
 /// Note, this must be supported by the interface.
 pub fn requestStartSchedScan(
     alloc: mem.Allocator, 
-    req_ctx: nl.RequestContext,
+    req_ctx: nl.io.RequestContext,
     if_index: i32, 
     config: SchedScanConfig,
 ) !void {
@@ -3073,7 +3073,7 @@ pub fn requestStartSchedScan(
         break :scanSched null;
     };
     defer if (scan_sched_attr) |sched_attr| alloc.free(sched_attr.data);
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -3096,16 +3096,16 @@ pub fn requestStartSchedScan(
 /// Start a Scheduled Scan for the provided Interface (`if_index`) using the provided Scheduled Scan Config (`config`).
 /// Note, this must be supported by the interface.
 pub fn startSchedScan(alloc: mem.Allocator, if_index: i32, config: SchedScanConfig) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestStartSchedScan(alloc, &req_ctx, if_index, config);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request to Stop a Scheduled Scan for the provided Interface (`if_index`).
-pub fn requestStopSchedScan(alloc: mem.Allocator, req_ctx: *nl.RequestContext, if_index: i32) !void {
+pub fn requestStopSchedScan(alloc: mem.Allocator, req_ctx: *nl.io.RequestContext, if_index: i32) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -3132,20 +3132,20 @@ pub fn stopSchedScan(
     alloc: mem.Allocator, 
     if_index: i32, 
 ) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestStopSchedScan(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request Scan Results from Netlink.
 pub fn requestScanResults(
     alloc: mem.Allocator, 
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: ?i32, 
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -3170,10 +3170,10 @@ pub fn requestScanResults(
 }
 /// Get Scan Results from Netlink.
 pub fn getScanResults(alloc: mem.Allocator, if_index: ?i32) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestScanResults(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
-    try nl.handleAckSock(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 /// Parse the provided `bytes` to a ScanResults instance.
 pub fn parseScanResults(alloc: mem.Allocator, bytes: []const u8) !ScanResults {
@@ -3182,13 +3182,13 @@ pub fn parseScanResults(alloc: mem.Allocator, bytes: []const u8) !ScanResults {
 /// Handle WiFi Scan Results for the provided `msg_buf`.
 pub fn handleScanResultsBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const ScanResults {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var handle_ctx: nl.HandleContext = .{
+    var handle_ctx: nl.parse.HandleContext = .{
         .config = .{
             .nl_type = info.FAMILY_ID,
             .fam_cmd = c(CMD).NEW_SCAN_RESULTS,
         },
     };
-    return try nl.handleTypeBuf(
+    return try nl.parse.handleTypeBuf(
         alloc,
         msg_buf,
         nl.generic.Request,
@@ -3200,7 +3200,7 @@ pub fn handleScanResultsBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const 
 /// Handle WiFi Scan Results on the provided Netlink Socket `nl_sock`.
 pub fn handleScanResultsSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const ScanResults {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleTypeSock(
+    return try nl.parse.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -3261,7 +3261,7 @@ pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
 /// Request to Register (or Unregister) Frame(s) on the provided Netlink Socket (`nl_sock`).
 pub fn requestRegisterFrames(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     types: []const ?u16,
     matches: []const ?[]const u8,
@@ -3309,7 +3309,7 @@ pub fn requestRegisterFrames(
         for (attrs) |attr| alloc.free(attr.data);
         alloc.free(attrs);
     }
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -3336,7 +3336,7 @@ pub fn registerFrames(
     types: []const ?u16,
     matches: []const ?[]const u8,
 ) !void {
-    var req_ctx: nl.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestRegisterFrames(
         alloc, 
         &req_ctx, 
@@ -3345,7 +3345,7 @@ pub fn registerFrames(
         matches,
     );
     defer posix.close(req_ctx.sock);
-    nl.handleAckSock(req_ctx.sock) catch |err| switch (err) {
+    nl.parse.handleAckSock(req_ctx.sock) catch |err| switch (err) {
         error.ALREADY => {},//log.debug("Frame Match 0x{?X:0>4} w/ Type {?X:0>2} is already registered.", .{ match, f_type }),
         else => return err,
     };
@@ -3361,7 +3361,7 @@ pub fn registerFrames(
 //    inline for (0..5) |idx| contKey: {
 //        const key_idx_hdr: nl.AttributeHeader = .{ .type = c(KEY).IDX, .len = 5 };
 //        const key_idx = (mem.toBytes(key_idx_hdr) ++ mem.toBytes(@as(u8, @intCast(idx))))[0..];
-//        const nl_sock = try nl.request(
+//        const nl_sock = try nl.io.request(
 //            alloc,
 //            nl.generic.Request,
 //            .{
@@ -3389,7 +3389,7 @@ pub fn registerFrames(
 //            },
 //            req_config.autoSockKind(nl.NETLINK.GENERIC),
 //        ) orelse break :contKey;
-//        nl.handleAckSock(nl_sock) catch |err| switch (err) {
+//        nl.parse.handleAckSock(nl_sock) catch |err| switch (err) {
 //            error.NOLINK => {},
 //            else => return err,
 //        };
@@ -3397,7 +3397,7 @@ pub fn registerFrames(
 //    }
 //    Thread.sleep(100 * time.ns_per_ms);
 //    // Flush PMKSA
-//    const nl_sock = try nl.request(
+//    const nl_sock = try nl.io.request(
 //        alloc,
 //        nl.generic.Request,
 //        .{
@@ -3423,7 +3423,7 @@ pub fn registerFrames(
 //    ) orelse return;
 //    defer posix.close(nl_sock);
 //    // TODO: Handle faulty flushes
-//    nl.handleAckSock(nl_sock) catch {};
+//    nl.parse.handleAckSock(nl_sock) catch {};
 //}
 
 /// Derive HT and VHT Capability Info from the provided `bss` and `wiphy`
@@ -3468,7 +3468,7 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
 /// Request to Authenticate to the provided Network `ssid`.
 pub fn requestAuthenticate(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     ssid: []const u8,
     scan_results: ScanResults,
@@ -3519,7 +3519,7 @@ pub fn requestAuthenticate(
         },
         else => {},
     }
-    _ = try nl.request(
+    _ = try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -3547,14 +3547,14 @@ pub fn parseAuthResponse(alloc: mem.Allocator, bytes: []const u8) !AuthResponse 
 /// Handle a CMD_AUTHENTICATE response on the provided `msg_buf`.
 pub fn handleAuthResponseBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const AuthResponse {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    var handle_ctx: nl.HandleContext = .{
+    var handle_ctx: nl.parse.HandleContext = .{
         .config = .{
             .nl_type = info.FAMILY_ID,
             .fam_cmd = c(CMD).AUTHENTICATE,
             .warn_parse_err = true,
         },
     };
-    return try nl.handleTypeBuf(
+    return try nl.parse.handleTypeBuf(
         alloc,
         msg_buf,
         nl.generic.Request,
@@ -3566,7 +3566,7 @@ pub fn handleAuthResponseBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const
 /// Handle a CMD_AUTHENTICATE response on the provided Netlink Socket (`nl_sock`).
 pub fn handleAuthResponseSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const AuthResponse {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    return try nl.handleTypeSock(
+    return try nl.parse.handleTypeSock(
         alloc,
         nl_sock,
         nl.generic.Request,
@@ -3584,12 +3584,12 @@ pub fn handleAuthResponseSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]
 /// Note, this works from both AP and Station modes.
 pub fn requestDeauthenticate(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     mac: [6]u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc, 
         nl.generic.Request,
         .{
@@ -3621,13 +3621,13 @@ pub fn requestDeauthenticate(
         },
         req_ctx,
     );
-    //try nl.handleAckSock(nl_sock);
+    //try nl.parse.handleAckSock(nl_sock);
 }
 
 /// Request to Associate to the provided Network `ssid`.
 pub fn requestAssociate(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     net_if: i32,
     wiphy: Wiphy,
     ssid: []const u8,
@@ -3743,7 +3743,7 @@ pub fn requestAssociate(
             });
         },
     }
-    try nl.request(
+    try nl.io.request(
         alloc, 
         nl.generic.Request,
         .{
@@ -3763,19 +3763,19 @@ pub fn requestAssociate(
         req_ctx,
     );
     //errdefer posix.close(nl_sock);
-    //try nl.handleAckSock(nl_sock);
+    //try nl.parse.handleAckSock(nl_sock);
 }
 
 /// Request to Disassociate the given Station (`mac`) from the provided Interface (`if_index`).
 /// Note, this works from both AP and Station modes.
 pub fn requestDisassociate(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     mac: [6]u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc, 
         nl.generic.Request,
         .{
@@ -3807,19 +3807,19 @@ pub fn requestDisassociate(
         },
         req_ctx,
     );
-    //try nl.handleAckSock(nl_sock);
+    //try nl.parse.handleAckSock(nl_sock);
 }
 
 /// Request to Send Control Frame
 pub fn requestSendControlFrame(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     bssid: [6]u8,
     frame_data: []const u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -3865,7 +3865,7 @@ pub fn requestSendControlFrame(
 /// Note, this may not work as expected.
 pub fn requestAuthPort(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     mac: [6]u8,
 ) !void {
@@ -3906,13 +3906,13 @@ pub fn requestAuthPort(
         },
         req_ctx,
     );
-    //try nl.handleAckSock(nl_sock);
+    //try nl.parse.handleAckSock(nl_sock);
 }
 
 /// Request to Add a `key` to the given `key_index` for a specific connection.
 pub fn requestAddKey(
     alloc: mem.Allocator,
-    req_ctx: *nl.RequestContext,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     mac: ?[6]u8,
     key: Key,
@@ -3920,7 +3920,7 @@ pub fn requestAddKey(
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     const key_bytes = try nl.parse.toBytes(alloc, Key, key);
     defer alloc.free(key_bytes);
-    try nl.request(
+    try nl.io.request(
         alloc,
         nl.generic.Request,
         .{
@@ -3963,7 +3963,7 @@ pub fn requestAddKey(
         req_ctx,
     );
     //errdefer posix.close(nl_sock);
-    //try nl.handleAckSock(nl_sock);
+    //try nl.parse.handleAckSock(nl_sock);
 }
 
 /// EAPoL Keys
