@@ -15,7 +15,9 @@ const posix = std.posix;
 const process = std.process;
 const testing = std.testing;
 const time = std.time;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
+const Io = std.Io;
+const Thread = std.Thread;
 
 const cova = @import("cova");
 const cli = @import("cli.zig");
@@ -39,6 +41,7 @@ const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const masks_map = core.profiles.Mask.map;
 const c = utils.toStruct;
+const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
 // Cleaning Hang Protection
 var cleaning: bool = false;
@@ -64,29 +67,24 @@ pub fn main() !void {
         posix.SIG.INT,
         &.{
             .handler = .{ .handler = forceClose },
-            .mask = posix.empty_sigset,
+            .mask = posix.sigemptyset(),
             .flags = 0,
         },
         null,
     );
-
-    const stdout_file = io.getStdOut().writer();
-    var stdout_bw = io.bufferedWriter(stdout_file);
-    defer stdout_bw.flush() catch log.warn("Couldn't flush stdout before exiting!", .{});
-    const stdout = stdout_bw.writer().any();
-    try stdout_file.print("{s}\n", .{ art.logo });
+    var stdout_file = fs.File.stdout();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = stdout_file.writer(stdout_buf[0..]);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
 
     var gpa: heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }) = .init;
-    defer {
-        if (builtin.mode == .Debug and gpa.detectLeaks())
-            log.err("Memory leak detected!", .{});
-        //else if (gpa.deinit() == .leak)
-        //    log.err("Memory leak detected!", .{});
-    }
-    const gpa_alloc = switch (builtin.mode) {
-        .Debug => gpa.allocator(),
-        else => heap.smp_allocator,
-    };
+    defer if (builtin.mode == .Debug and gpa.detectLeaks()) //
+        log.err("Memory leak detected!", .{});
+    //const gpa_alloc = switch (builtin.mode) {
+    //    .Debug => gpa.allocator(),
+    //    else => heap.smp_allocator,
+    //};
     //var sfba = heap.stackFallback(1_000_000, gpa_alloc);
     //const alloc = sfba.get();
     const alloc = switch (builtin.mode) {
@@ -99,8 +97,8 @@ pub fn main() !void {
     defer nl._80211.deinitCtrlInfo(alloc);
 
     // Parse Args
-    var main_cmd = try cli.setup_cmd.init(gpa_alloc, .{});
-    //var main_cmd = try cli.setup_cmd.init(alloc, .{});
+    //var main_cmd = try cli.setup_cmd.init(gpa_alloc, .{});
+    var main_cmd = try cli.setup_cmd.init(alloc, .{});
     defer main_cmd.deinit();
     var args_iter = try cova.ArgIteratorGeneric.init(alloc);
     defer args_iter.deinit();
@@ -111,7 +109,7 @@ pub fn main() !void {
         stdout,
         .{},
     ) catch |err| {
-        try stdout_bw.flush();
+        try stdout.flush();
         switch (err) {
             error.UsageHelpCalled => return,
             error.TooManyValues,
@@ -151,17 +149,17 @@ pub fn main() !void {
                 key_buf[0..],
             }
         );
-        try stdout_bw.flush();
+        try stdout.flush();
         return;
     }
     // - System
     if (main_cmd.matchSubCmd("system")) |sys_cmd| {
-        checkRoot(stdout_file.any());
+        checkRoot(stdout);
         if (sys_cmd.matchSubCmd("set")) |set_cmd| {
             const set_opts = try set_cmd.getOpts(.{});
             if (set_opts.get("hostname")) |hn_opt| newHN: {
                 const new_hn = hn_opt.val.getAs([]const u8) catch break :newHN;
-                try stdout_file.print("Setting the hostname to {s}...\n", .{ new_hn });
+                try stdout.print("Setting the hostname to {s}...\n", .{ new_hn });
                 try sys.setHostName(new_hn);
             }
         }
@@ -191,7 +189,7 @@ pub fn main() !void {
             for (masks_map.keys()) |key| {
                 try stdout.print(
                     \\{s}
-                    \\{s}
+                    \\{f}
                     \\
                     , .{
                         key,
@@ -199,7 +197,7 @@ pub fn main() !void {
                     },
                 );
             }
-            try stdout_bw.flush();
+            try stdout.flush();
         }
         const conflicts_val_set: bool =
             for (item_list) |item| {
@@ -217,15 +215,15 @@ pub fn main() !void {
                 \\
                 , .{}
             );
-            try stdout_bw.flush();
+            try stdout.flush();
             const core_conf: core.Core.Config = .{};
             _ = try core.findConflictPIDs(
                 alloc, 
                 core_conf.profile.conflict_processes,
                 stdout,
-                "- '{s}' process running {d} time(s) (PID(s): {d}).\n"
+                "- '{s}' process running {d} time(s) (PID(s): {f}).\n"
             );
-            try stdout_bw.flush();
+            try stdout.flush();
         }
         const config_val_set: bool =
             for (item_list) |item| {
@@ -243,7 +241,7 @@ pub fn main() !void {
                 \\{s}
                 , .{ config_fields }
             );
-            try stdout_bw.flush();
+            try stdout.flush();
         }
         if (!list_cmd.checkFlag("interfaces")) posix.exit(0);
     }
@@ -324,7 +322,7 @@ pub fn main() !void {
         if (!main_cmd.checkArgGroup(.Option, "MASK") or main_cmd.checkFlag("no_mask")) break :getMask null;
         if (main_opts.get("mask")) |mask_opt| {
             const mask = try mask_opt.val.getAs(core.profiles.Mask);
-            log.info("Using the provided '{s}' Profile Mask:\n{s}", .{
+            log.info("Using the provided '{s}' Profile Mask:\n{f}", .{
                 try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
                 mask,
             });
@@ -352,20 +350,22 @@ pub fn main() !void {
                 break :getUA "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
             },
         };
-        log.info("Using your Custom Profile Mask:\n{s}", .{ mask });
+        log.info("Using your Custom Profile Mask:\n{f}", .{ mask });
         break :getMask mask;
     };
     const core_conn_confs: []core.connections.Config = connConfs: {
         const conn_opt = main_opts.get("connect_info") orelse break :connConfs &.{};
         break :connConfs conn_opt.val.getAllAs(core.connections.Config) catch &.{};
     };
+    if (main_cmd.checkFlag("no_conflict_pids")) //
+        log.info("Skipping Conflict PIDs check.", .{});
     // Initialize Core Context
     const core_config: core.Core.Config = config: {
         var config: core.Core.Config = importConf: {
             var config: core.Core.Config = .{
                 .avail_if_names = if_names,
                 .profile = .{
-                    .require_conflicts_ack = !main_cmd.checkFlag("no-conflict-pids"),
+                    .require_conflicts_ack = !main_cmd.checkFlag("no_conflict_pids"),
                 },
             };
             if (main_opts.get("config")) |config_opt| userConf: {
@@ -382,13 +382,17 @@ pub fn main() !void {
                         //.ignore_unknown_fields = true,
                     },
                 ) catch |err| {
-                    log.warn("There was an error with the provided Config: {s}", .{ @errorName(err) });
+                    log.warn("There was an error with the provided Config: {t}", .{ err });
                     break :userConf;
                 };
                 log.info("Imported provided Config!", .{});
                 break :importConf config;
             }
             defaultConf: {
+                if (main_cmd.checkFlag("no_default_config")) {
+                    log.info("Skipping Default Config check.", .{});
+                    break :defaultConf;
+                }
                 var user_buf: [100]u8 = undefined;
                 const user = sys.getUser(user_buf[0..]) orelse break :defaultConf;
                 log.debug("Current User: {s}", .{ user });
@@ -415,7 +419,7 @@ pub fn main() !void {
                             //.ignore_unknown_fields = true,
                         },
                     ) catch |err| {
-                        log.warn("There was an error with the Default Config: {s}", .{ @errorName(err) });
+                        log.warn("There was an error with the Default Config: {t}", .{ err });
                         break :defaultConf;
                     };
                     log.info("Imported the Default Config at '{s}'!", .{ default_conf_path });
@@ -435,7 +439,7 @@ pub fn main() !void {
             const pass = pass: {
                 const pass_opt = connect_opts.get("passphrase") orelse {
                     if (security != null and security.? != .open) //
-                        log.err("The {s} protocol requires a passhprase.", .{ @tagName(security.?) })
+                        log.err("The {t} protocol requires a passhprase.", .{ security.? })
                     else //
                         log.warn("No passphrase provided. This will only work with Open Networks.", .{});
                     break :pass "";
@@ -497,15 +501,16 @@ pub fn main() !void {
             main_cmd.matchSubCmd("connect") != null;
     };
     if (run_core) {
-        checkRoot(stdout_file.any());
-        const core_thread = try std.Thread.spawn(.{}, core.Core.start, .{ &core_ctx });
+        checkRoot(stdout);
+        const core_thread = try Thread.spawn(.{}, core.Core.start, .{ &core_ctx });
         core_thread.detach();
-        const stdin = io.getStdIn().reader();
-        //var active: bool = true;
-        //while (active) {
-        //}
-        const input = try stdin.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096);
-        defer if (input) |in| alloc.free(in);
+        while (!(&core_ctx).active.load(.acquire)) //
+            Thread.sleep(10 * time.ns_per_ms);
+        var stdin_file = fs.File.stdin();
+        var stdin_buf: [16]u8 = undefined;
+        var stdin_reader = stdin_file.reader(stdin_buf[0..]);
+        const stdin = &stdin_reader.interface;
+        _ = try stdin.discardDelimiterExclusive('\n');
         core_ctx.stop();
         return;
         //posix.exit(0);
@@ -516,7 +521,7 @@ pub fn main() !void {
     const list_interfaces: core.Core.RunCondition = .{ .list_interfaces = .{} };
     // - Set
     if (main_cmd.matchSubCmd("set")) |set_cmd| {
-        checkRoot(stdout_file.any());
+        checkRoot(stdout);
         try core_ctx.runTo(list_interfaces);
         const set_ifs = core_ctx.if_ctx.interfaces;
         var if_iter = set_ifs.iterator();
@@ -529,7 +534,7 @@ pub fn main() !void {
             if (set_if.usage == .unavailable) continue;
             const set_if_opts = try set_cmd.getOpts(.{});
             if (set_if_opts.get("mac")) |mac_opt| setMAC: {
-                try stdout_file.print("Setting the MAC for {s}...\n", .{ set_if.name });
+                try stdout.print("Setting the MAC for {s}...\n", .{ set_if.name });
                 const new_mac: [6]u8 = newMAC: {
                     var new_mac: [6]u8 = //
                         if (mac_opt.val.isEmpty()) @splat(0) //
@@ -560,7 +565,7 @@ pub fn main() !void {
                         return;
                     },
                 };
-                try stdout_file.print("Set the MAC for {s} to {s}.\n", .{ set_if.name, MACF{ .bytes = new_mac[0..] } });
+                try stdout.print("Set the MAC for {s} to {f}.\n", .{ set_if.name, MACF{ .bytes = new_mac[0..] } });
             }
             if (set_if_opts.get("state")) |state_opt| setState: {
                 const new_state, const flag_name = newState: {
@@ -572,7 +577,7 @@ pub fn main() !void {
                         if (states.len == 1) @tagName(states[0]) else "Combined-State",
                     };
                 };
-                try stdout_file.print("Setting the State for {s}...\n", .{ set_if.name });
+                try stdout.print("Setting the State for {s}...\n", .{ set_if.name });
                 nl.route.setState(set_if.index, new_state) catch |err| switch (err) {
                     error.OutOfMemory => {
                         log.err("Out of Memory!", .{});
@@ -587,18 +592,18 @@ pub fn main() !void {
                         return;
                     },
                 };
-                try stdout_file.print("Set the State for {s} to {s}.\n", .{ set_if.name, flag_name });
+                try stdout.print("Set the State for {s} to {s}.\n", .{ set_if.name, flag_name });
             }
             if (set_if_opts.get("mode")) |mode_opt| setMode: {
                 const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
-                try stdout_file.print("Setting the Mode for {s}...\n", .{ set_if.name });
+                try stdout.print("Setting the Mode for {s}...\n", .{ set_if.name });
                 nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
                     log.warn("Unable to set the interface down.", .{});
                 };
                 defer nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
                     log.warn("Unable to set the interface up.", .{});
                 };
-                time.sleep(100 * time.ns_per_ms);
+                Thread.sleep(100 * time.ns_per_ms);
                 nl._80211.setMode(set_if.index, @intFromEnum(new_mode)) catch |err| switch (err) {
                     error.OutOfMemory => {
                         log.err("Out of Memory!", .{});
@@ -613,7 +618,7 @@ pub fn main() !void {
                         return;
                     },
                 };
-                try stdout_file.print("Set the Mode for {s} to {s}.\n", .{ set_if.name, @tagName(new_mode) });
+                try stdout.print("Set the Mode for {s} to {t}.\n", .{ set_if.name, new_mode });
             }
             if (set_if_opts.get("channel")) |chan_opt| setChannel: {
                 const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
@@ -621,16 +626,16 @@ pub fn main() !void {
                     const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
                     break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
                 };
-                try stdout_file.print("Setting the Channel for {s}...\n", .{ set_if.name });
+                try stdout.print("Setting the Channel for {s}...\n", .{ set_if.name });
                 nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
                     log.warn("Unable to set the interface down.", .{});
                 };
-                time.sleep(100 * time.ns_per_ms);
+                Thread.sleep(100 * time.ns_per_ms);
                 try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
                 nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
                     log.warn("Unable to set the interface up.", .{});
                 };
-                time.sleep(100 * time.ns_per_ms);
+                Thread.sleep(100 * time.ns_per_ms);
                 nl._80211.setChannel(set_if.index, new_ch, new_ch_width) catch |err| switch (err) {
                     error.OutOfMemory => {
                         log.err("Out of Memory!", .{});
@@ -649,7 +654,7 @@ pub fn main() !void {
                         return err;
                     },
                 };
-                try stdout_file.print("Set the Channel for {s} to {d}.\n", .{ set_if.name, new_ch });
+                try stdout.print("Set the Channel for {s} to {d}.\n", .{ set_if.name, new_ch });
             }
             if (set_if_opts.get("frequency")) |freq_opt| setFreq: {
                 const new_freq = freq_opt.val.getAs(usize) catch break :setFreq;
@@ -657,12 +662,12 @@ pub fn main() !void {
                     const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
                     break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
                 };
-                try stdout_file.print("Setting the Channel for {s}...\n", .{ set_if.name });
+                try stdout.print("Setting the Channel for {s}...\n", .{ set_if.name });
                 try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
                 nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
                     log.warn("Unable to set the interface up.", .{});
                 };
-                time.sleep(100 * time.ns_per_ms);
+                Thread.sleep(100 * time.ns_per_ms);
                 nl._80211.setFreq(set_if.index, new_freq, new_ch_width) catch |err| switch (err) {
                     error.OutOfMemory => {
                         log.err("Out of Memory!", .{});
@@ -681,13 +686,13 @@ pub fn main() !void {
                         return err;
                     },
                 };
-                try stdout_file.print("Set the Frequency for {s} to {d}.\n", .{ set_if.name, new_freq });
+                try stdout.print("Set the Frequency for {s} to {d}.\n", .{ set_if.name, new_freq });
             }
         }
     }
     // - Add
     if (main_cmd.matchSubCmd("add")) |add_cmd| {
-        checkRoot(stdout_file.any());
+        checkRoot(stdout);
         try core_ctx.runTo(list_interfaces);
         const add_ifs = core_ctx.if_ctx.interfaces;
         if (add_ifs.count() == 0) checkIF(stdout, "add");
@@ -702,7 +707,7 @@ pub fn main() !void {
             const add_opts = try add_cmd.getOpts(.{});
             if (add_opts.get("ip")) |ip_opt| setIP: {
                 const ip = try ip_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Adding IP Address '{s}' to Interface '{s}'...\n", .{ ip, add_if.name });
+                try stdout.print("Adding IP Address '{f}' to Interface '{s}'...\n", .{ ip, add_if.name });
                 nl.route.addIP(
                     alloc,
                     add_if.index,
@@ -710,16 +715,16 @@ pub fn main() !void {
                     ip.cidr,
                 ) catch |err| switch (err) {
                     error.EXIST => {
-                        try stdout_file.print("The IP Address '{s}' is already set on Interface '{s}'.\n", .{ ip, add_if.name });
+                        try stdout.print("The IP Address '{f}' is already set on Interface '{s}'.\n", .{ ip, add_if.name });
                         break :setIP;
                     },
                     else => return err,
                 };
-                try stdout_file.print("Added IP Address '{s}' to Interface '{s}'.\n", .{ ip, add_if.name });
+                try stdout.print("Added IP Address '{f}' to Interface '{s}'.\n", .{ ip, add_if.name });
             }
             if (add_opts.get("route")) |route_opt| setRoute: {
                 const route = try route_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Adding Route '{s}' to Interface '{s}'...\n", .{ route, add_if.name });
+                try stdout.print("Adding Route '{f}' to Interface '{s}'...\n", .{ route, add_if.name });
                 const gateway = gw: {
                     break :gw if (add_opts.get("gateway")) |gw_opt|
                         (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
@@ -735,23 +740,23 @@ pub fn main() !void {
                     },
                 ) catch |err| switch (err) {
                     error.EXIST => {
-                        try stdout_file.print("The Route '{s}' is already set on Interface '{s}'.\n", .{ route, add_if.name });
+                        try stdout.print("The Route '{f}' is already set on Interface '{s}'.\n", .{ route, add_if.name });
                         break :setRoute;
                     },
                     error.NETUNREACH => {
-                        try stdout_file.print("The Gateway '{?s}' is invalid.\n", .{ gateway });
+                        try stdout.print("The Gateway '{?s}' is invalid.\n", .{ gateway });
                         break :setRoute;
                     },
                     else => return err,
                 };
-                try stdout_file.print("Added Route '{s}' to Interface '{s}'.\n", .{ route, add_if.name });
+                try stdout.print("Added Route '{f}' to Interface '{s}'.\n", .{ route, add_if.name });
             }
-            time.sleep(100 * time.ns_per_ms);
+            Thread.sleep(100 * time.ns_per_ms);
         }
     }
     // - Delete
     if (main_cmd.matchSubCmd("delete")) |del_cmd| {
-        checkRoot(stdout_file.any());
+        checkRoot(stdout);
         try core_ctx.runTo(list_interfaces);
         const del_ifs = core_ctx.if_ctx.interfaces;
         var if_iter = del_ifs.iterator();
@@ -765,7 +770,7 @@ pub fn main() !void {
             const del_opts = try del_cmd.getOpts(.{});
             if (del_opts.get("ip")) |ip_opt| setIP: {
                 const ip = try ip_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Deleting the IP Address '{s}'...\n", .{ ip });
+                try stdout.print("Deleting the IP Address '{f}'...\n", .{ ip });
                 nl.route.deleteIP(
                     alloc,
                     del_if.index,
@@ -773,16 +778,16 @@ pub fn main() !void {
                     ip.cidr,
                 ) catch |err| switch (err) {
                     error.ADDRNOTAVAIL => {
-                        try stdout_file.print("The IP Address '{s}' could not be found.\n", .{ ip });
+                        try stdout.print("The IP Address '{f}' could not be found.\n", .{ ip });
                         break :setIP;
                     },
                     else => return err,
                 };
-                try stdout_file.print("Deleted the IP Address '{s}'.\n", .{ ip });
+                try stdout.print("Deleted the IP Address '{f}'.\n", .{ ip });
             }
             if (del_opts.get("route")) |route_opt| delRoute: {
                 const route = try route_opt.val.getAs(address.IPv4);
-                try stdout_file.print("Deleting Route '{s}'...\n", .{ route });
+                try stdout.print("Deleting Route '{f}'...\n", .{ route });
                 const gateway = gw: {
                     break :gw if (del_opts.get("gateway")) |gw_opt|
                         (gw_opt.val.getAs(address.IPv4) catch break :gw null).addr
@@ -799,14 +804,14 @@ pub fn main() !void {
                 ) catch |err| switch (err) {
                     error.ADDRNOTAVAIL,
                     error.SRCH => {
-                        try stdout_file.print("The Route '{s}' could not be found.\n", .{ route });
+                        try stdout.print("The Route '{f}' could not be found.\n", .{ route });
                         break :delRoute;
                     },
                     else => return err,
                 };
-                try stdout_file.print("Deleted Route '{s}'.\n", .{ route });
+                try stdout.print("Deleted Route '{f}'.\n", .{ route });
             }
-            time.sleep(100 * time.ns_per_ms);
+            Thread.sleep(100 * time.ns_per_ms);
         }
     }
     // - Scan
@@ -820,14 +825,14 @@ pub fn main() !void {
         while (networks_iter.next()) |network_entry| {
             const network = network_entry.value_ptr;
             try stdout.print(
-                \\{s}
+                \\{f}
                 \\-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
                 \\
                 \\
                 , .{ network.* },
             );
         }
-        try stdout_bw.flush();
+        try stdout.flush();
     }
 
     // Print Config
@@ -853,12 +858,12 @@ pub fn main() !void {
     };
     // System Details
     try core_ctx.printInfo(stdout, print_config);
-    try stdout_bw.flush();
+    try stdout.flush();
     posix.exit(0);
 }
 
 /// Check for Root 
-fn checkRoot(stdout: io.AnyWriter) void {
+fn checkRoot(stdout: *Io.Writer) void {
     if (os.linux.getuid() != 0) {
         stdout.print("{s}\n\n                          DisCo must be run as sudo!\n", .{ art.sudo }) catch { 
             log.err("DisCo must be run as sudo! (There was also an issue writing to stdout.)", .{});
@@ -868,7 +873,7 @@ fn checkRoot(stdout: io.AnyWriter) void {
 }
 
 /// Ask the user to Check that there's an Interface.
-fn checkIF(stdout: io.AnyWriter, cmd_name: []const u8) void {
+fn checkIF(stdout: *Io.Writer, cmd_name: []const u8) void {
     stdout.print("{s}\n\n   `disco {s}` needs to know which interface(s) to use. (Ex: disco -i wlan0 {s})\n", .{ art.wifi_card, cmd_name, cmd_name }) catch {
         log.err("DisCo needs to know which interface to use. (Ex: disco wlan0)", .{});
     };
@@ -877,7 +882,7 @@ fn checkIF(stdout: io.AnyWriter, cmd_name: []const u8) void {
 }
 
 /// Cleanup
-fn cleanUp(_: i32) callconv(.C) void {
+fn cleanUp(_: i32) callconv(.c) void {
     if (cleaning) {
         log.warn("Forced close. Couldn't finish cleaning up.", .{});
         posix.exit(1);
@@ -886,37 +891,6 @@ fn cleanUp(_: i32) callconv(.C) void {
     if (panicking) log.err("Runtime Panic! Attempting to close gracefully...", .{})
     else if (forcing_close) log.info("Forced close! Attempting to close gracefully...", .{})
     else log.info("Closing gracefully...\n(Force close w/ `ctrl + c`.)", .{});
-    if (connected) cleanup: {
-        active.store(false, .seq_cst);
-        //const core_ctx = _core_ctx orelse break :cleanup;
-        //raw_net_if = core_ctx.if_maps.interfaces.get(net_if.index);
-        const net_if = raw_net_if orelse break :cleanup;
-        if (dhcp_info) |d_info| {
-            dhcp.releaseDHCP(
-                net_if.name,
-                net_if.index,
-                net_if.mac,
-                d_info.server_id,
-                d_info.assigned_ip,
-            ) catch log.warn("Could not release DHCP lease for `{s}`!", .{ d_info.assigned_ip });
-        }
-        //for (net_if.ips, net_if.cidrs) |_ip, _cidr| {
-        //    const ip = _ip orelse continue;
-        //    const cidr = _cidr orelse 24;
-        //    var fba_buf: [2048]u8 = undefined;
-        //    var fba = heap.FixedBufferAllocator.init(fba_buf[0..]);
-        //    defer nl.route.deleteIP(
-        //        //alloc,
-        //        fba.allocator(),
-        //        net_if.index,
-        //        ip,
-        //        cidr,
-        //    ) catch |err| switch (err) {
-        //        error.ADDRNOTAVAIL => {},
-        //        else => log.warn("Could not remove IP `{s}`!", .{ IPF{ .bytes = ip[0..] } }),
-        //    };
-        //}
-    }
     if (_core_ctx) |*core_ctx| {
         if (panicking or forcing_close)
             core_ctx.forced_close = true;
@@ -929,7 +903,7 @@ fn cleanUp(_: i32) callconv(.C) void {
 }
 
 /// Force Close
-pub fn forceClose(errno: i32) callconv(.C) void {
+pub fn forceClose(errno: i32) callconv(.c) void {
     forcing_close = true;
     cleanUp(errno);
 }

@@ -71,7 +71,7 @@ pub const CtrlInfo = struct {
         var start: usize = 0;
         var end: usize = nl.attr_hdr_len;
         while (end < bytes.len) : (field_count += 1) {
-            var hdr: *const nl.AttributeHeader = @alignCast(@ptrCast(bytes[start..end]));
+            var hdr: nl.AttributeHeader = mem.bytesToValue(nl.AttributeHeader, bytes[start..end]);
             const attr_end = end + (hdr.len - nl.attr_hdr_len);
             const tag: CTRL.ATTR = @enumFromInt(hdr.type);
             log.debug("Len: {d}, Type: {s}", .{ hdr.len, @tagName(tag) });
@@ -83,17 +83,16 @@ pub const CtrlInfo = struct {
                     start = end;
                     end += nl.attr_hdr_len;
                     while (end < bytes.len) {
-                        hdr = @alignCast(@ptrCast(bytes[start..end]));
+                        hdr = mem.bytesToValue(nl.AttributeHeader, bytes[start..end]);
                         start = end;
                         end += nl.attr_hdr_len;
-                        hdr = @alignCast(@ptrCast(bytes[start..end]));
+                        hdr = mem.bytesToValue(nl.AttributeHeader, bytes[start..end]);
                         start = end;
                         end += hdr.len - nl.attr_hdr_len;
-                        //const id: *const u32 = @alignCast(@ptrCast(bytes[start..end]));
                         const id: u32 = mem.bytesToValue(u32, bytes[start..end]);
                         start = end;
                         end += nl.attr_hdr_len;
-                        hdr = @alignCast(@ptrCast(bytes[start..end]));
+                        hdr = mem.bytesToValue(nl.AttributeHeader, bytes[start..end]);
                         start = end;
                         end += hdr.len - nl.attr_hdr_len;
                         const name = try alloc.dupe(u8, mem.trim(u8, bytes[start..end], (ascii.whitespace ++ .{ 0 })[0..]));
@@ -106,7 +105,7 @@ pub const CtrlInfo = struct {
                     info.MCAST_GROUPS = grp_map;
                 },
                 .OPS => info.OPS = try alloc.dupe(u8, bytes),
-                else => primField: { 
+                else => primField: {
                     start = end;
                     end += hdr.len - nl.attr_hdr_len;
                     inline for (meta.fields(@This())) |field| cont: {
@@ -169,13 +168,13 @@ pub const CtrlInfo = struct {
             // Netlink Header
             var start: usize = offset;
             var end: usize = (offset + @sizeOf(nl.MessageHeader));
-            const nl_resp_hdr: *const nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+            const nl_resp_hdr: nl.MessageHeader = mem.bytesToValue(nl.MessageHeader, resp_buf[start..end]);
             if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
                 return error.InvalidMessage;
             if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
                 start = end;
                 end += @sizeOf(nl.ErrorHeader);
-                const nl_err: *const nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                const nl_err: nl.ErrorHeader = mem.bytesToValue(nl.ErrorHeader, resp_buf[start..end]);
                 switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
                     .SUCCESS => {},
                     .BUSY => return error.BUSY,
@@ -188,7 +187,7 @@ pub const CtrlInfo = struct {
             // General Header
             start = end;
             end += @sizeOf(Header);
-            const gen_hdr: *const Header = @alignCast(@ptrCast(resp_buf[start..end]));
+            const gen_hdr: Header = mem.bytesToValue(Header, resp_buf[start..end]);
             start = end;
             end = offset + nl_resp_hdr.len;
             offset += mem.alignForward(usize, nl_resp_hdr.len, 4);

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const atomic = std.atomic;
+const fs = std.fs;
 const heap = std.heap;
 const io = std.io;
 const log = std.log.scoped(.core);
@@ -9,7 +10,9 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
+const Io = std.Io;
+const Thread = std.Thread;
 
 const netdata = @import("netdata.zig");
 const oui = netdata.oui;
@@ -17,6 +20,7 @@ const nl = @import("netlink.zig");
 const sys = @import("sys.zig");
 const utils = @import("utils.zig");
 const c = utils.toStruct;
+const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
 pub const interfaces = @import("core/interfaces.zig");
 pub const networks = @import("core/networks.zig");
@@ -52,13 +56,13 @@ pub const Core = struct {
     };
 
     /// Mutex Lock
-    _mutex: std.Thread.Mutex = .{},
+    _mutex: Thread.Mutex = .{},
     /// Timer
     _timer: time.Timer,
     /// Thread Pool
-    _thread_pool: std.Thread.Pool,
+    _thread_pool: Thread.Pool,
     /// Wait Group
-    _wait_group: std.Thread.WaitGroup = .{},
+    _wait_group: Thread.WaitGroup = .{},
     /// Allocator
     alloc: mem.Allocator,
     ///// Arena Wrapper f/ Allocator
@@ -109,7 +113,7 @@ pub const Core = struct {
         // Core Creation
         var self: @This() = .{
             ._timer = try std.time.Timer.start(),
-            ._thread_pool = .{ .ids = .{}, .threads = &[_]std.Thread{}, .allocator = alloc },
+            ._thread_pool = .{ .ids = .{}, .threads = &[_]Thread{}, .allocator = alloc },
             .alloc = alloc,
             //.arena = arena,
             .config = config,
@@ -149,7 +153,7 @@ pub const Core = struct {
             log.info("- Initialized File Serve Data.", .{});
         }
         log.info("Initialized DisCo Core.", .{});
-        //time.sleep(5 * time.ns_per_s);
+        //Thread.sleep(5 * time.ns_per_s);
         return self;
     }
 
@@ -159,7 +163,6 @@ pub const Core = struct {
         if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
         log.info("Core Locked!", .{});
         log.info("Starting DisCo Core...", .{});
-        self.active.store(true, .release);
         defer {
             log.info("Core Unlocked!", .{});
             self._mutex.unlock();
@@ -169,10 +172,12 @@ pub const Core = struct {
             self.alloc,
             self.config.profile.conflict_processes,
             null,
-            "- Found the '{s}' process running {d} time(s) (PID(s): {d}). This could cause issues w/ DisCo.",
+            "- Found the '{s}' process running {d} time(s) (PID(s): {f}). This could cause issues w/ DisCo.",
         );
         if (found_pids and self.config.profile.require_conflicts_ack) {
-            const stdout = io.getStdOut().writer();
+            var stdout_file = fs.File.stdout();
+            var stdout_writer = stdout_file.writer(&.{});
+            const stdout = &stdout_writer.interface;
             try stdout.print(
                 \\
                 \\Conflict PIDs found! You may want to kill those processes or ensure you've deconflicted WiFi Interfaces.
@@ -180,10 +185,13 @@ pub const Core = struct {
                 \\
                 , .{}
             );
-            const stdin = io.getStdIn().reader();
-            const input = try stdin.readUntilDelimiterOrEofAlloc(self.alloc, '\n', 4096);
-            defer if (input) |in| self.alloc.free(in);
+            var stdin_file = fs.File.stdin();
+            var stdin_buf: [16]u8 = undefined;
+            var stdin_reader = stdin_file.reader(stdin_buf[0..]);
+            const stdin = &stdin_reader.interface;
+            _ = try stdin.discardDelimiterExclusive('\n');
         }
+        self.active.store(true, .release);
         // Profile Mask
         if (self.config.profile.mask == null) setMask: {
             log.info("- No Profile Mask provided.", .{}); 
@@ -193,7 +201,7 @@ pub const Core = struct {
             }
             const mask = profiles.Mask.getRandom();
             self.config.profile.mask = mask;
-            log.info("- Defaulting to a random '{s}' Profile Mask:\n{s}", .{ 
+            log.info("- Defaulting to a random '{s}' Profile Mask:\n{f}", .{ 
                 try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
                 mask,
             });
@@ -220,7 +228,7 @@ pub const Core = struct {
             log.info("- Started File Serving.", .{});
         }
         // Available Interfaces
-        log.debug("Searching for the following Interfaces: {s}", .{ self.config.avail_if_names });
+        log.debug("Searching for the following Interfaces: {f}", .{ SlicesF{ .slice = self.config.avail_if_names } });
         // Event Loop
         try self.nl_event_loop.start(self.alloc, &self.active); 
         // Core Loop
@@ -228,12 +236,12 @@ pub const Core = struct {
         while (self.active.load(.acquire)) {
             // Interface Tracking
             try self.if_ctx.update(self);
-            time.sleep(1 * time.ns_per_ms);
+            Thread.sleep(1 * time.ns_per_ms);
             // Connection Tracking
             try self.conn_ctx.update(self);
             // Network Tracking
             try self.network_ctx.update(self);
-            time.sleep(10 * time.ns_per_ms);
+            Thread.sleep(10 * time.ns_per_ms);
         }
         //self._thread_pool.waitAndWork(&self._wait_group);
         self._thread_pool.deinit();
@@ -273,7 +281,7 @@ pub const Core = struct {
             try self.if_ctx.update(self);
             // Network Tracking
             try self.network_ctx.update(self);
-            time.sleep(10 * time.ns_per_ms);
+            Thread.sleep(10 * time.ns_per_ms);
         }
     }
 
@@ -305,7 +313,7 @@ pub const Core = struct {
             if (sys.setHostName(self.og_hostname)) 
                 log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname })
             else |err|
-                log.warn("- Couldn't reset the Hostname: {s}", .{ @errorName(err) });
+                log.warn("- Couldn't reset the Hostname: {t}", .{ err });
         }
         self.if_ctx.restore(self.alloc);
         self.alloc.free(self.og_hostname);
@@ -365,7 +373,7 @@ pub const Core = struct {
             const print_if = print_if_entry.value_ptr;
             if (config.if_info == .available and print_if.usage != .available) continue;
             try writer.print(
-                \\{s}
+                \\{f}
                 \\-----------
                 \\
                 , .{ print_if }
@@ -382,11 +390,14 @@ pub const AsyncState = enum {
     parse,
 };
 
+/// PID Formatter
+const PIDF = utils.SliceFormatter(u32, "{d}");
+
 /// Find Conflicting PIDs
 pub fn findConflictPIDs(
-    alloc: mem.Allocator, 
+    alloc: mem.Allocator,
     proc_names: []const []const u8,
-    writer: ?io.AnyWriter,
+    writer: ?*Io.Writer,
     comptime fmt: []const u8,
 ) !bool {
     var found_pids: bool = false;
@@ -396,10 +407,10 @@ pub fn findConflictPIDs(
         if (pids.len > 0) {
             found_pids = true;
             if (writer) |w| {
-                try w.print(fmt, .{ p_name, pids.len, pids });
+                try w.print(fmt, .{ p_name, pids.len, PIDF{ .slice = pids } });
                 continue;
             }
-            log.warn(fmt, .{ p_name, pids.len, pids });
+            log.warn(fmt, .{ p_name, pids.len, PIDF{ .slice = pids } });
         }
     }
     return found_pids;

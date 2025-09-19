@@ -11,7 +11,9 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
+const Io = std.Io;
+const Thread = std.Thread;
 
 const zeit = @import("zeit");
 
@@ -90,12 +92,7 @@ pub const Interface = struct {
     const IFStateF = struct {
         flags: u32,
 
-        pub fn format(
-            self: @This(),
-            _: []const u8,
-            _: fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             for (meta.tags(nl.route.IFF)) |tag| {
                 const flag: u32 = @intFromEnum(tag);
                 if (flag == 0) continue;
@@ -105,7 +102,7 @@ pub const Interface = struct {
                     continue;
                 }
                 if (self.flags & flag == flag)
-                try writer.print(", {s}", .{ @tagName(tag) });
+                try writer.print(", {t}", .{ tag });
             }
         }
     };
@@ -241,7 +238,7 @@ pub const Interface = struct {
             },
         }
         self.usage.modify.append(core_ctx.alloc, mod_ctx) catch @panic("OOM");
-        time.sleep(1 * time.ns_per_ms);
+        Thread.sleep(1 * time.ns_per_ms);
     }
 
     /// Restoration Kind
@@ -270,26 +267,26 @@ pub const Interface = struct {
                         ) catch |err| {
                             switch (err) {
                                 error.ADDRNOTAVAIL => {},
-                                else => log.warn("-- Could not remove IP '{s}'!", .{ IPF{ .bytes = ip[0..] } }),
+                                else => log.warn("-- Could not remove IP '{f}'!", .{ IPF{ .bytes = ip[0..] } }),
                             }
                             continue;
                         };
-                        log.info("-- Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
+                        log.info("-- Removed IP '{f}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
                     }
                 },
                 .mac => resetMAC: {
                     if (mem.eql(u8, self.og_mac[0..], self.mac[0..])) break :resetMAC;
                     nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch {};
-                    time.sleep(time.ns_per_ms);
+                    Thread.sleep(time.ns_per_ms);
                     if (nl.route.setMAC(self.index, self.og_mac))
-                        log.info("-- Restored Orignal MAC '{s}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
+                        log.info("-- Restored Orignal MAC '{f}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
                     else |_|
-                        log.warn("-- Could not restore Interface '{s}' to its orignal MAC '{s}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
+                        log.warn("-- Could not restore Interface '{s}' to its orignal MAC '{f}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
                 },
                 .dns => resetDNS: {
                     if (!has_ip) break :resetDNS;
                     dns.updateDNS(.{ .if_index = self.index, .servers = &.{}, .set_route = false }) catch |err| {
-                        log.err("-- Could not reset DNS: {s}", .{ @errorName(err) });
+                        log.err("-- Could not reset DNS: {t}", .{ err });
                         break :resetDNS;
                     };
                     log.info("-- Reset DNS.", .{});
@@ -306,14 +303,9 @@ pub const Interface = struct {
         self.deinit(alloc);
     }
 
-    pub fn format(
-        self: @This(),
-        _: []const u8,
-        _: fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         var last_ts_buf: [50]u8 = undefined;
-        const last_ts = try self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339);
+        const last_ts = self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
         const cur_usage: []const u8 = switch (self.usage) {
             .unavailable => "-",
             else => @tagName(self.usage),
@@ -322,20 +314,20 @@ pub const Interface = struct {
             \\({d}) {s} | {s}
             \\{s}
             \\- Phy:    ({d}) {s}
-            \\- OG MAC: {s} ({s})
-            \\- MAC:    {s} ({s})
-            \\- State:  {s}
-            \\- Mode:   {s}
+            \\- OG MAC: {f} ({s})
+            \\- MAC:    {f} ({s})
+            \\- State:  {f}
+            \\- Mode:   {t}
             \\- MTU:    {d}
             \\
             , .{
                 self.index, self.name, cur_usage,
                 last_ts,
                 self.phy_index, self.phy_name,
-                MACF{ .bytes = self.og_mac[0..] }, try netdata.oui.findOUI(.short, self.og_mac),
-                MACF{ .bytes = self.mac[0..] }, try netdata.oui.findOUI(.short, self.mac),
+                MACF{ .bytes = self.og_mac[0..] }, netdata.oui.findOUI(.short, self.og_mac) catch "OUI Unavailable",
+                MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "OUI Unavailable",
                 IFStateF{ .flags = self.state },
-                @tagName(@as(nl._80211.IFTYPE, @enumFromInt(self.mode))),
+                @as(nl._80211.IFTYPE, @enumFromInt(self.mode)),
                 self.mtu,
             },
         );
@@ -346,7 +338,7 @@ pub const Interface = struct {
             for (self.ips, self.cidrs) |_ip, _cidr| {
                 const ip = _ip orelse break :ips;
                 const cidr = _cidr orelse continue;
-                writer.print("  - {s}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
+                writer.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
             }
         }
         try writer.print(
@@ -434,7 +426,7 @@ pub const Context = struct {
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
         if (@divFloor(self._timer.read(), time.ns_per_ms) < 1_000) return;
         self._timer.reset();
-        //log.debug("Updating Interfaces: {s}", .{ @tagName(self.state) });
+        //log.debug("Updating Interfaces: {t}", .{ self.state });
         ifState: switch (self.state) {
             .ready => {
                 self.state = .request;
@@ -444,16 +436,16 @@ pub const Context = struct {
                 //log.debug("Requesting Interface Updates...", .{});
                 self._req_wifi_ifs.nextSeqID();
                 try nl._80211.requestAllInterfaces(core_ctx.alloc, &self._req_wifi_ifs);
-                time.sleep(1 * time.ns_per_ms);
+                Thread.sleep(1 * time.ns_per_ms);
                 self._req_links.nextSeqID();
                 try nl.route.requestAllIFLinks(core_ctx.alloc, &self._req_links);
-                time.sleep(1 * time.ns_per_ms);
+                Thread.sleep(1 * time.ns_per_ms);
                 self._req_addrs.nextSeqID();
                 try nl.route.requestAllIFAddrs(core_ctx.alloc, &self._req_addrs);
-                time.sleep(1 * time.ns_per_ms);
+                Thread.sleep(1 * time.ns_per_ms);
                 self._req_wiphys.nextSeqID();
                 try nl._80211.requestAllWIPHY(core_ctx.alloc, &self._req_wiphys);
-                time.sleep(1 * time.ns_per_ms);
+                Thread.sleep(1 * time.ns_per_ms);
                 self.state = .await_response;
                 //log.debug(
                 //    \\
@@ -524,26 +516,26 @@ pub const Context = struct {
                 //log.debug("Parsing Interface Updates...", .{});
                 // Ensure all requests got a successful response
                 const wifi_if_data: []const u8 = self._req_wifi_ifs.getResponse().? catch |err| {
-                    log.debug("Issue w/ WiFi IF Data: {s}", .{ @errorName(err) });
+                    log.debug("Issue w/ WiFi IF Data: {t}", .{ err });
                     self.state = .request;
                     continue :ifState self.state;
                 };
                 defer core_ctx.alloc.free(wifi_if_data);
-                //log.debug("Wifi IF Data:\n{s}", .{ utils.HexFormatter{ .bytes = wifi_if_data[0..] } });
+                //log.debug("Wifi IF Data:\n{f}", .{ utils.HexFormatter{ .bytes = wifi_if_data[0..] } });
                 const wiphy_data: []const u8 = self._req_wiphys.getResponse().? catch |err| {
-                    log.debug("Issue w/ WIPHY Data: {s}", .{ @errorName(err) });
+                    log.debug("Issue w/ WIPHY Data: {t}", .{ err });
                     self.state = .request;
                     continue :ifState self.state;
                 };
                 defer core_ctx.alloc.free(wiphy_data);
                 const link_data: []const u8 = self._req_links.getResponse().? catch |err| {
-                    log.debug("Issue w/ Link Data: {s}", .{ @errorName(err) });
+                    log.debug("Issue w/ Link Data: {t}", .{ err });
                     self.state = .request;
                     continue :ifState self.state;
                 };
                 defer core_ctx.alloc.free(link_data);
                 const addr_data: []const u8 = self._req_addrs.getResponse().? catch |err| {
-                    log.debug("Issue w/ Addr Data: {s}", .{ @errorName(err) });
+                    log.debug("Issue w/ Addr Data: {t}", .{ err });
                     self.state = .request;
                     continue :ifState self.state;
                 };
@@ -618,7 +610,7 @@ pub const Context = struct {
                         break :chWidth @enumFromInt(raw_width);
                     };
                     //const wiphy_clone = nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy) catch |err| {
-                    //    log.debug("Couldn't clone `wiphy`: {s}", .{ @errorName(err) });
+                    //    log.debug("Couldn't clone `wiphy`: {t}", .{ err });
                     //    return err;
                     //};
                     var add_if: Interface = .{
@@ -686,7 +678,7 @@ pub const Context = struct {
                                 else => {},
                             }
                         }
-                        log.info("New Interface Seen: ({s}) {s}", .{ MACF{ .bytes = add_if.mac[0..] }, add_if.name });
+                        log.info("New Interface Seen: ({f}) {s}", .{ MACF{ .bytes = add_if.mac[0..] }, add_if.name });
                     }
                     valid = true;
                     add_if._init = true;
@@ -716,7 +708,7 @@ pub const Context = struct {
                                 else => {}, 
                             }
                         }
-                        log.info("Available Interface Found:\n{s}", .{ net_if });
+                        log.info("Available Interface Found:\n{f}", .{ net_if });
                         core_ctx.network_ctx.scan_configs.mutex.lock();
                         defer core_ctx.network_ctx.scan_configs.mutex.unlock();
                         if (core_ctx.network_ctx.scan_configs.map.getEntry(net_if.name)) |scan_cfg_entry| scanCfg: {
@@ -772,39 +764,39 @@ pub const Context = struct {
                         switch (mod.mod_field) {
                             .mac => |mac| {
                                 if (mod_resp) |_|
-                                    log.info("Changed MAC of '{s}' to '{s}'.", .{ net_if.name, MACF{ .bytes = mac[0..] } })
+                                    log.info("Changed MAC of '{s}' to '{f}'.", .{ net_if.name, MACF{ .bytes = mac[0..] } })
                                 else |err|
-                                    log.warn("Unable to change MAC of '{s}': {s}", .{ net_if.name, @errorName(err) });
+                                    log.warn("Unable to change MAC of '{s}': {t}", .{ net_if.name, err });
                             },
                             .state => |state| {
                                 if (mod_resp) |_|
-                                    log.info("Changed State of '{s}' to '{s}'.", .{ net_if.name, Interface.IFStateF{ .flags = state } })
+                                    log.info("Changed State of '{s}' to '{f}'.", .{ net_if.name, Interface.IFStateF{ .flags = state } })
                                 else |err|
-                                    log.warn("Unable to change State of '{s}': {s}", .{ net_if.name, @errorName(err) });
+                                    log.warn("Unable to change State of '{s}': {t}", .{ net_if.name, err });
                             },
                             .mode => |mode| {
                                 if (mod_resp) |_|
-                                    log.info("Changed Mode of '{s}' to '{s}'.", .{ net_if.name, @tagName(@as(nl._80211.IFTYPE, @enumFromInt(mode))) })
+                                    log.info("Changed Mode of '{s}' to '{t}'.", .{ net_if.name, @as(nl._80211.IFTYPE, @enumFromInt(mode)) })
                                 else |err|
-                                    log.warn("Unable to change Mode of '{s}': {s}", .{ net_if.name, @errorName(err) });
+                                    log.warn("Unable to change Mode of '{s}': {t}", .{ net_if.name, err });
                             },
                             .add_ip => |add_ip| {
                                 if (mod_resp) |_|
-                                    log.info("Added IP to '{s}': '{s}/{d}'", .{ net_if.name, IPF{ .bytes = add_ip.addr[0..] }, add_ip.cidr })
+                                    log.info("Added IP to '{s}': '{f}/{d}'", .{ net_if.name, IPF{ .bytes = add_ip.addr[0..] }, add_ip.cidr })
                                 else |err|
-                                    log.warn("Unable to add IP to '{s}': {s}", .{ net_if.name, @errorName(err) });
+                                    log.warn("Unable to add IP to '{s}': {t}", .{ net_if.name, err });
                             },
                             .del_ip => |del_ip| {
                                 if (mod_resp) |_|
-                                    log.info("Deleted IP from '{s}': '{s}/{d}'", .{ net_if.name, IPF{ .bytes = del_ip.addr[0..] }, del_ip.cidr })
+                                    log.info("Deleted IP from '{s}': '{f}/{d}'", .{ net_if.name, IPF{ .bytes = del_ip.addr[0..] }, del_ip.cidr })
                                 else |err|
-                                    log.warn("Unable to delete IP from '{s}': {s}", .{ net_if.name, @errorName(err) });
+                                    log.warn("Unable to delete IP from '{s}': {t}", .{ net_if.name, err });
                             },
                             .channel => |ch| {
                                 if (mod_resp) |_|
-                                    log.info("Changed Channel of '{s}' to '{d} | {s}'", .{ net_if.name, ch.ch, @tagName(ch.width) })
+                                    log.info("Changed Channel of '{s}' to '{d} | {t}'", .{ net_if.name, ch.ch, ch.width })
                                 else |err|
-                                    log.warn("Unable to change channel of '{s}': {s}", .{ net_if.name, @errorName(err) });
+                                    log.warn("Unable to change channel of '{s}': {t}", .{ net_if.name, err });
                             },
                         }
                     }
@@ -826,7 +818,7 @@ pub const Context = struct {
         }
         for (rm_macs[0..rm_count]) |mac| {
             _ = self.interfaces.map.remove(mac);
-            log.warn("Removed Interface '{s}'.", .{ MACF{ .bytes = mac[0..] } });
+            log.warn("Removed Interface '{f}'.", .{ MACF{ .bytes = mac[0..] } });
         }
     }
 };

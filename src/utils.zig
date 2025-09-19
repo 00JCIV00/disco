@@ -9,8 +9,8 @@ const io = std.io;
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
-
 const ArrayList = std.ArrayListUnmanaged;
+const Io = std.Io;
 
 
 /// Create an instance of a Struct Type with Integer Fields from the given Enum (`E`).
@@ -29,12 +29,7 @@ pub fn toStruct(E: type) T: {
 pub const HexFormatter = struct {
     bytes: []const u8,
 
-    pub fn format(
-        self: @This(),
-        _: []const u8,
-        _: fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         var fmt_idx: u16 = 0;
         for (self.bytes[0..], 0..) |byte, idx| {
             if (idx % 16 == 0) {
@@ -51,71 +46,29 @@ pub const HexFormatter = struct {
     }
 };
 
-/// Thread Safe First In, First Out (FIFO) Buffer
-/// Useful for Single-Producer, Single-Consumer (SPSC) data passing.
-pub fn ThreadFifo(T: type, inner_buffer_kind: fifo.LinearFifoBufferType) type {
+/// Format a Slice of Multiple `T` using the provided Format String (`fmt_str`).
+pub fn SliceFormatter(T: type, comptime fmt_str: []const u8) type {
     return struct {
-        /// Type of Items stored in this FIFO Buffer.
-        /// Note, this is provided for external reference. The Buffer itself uses `T`.
-        pub const ItemT: type = T;
-        /// Underlying FIFO Buffer Type
-        const BufferT: type = fifo.LinearFifo(T, inner_buffer_kind);
-        /// Buffer Kind for inner FIFO Buffer
-        pub const ThreadFifoBufferKind = union(enum) {
-            static,
-            slice: []const u8,
-            dynamic: mem.Allocator,
-        };
+        slice: []const T,
+        prefix: []const u8 = "",
+        suffix: []const u8 = "",
+        separator: []const u8 = ", ",
 
-        /// Write Index
-        _write_idx: atomic.Value(usize) = .init(0),
-        /// Read Index
-        _read_idx: atomic.Value(usize) = .init(0),
-        /// The FIFO Buffer
-        _buf: BufferT,
-
-        /// Increment the Write or Read Index
-        fn increment(idx: *atomic.Value(usize)) void {
-            if (idx.load(.acquire) == math.maxInt(usize) - 1) idx.store(0, .release)
-            else _ = idx.fetchAdd(1, .release);
-        }
-
-        /// Check if the FIFO Buffer is Empty.
-        pub fn isEmpty(self: *const @This()) bool {
-            return self._read_idx.load(.acquire) == self._write_idx.load(.acquire);
-        }
-
-        /// Initialize the FIFO Buffer
-        pub fn init(buffer_kind: ThreadFifoBufferKind) @This() {
-            return .{
-                ._buf = switch (buffer_kind) {
-                    .static => .init(),
-                    .slice => |slice| .init(slice),
-                    .dynamic => |alloc| .init(alloc),
-                },
-            };
-        }
-
-        /// Deinitialize the FIFO Buffer
-        pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-            self._buf.deinit(alloc);
-        }
-
-        /// Write to the FIFO Buffer.
-        pub fn write(self: *@This(), item: T) mem.Allocator.Error!void {
-            try self._buf.writeItem(item);
-            increment(&self._write_idx);
-        }
-
-        /// Read & Consume from the FIFO Buffer.
-        pub fn read(self: *@This()) ?T {
-            if (self.isEmpty()) return null;
-            const item: T = self._buf.readItem() orelse return null;
-            defer increment(&self._read_idx);
-            return item;
+        pub fn format(self: *const @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            if (self.slice.len == 0) return;
+            try writer.print("{s}", .{self.prefix});
+            try writer.print(fmt_str, .{self.slice[0]});
+            if (self.slice.len > 1) {
+                for (self.slice) |t| {
+                    try writer.print("{s}", .{self.separator});
+                    try writer.print(fmt_str, .{t});
+                }
+            }
+            try writer.print("{s}", .{self.suffix});
         }
     };
 }
+
 
 /// Thread Safe ArrayList
 pub fn ThreadArrayList(T: type) type {

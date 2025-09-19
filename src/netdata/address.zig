@@ -3,25 +3,26 @@
 const std = @import("std");
 const ascii = std.ascii;
 const crypto = std.crypto;
-const io = std.io;
 const fmt = std.fmt;
 const mem = std.mem;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
+const Io = std.Io;
 
 const oui = @import("oui.zig");
 
 
 /// Print a Network Address (IPv4, IPv6, MAC) using the provided `writer`.
 pub fn printAddr(
-    bytes: []const u8, 
-    comptime sep: []const u8, 
-    comptime byte_fmt: []const u8, 
-    writer: anytype,//io.AnyWriter,
+    bytes: []const u8,
+    comptime sep: []const u8,
+    comptime byte_fmt: []const u8,
+    writer: *Io.Writer,
 ) !void {
     if (bytes.len == 0) return;
     try writer.print(byte_fmt, .{ bytes[0] });
     if (bytes.len == 1) return;
-    for (bytes[1..]) |byte| try writer.print(sep ++ byte_fmt, .{ byte });
+    for (bytes[1..]) |byte| //
+        try writer.print(sep ++ byte_fmt, .{ byte });
 }
 
 /// Print a Network Address (IPv4, IPv6, MAC) using the provided Allocator (`alloc`).
@@ -48,12 +49,7 @@ pub fn Formatter(comptime sep: []const u8, comptime byte_fmt: []const u8) type {
     return struct {
         bytes: []const u8,
 
-        pub fn format(
-            self: @This(), 
-            _: []const u8, 
-            _: fmt.FormatOptions, 
-            writer: anytype,
-        ) !void {
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             try printAddr(
                 self.bytes,
                 sep,
@@ -94,12 +90,7 @@ pub const IPv4 = struct {
         return ip;
     }
 
-    pub fn format(
-        self: @This(), 
-        _: []const u8, 
-        _: fmt.FormatOptions, 
-        writer: anytype,
-    ) !void {
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         try printAddr(
             self.addr[0..],
             ".",

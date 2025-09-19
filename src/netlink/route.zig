@@ -9,7 +9,7 @@ const math = std.math;
 const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -833,13 +833,13 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
         while (offset < resp_len) {
             var start: usize = offset;
             var end: usize = (offset + @sizeOf(nl.MessageHeader));
-            const nl_resp_hdr: *nl.MessageHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+            const nl_resp_hdr: *nl.MessageHeader = mem.bytesAsValue(nl.MessageHeader, resp_buf[start..end]);
             if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
                 return error.InvalidMessage;
             if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
                 start = end;
                 end += @sizeOf(nl.ErrorHeader);
-                const nl_err: *nl.ErrorHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                const nl_err: nl.ErrorHeader = mem.bytesToValue(nl.ErrorHeader, resp_buf[start..end]);
                 switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
                     .SUCCESS => {},
                     .BUSY => return error.BUSY,
@@ -852,10 +852,10 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
             if (nl_resp_hdr.type == c(RTM).NEWLINK) ifi: {
                 start = end;
                 end += @sizeOf(os.linux.ifinfomsg);
-                const ifi: *const InterfaceInfoMessage = @alignCast(@ptrCast(resp_buf[start..end]));
+                const ifi: InterfaceInfoMessage = mem.bytesToValue(InterfaceInfoMessage, resp_buf[start..end]);
                 start = end;
                 end += @sizeOf(nl.AttributeHeader);
-                const _attr: *const nl.AttributeHeader = @alignCast(@ptrCast(resp_buf[start..end]));
+                const _attr: nl.AttributeHeader = mem.bytesAsValue(nl.AttributeHeader, resp_buf[start..end]);
                 if (@as(nl.IFLA, @enumFromInt(_attr.type)) != .IFNAME) break :ifi;
                 start = end;
                 end += _attr.len;

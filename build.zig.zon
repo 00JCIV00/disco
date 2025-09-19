@@ -5,16 +5,16 @@
 
     .dependencies = .{
         .cova = .{
-            .url = "https://github.com/00JCIV00/cova/archive/e8c25e57ca9c3dba6de32406168c717845812a71.tar.gz",
-            .hash = "cova-0.10.1-_OE4RyGdBADih7u14KZ3A9f07MJCqg8cBV0gTnZFFgtd",
+            .url = "https://github.com/00JCIV00/cova/archive/08d92ce77cb8f1c9ce8d4fb2798ad0489494b593.tar.gz",
+            .hash = "cova-0.10.1-_OE4RyqmBABQOQeyO6ESq5oBc1TOBWrEbXj2Z3FL6dwX",
         },
         //.vaxis = .{
         //    .url = "https://github.com/00JCIV00/libvaxis/archive/main.tar.gz",
         //    .hash = "1220b9cf102d73e0dbf7de594dcd7847fec09732fd4470736d060c40531b799ea643",
         //},
         .zeit = .{
-            .url = "https://github.com/rockorager/zeit/archive/991f38266f86535e68431675e8feb84efa1f011b.tar.gz",
-            .hash = "zeit-0.6.0-5I6bk0t7AgCPM_cY1DoqJB2pnmG7MMtpdO5IxNpryJDy",
+            .url = "https://github.com/rockorager/zeit/archive/ade14edb2025f5e4a57b683f81c915f70a904e88.tar.gz",
+            .hash = "zeit-0.6.0-5I6bk7V8AgAY0-hM-vUYtKZUFYhXct-VRkqISNNTfEfb",
         },
     },
 

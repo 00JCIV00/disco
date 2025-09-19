@@ -14,7 +14,7 @@ const os = std.os;
 const posix = std.posix;
 const sort = std.sort;
 const time = std.time;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -1663,6 +1663,8 @@ pub const InformationElements = struct {
             return null;
         }
 
+        /// Classes Formatter
+        const ClassesF = utils.SliceFormatter(u8, "{d}");
         /// Get a slice of Operating Classes as allocated bytes from the provided `wiphy`.
         pub fn bytesFromWIPHY(alloc: mem.Allocator, wiphy: Wiphy) !?[]u8 {
             const bands = wiphy.WIPHY_BANDS orelse return null;
@@ -1701,7 +1703,7 @@ pub const InformationElements = struct {
                 }
             }
             if (class_buf.items.len == 0) return null;
-            log.debug("Op Classes: {d}", .{ class_buf.items });
+            log.debug("Op Classes: {f}", .{ ClassesF{ .slice = class_buf.items } });
             return try class_buf.toOwnedSlice(alloc);
         }
     };
@@ -3391,9 +3393,9 @@ pub fn registerFrames(
 //            error.NOLINK => {},
 //            else => return err,
 //        };
-//        time.sleep(100 * time.ns_per_ms);
+//        Thread.sleep(100 * time.ns_per_ms);
 //    }
-//    time.sleep(100 * time.ns_per_ms);
+//    Thread.sleep(100 * time.ns_per_ms);
 //    // Flush PMKSA
 //    const nl_sock = try nl.request(
 //        alloc,
@@ -4001,13 +4003,13 @@ pub const EAPoLKeys = struct {
 //    config: ConnectConfig,
 //) !posix.socket_t {
 //    //const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-//    time.sleep(config.delay * time.ns_per_ms);
+//    Thread.sleep(config.delay * time.ns_per_ms);
 //    try nl.route.setState(if_index, c(nl.route.IFF).DOWN);
-//    time.sleep(config.delay * time.ns_per_ms);
+//    Thread.sleep(config.delay * time.ns_per_ms);
 //    try setMode(if_index, c(IFTYPE).STATION);
-//    time.sleep(config.delay * time.ns_per_ms);
+//    Thread.sleep(config.delay * time.ns_per_ms);
 //    try nl.route.setState(if_index, c(nl.route.IFF).UP);
-//    time.sleep(config.delay * time.ns_per_ms);
+//    Thread.sleep(config.delay * time.ns_per_ms);
 //    const nl_sock = config.nl_sock orelse try nl.initSock(nl.NETLINK.GENERIC, .{ .sec = 0, .usec = 10_000 });
 //    try takeOwnership(nl_sock, if_index);
 //    try registerFrames(
@@ -4017,7 +4019,7 @@ pub const EAPoLKeys = struct {
 //        &.{ 0x00d0, 0x00d0, 0x00d0, 0x00d0, 0x00d0 },
 //        &.{ &.{ 0x00, 0x03 }, &.{ 0x00, 0x05 }, &.{ 0x00, 0x06 }, &.{ 0x00, 0x08 }, &.{ 0x00, 0x0c } },
 //    );
-//    time.sleep(config.delay * time.ns_per_ms);
+//    Thread.sleep(config.delay * time.ns_per_ms);
 //    const scan_results = config.scan_results orelse try scanSSID(
 //        alloc,
 //        if_index,
@@ -4029,7 +4031,7 @@ pub const EAPoLKeys = struct {
 //    const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
 //    const ie_bytes = try nl.parse.toBytes(alloc, InformationElements, ies);
 //    defer alloc.free(ie_bytes);
-//    time.sleep(config.delay * time.ns_per_ms);
+//    Thread.sleep(config.delay * time.ns_per_ms);
 //    const bssid = bss.BSSID;
 //    try resetKeyState(alloc, if_index);
 //    const net_if = try getInterface(alloc, if_index);
@@ -4041,7 +4043,7 @@ pub const EAPoLKeys = struct {
 //    errdefer posix.close(nl_sock);
 //    var attempts: usize = 0;
 //    while (attempts < config.retries) : (attempts += 1) {
-//        time.sleep(config.delay * time.ns_per_ms);
+//        Thread.sleep(config.delay * time.ns_per_ms);
 //        authenticate(
 //            alloc, 
 //            nl_sock, 
@@ -4053,7 +4055,7 @@ pub const EAPoLKeys = struct {
 //            aa_err = err;
 //            continue;
 //        };
-//        time.sleep(config.delay * time.ns_per_ms);
+//        Thread.sleep(config.delay * time.ns_per_ms);
 //        associate(alloc, nl_sock, net_if, wiphy, ssid, scan_results) catch |err| {
 //            aa_err = err;
 //            continue;

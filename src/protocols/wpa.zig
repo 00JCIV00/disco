@@ -19,9 +19,12 @@ const nl = @import("../netlink.zig");
 const netdata = @import("../netdata.zig");
 const utils = @import("../utils.zig");
 const HexF = utils.HexFormatter;
+const InHexF = utils.SliceFormatter(u8, "{X:0>2}");
+const DecF = utils.SliceFormatter(u8, "{d}");
 
 const c = utils.toStruct;
 const l2 = netdata.l2;
+const MACF = netdata.address.MACFormatter;
 
 /// Calculate a WEP Key or WPA Pre-Shared Key (PSK) using MD5 or PBKDF2 with HMAC-SHA1.
 pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
@@ -309,8 +312,8 @@ test "PRF(SHA1)" {
     log.debug(
         \\
         \\ prf(sha-1)
-        \\ - Calc'ed:  {s}
-        \\ - Expected: {s}
+        \\ - Calc'ed:  {f}
+        \\ - Expected: {f}
         \\
         , .{
             HexF{ .bytes = prf_sha1_buf[0..] },
@@ -513,7 +516,7 @@ pub fn handle4WHS(
         const m1_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m1_buf[start..end]);
         const eap_packet_type = mem.bigToNative(u8, m1_eap_hdr.packet_type);
         if (eap_packet_type != c(l2.EAPOL.EAP).KEY) {
-            log.warn("EAPOL Type: {s}", .{ @tagName(@as(l2.EAPOL.EAP, @enumFromInt(eap_packet_type))) });
+            log.warn("EAPOL Type: {t}", .{ @as(l2.EAPOL.EAP, @enumFromInt(eap_packet_type)) });
             continue;
         }
         start = end;
@@ -618,26 +621,26 @@ pub fn handle4WHS(
             \\
             \\-------------------------------------
             \\M2:
-            \\- A1: {X:0>2}
-            \\- A2: {X:0>2}
-            \\- PMK: {X:0>2}
-            \\- ANonce: {X:0>2}
-            \\- SNonce: {X:0>2}
-            \\- PTK: {X:0>2}
-            \\  - KCK: {X:0>2}
-            \\  - KEK: {X:0>2}
-            \\- MIC: {X:0>2}
+            \\- A1: {f}
+            \\- A2: {f}
+            \\- PMK: {f}
+            \\- ANonce: {f}
+            \\- SNonce: {f}
+            \\- PTK: {f}
+            \\  - KCK: {f}
+            \\  - KEK: {f}
+            \\- MIC: {f}
             \\
             , .{
-                if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac else ap_mac,
-                if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac else ap_mac,
-                pmk,
-                anonce,
-                snonce,
-                ptk,
-                kck,
-                kek,
-                m2_mic[0..],
+                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac[0..] else ap_mac[0..] },
+                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac[0..] else ap_mac[0..] },
+                InHexF{ .slice = pmk[0..] },
+                InHexF{ .slice = anonce[0..] },
+                InHexF{ .slice = snonce[0..] },
+                InHexF{ .slice = ptk[0..] },
+                InHexF{ .slice = kck[0..] },
+                InHexF{ .slice = kek[0..] },
+                InHexF{ .slice = m2_mic[0..] },
             },
         );
         state = .m2;
@@ -674,7 +677,7 @@ pub fn handle4WHS(
             \\- Key Info:  0x{X:0>4}
             \\- GTK Flags: 0x{X:0>4}
             \\- Key Len:   {d}B
-            \\- Key Data:  {X:0>2}
+            \\- Key Data:  {f}
             , .{
                 m3_eap_hdr.protocol_version,
                 m3_eap_hdr.packet_type,
@@ -683,7 +686,7 @@ pub fn handle4WHS(
                 mem.bigToNative(u16, m3_kf_hdr.key_info),
                 mem.bigToNative(u16, gtk_flags),
                 mem.bigToNative(u16, m3_kf_hdr.key_data_len),
-                m3_key_data,
+                InHexF{ .slice = m3_key_data[0..] },
             },
         );
         // - Validate M3
@@ -834,26 +837,26 @@ pub fn handle4WHS(
             \\
             \\-------------------------------------
             \\M4:
-            \\- A1: {X:0>2}
-            \\- A2: {X:0>2}
-            \\- PMK: {X:0>2}
-            \\- ANonce: {X:0>2}
-            \\- SNonce: {X:0>2}
-            \\- PTK: {X:0>2}
-            \\  - KCK: {X:0>2}
-            \\  - KEK: {X:0>2}
-            \\- MIC: {X:0>2}
+            \\- A1: {f}
+            \\- A2: {f}
+            \\- PMK: {f}
+            \\- ANonce: {f}
+            \\- SNonce: {f}
+            \\- PTK: {f}
+            \\  - KCK: {f}
+            \\  - KEK: {f}
+            \\- MIC: {f}
             \\
             , .{
-                if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac else ap_mac,
-                if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac else ap_mac,
-                pmk,
-                anonce,
-                snonce,
-                ptk,
-                kck,
-                kek,
-                m4_mic,
+                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac[0..] else ap_mac[0..] },
+                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac[0..] else ap_mac[0..] },
+                InHexF{ .slice = pmk[0..] },
+                InHexF{ .slice = anonce[0..] },
+                InHexF{ .slice = snonce[0..] },
+                InHexF{ .slice = ptk[0..] },
+                InHexF{ .slice = kck[0..] },
+                InHexF{ .slice = kek[0..] },
+                InHexF{ .slice = m4_mic[0..] },
             },
         );
         state = .m4;

@@ -27,12 +27,15 @@ pub fn build(b: *std.Build) void {
         break :exeName std.fmt.allocPrint(b.allocator, "disco_{s}-{s}", .{ @tagName(os_tag), @tagName(cpu_arch) }) catch @panic("OOM or Fmt");
     };
     defer b.allocator.free(exe_name);
-    const exe = b.addExecutable(.{
-        .name = exe_name,
+    const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        //.use_llvm = false,
+    });
+    const exe = b.addExecutable(.{
+        .name = exe_name,
+        .root_module = exe_mod,
+        .use_llvm = true,
         //.sanitize_thread = if (optimize == .Debug) true else null,
     });
     exe.root_module.addImport("cova", cova_mod);
@@ -43,11 +46,10 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // Exe Testing
+    var test_mod = exe_mod;
+    test_mod.strip = optimize != .Debug;
     const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .strip = optimize != .Debug,
+        .root_module = test_mod,
     });
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     const test_step = b.step("test", "Run unit tests");

@@ -10,11 +10,14 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
+const Io = std.Io;
 const StaticStringMap = std.StaticStringMap;
 
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
 const MACF = address.MACFormatter;
+const utils = @import("../utils.zig");
+const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
 /// Profile for handling the Host System.
 pub const Profile = struct {
@@ -54,21 +57,16 @@ pub const Mask = struct {
     /// User Agent String
     ua_str: ?[]const u8 = null,
 
-    pub fn format(
-        self: @This(),
-        _: []const u8,
-        _: fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         const oui = self.oui orelse [3]u8{ 0x01, 0x23, 0x45 };
         try writer.print(
-            \\- OUI:        {s} ({s})
+            \\- OUI:        {f} ({s})
             \\- Hostname:   {s}
             \\- TTL:        {d}
             \\- User Agent: {s}
             \\
             , .{
-                MACF{ .bytes = oui[0..] }, try netdata.oui.findOUI(.short, oui ++ [3]u8{ 0, 0, 0 }),
+                MACF{ .bytes = oui[0..] }, netdata.oui.findOUI(.short, oui ++ [3]u8{ 0, 0, 0 }) catch "OUI Unavailable",
                 self.hostname,
                 self.ttl,
                 self.ua_str orelse "[Unknown]",

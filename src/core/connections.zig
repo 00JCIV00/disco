@@ -14,7 +14,8 @@ const meta = std.meta;
 const posix = std.posix;
 const sort = std.sort;
 const time = std.time;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
+const Io = std.Io;
 const Thread = std.Thread;
 
 const zeit = @import("zeit");
@@ -141,7 +142,7 @@ pub const Context = struct {
                     error.NODEV,
                     error.BUSY,
                     => {
-                        log.warn("The Interface '{s}' is in an unrecoverable state ('{s}'). Please try unplugging it for 5 seconds then plugging it back in.", .{ conn_if.name, @errorName(err) });
+                        log.warn("The Interface '{s}' is in an unrecoverable state ('{t}'). Please try unplugging it for 5 seconds then plugging it back in.", .{ conn_if.name, err });
                         conn_if.usage.connect.deinit(core_ctx.alloc);
                         conn_if.usage = .{ .err = err };
                     },
@@ -264,16 +265,11 @@ const Candidate = struct {
         return a.score > b.score;
     }
 
-    pub fn format(
-        self: @This(),
-        _: []const u8,
-        _: fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         try writer.print(
             \\- Score:   {d}
-            \\- BSSID:   {s}
-            \\- Conn IF: {s}
+            \\- BSSID:   {f}
+            \\- Conn IF: {f}
             \\- Channel: {d}
             \\
             , .{
@@ -356,12 +352,7 @@ pub const Connection = struct {
         /// Error during Connnection
         err,
 
-        pub fn format(
-            self: @This(),
-            _: []const u8,
-            _: fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             try writer.print(
                 "{s}",
                 .{
@@ -398,12 +389,12 @@ pub const Connection = struct {
         const auth = candidate.config.auth orelse network.auth;
         const psk = switch (security) {
             .wpa2 => wpa.genKey(security, candidate.config.ssid, candidate.config.passphrase) catch |err| {
-                log.err("Key Generation Error: {s}", .{ @errorName(err) });
+                log.err("Key Generation Error: {t}", .{ err });
                 return error.UnableToGenKey;
             },
             .open, .wpa3t, .wpa3 => @as([32]u8, @splat(0)),
             else => {
-                log.err("Could not connect to '{s}' due to unimplemented Security Type '{s}'", .{ network.ssid, @tagName(network.security) });
+                log.err("Could not connect to '{s}' due to unimplemented Security Type '{t}'", .{ network.ssid, network.security });
                 return error.UnimplementedSecurityType;
             },
         };
@@ -445,7 +436,7 @@ pub const Connection = struct {
             ._rtnetlink_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.rtnetlink_handler } }),
         };
         try self._nl80211_req_ctx.handler.?.trackCommand(c(nl._80211.CMD).AUTHENTICATE);
-        log.debug("Connecting to '{s}' w/ '{s}'...", .{ candidate.config.ssid, MACF{ .bytes = candidate.conn_if[0..] } });
+        log.debug("Connecting to '{s}' w/ '{f}'...", .{ candidate.config.ssid, MACF{ .bytes = candidate.conn_if[0..] } });
         return self;
     }
 
@@ -460,7 +451,7 @@ pub const Connection = struct {
             .disconn => {
                 for (0..10) |_| {
                     self.handle(core_ctx) catch break;
-                    time.sleep(10 * time.ns_per_ms);
+                    Thread.sleep(10 * time.ns_per_ms);
                 }
             },
             else => self.deinit(core_ctx.alloc),
@@ -549,7 +540,7 @@ pub const Connection = struct {
                             core_ctx.alloc.free(resp_data)
                         else |err| regFrameErr: {
                             if (err == error.ALREADY) break :regFrameErr;
-                            log.warn("Could not set up Interface '{s}' for a Connection: {s}", .{ conn_if.name, @errorName(err) });
+                            log.warn("Could not set up Interface '{s}' for a Connection: {t}", .{ conn_if.name, err });
                             return err;
                         }
                         log.debug("Finished setup for Connection: {s} | {s}", .{ self.ssid, conn_if.name });
@@ -568,7 +559,7 @@ pub const Connection = struct {
                     .open, .wpa2 => {
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
-                                log.debug("Connection {s} | {s}: Authenticating ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                                log.debug("Connection {s} | {s}: Authenticating ({t})", .{ self.ssid, conn_if.name, self.security });
                                 self._nl80211_req_ctx.nextSeqID();
                                 try nl._80211.requestAuthenticate(
                                     core_ctx.alloc,
@@ -609,10 +600,10 @@ pub const Connection = struct {
                                     else |err| auth_err = err;
                                 }
                                 if (!valid) {
-                                    log.warn("Connection {s} | {s}: Failed Authentication ({s})", .{ self.ssid, conn_if.name, @errorName(auth_err) });
+                                    log.warn("Connection {s} | {s}: Failed Authentication ({t})", .{ self.ssid, conn_if.name, auth_err });
                                     return auth_err;
                                 }
-                                log.debug("Connection {s} | {s}: Authenticated ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                                log.debug("Connection {s} | {s}: Authenticated ({t})", .{ self.ssid, conn_if.name, self.security });
                                 self._nl_state = .ready;
                                 self._state = .assoc;
                                 continue :state self._state;
@@ -625,7 +616,7 @@ pub const Connection = struct {
                         }
                         saeState: switch (auth_ctx.sae_state) {
                             .setup => {
-                                log.debug("Connection {s} | {s}: Authenticating ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                                log.debug("Connection {s} | {s}: Authenticating ({t})", .{ self.ssid, conn_if.name, self.security });
                                 auth_ctx.sae_ctx = try sae.genCommit(self.passphrase, self.bssid, conn_if.mac);
                                 auth_ctx.sae_state = .commit;
                                 continue :saeState auth_ctx.sae_state;
@@ -642,7 +633,7 @@ pub const Connection = struct {
                                             auth_ctx.sae_ctx.?.commit.scalar ++
                                             auth_ctx.sae_ctx.?.commit.element.x.toBytes(.big) ++
                                             auth_ctx.sae_ctx.?.commit.element.y.toBytes(.big);
-                                        log.debug("SAE Commit Data:{s}\n", .{ HexF{ .bytes = sae_commit[0..] } });
+                                        log.debug("SAE Commit Data:{f}\n", .{ HexF{ .bytes = sae_commit[0..] } });
                                         log.debug("WPA3 Auth SAE Commit...", .{});
                                         try nl._80211.requestAuthenticate(
                                             core_ctx.alloc,
@@ -683,7 +674,7 @@ pub const Connection = struct {
                                             log.warn("Issue handling WPA3 SAE Commit response data: EmptyCommitResponse", .{});
                                             return error.EmptyCommitResponse;
                                         }
-                                        log.debug("SAE Commit Response Data: {d}B{s}", .{ sae_commit_resp_data[0].FRAME.len, HexF{ .bytes = sae_commit_resp_data[0].FRAME } });
+                                        log.debug("SAE Commit Response Data: {d}B{f}", .{ sae_commit_resp_data[0].FRAME.len, HexF{ .bytes = sae_commit_resp_data[0].FRAME } });
                                         if (sae_commit_resp_data[0].FRAME.len < 96) {
                                             log.warn("Issue handling WPA3 SAE Commit response data: InvalidCommitResponse (Len = {d}B)", .{ sae_commit_resp_data[0].FRAME.len });
                                             return error.InvalidCommitResponse;
@@ -692,7 +683,7 @@ pub const Connection = struct {
                                         auth_ctx.sae_peer = .{
                                             .scalar = sae_commit_resp[0..32].*,
                                             .element = P256.fromSerializedAffineCoordinates(sae_commit_resp[32..64].*, sae_commit_resp[64..96].*, .big) catch |err| {
-                                                log.warn("Issue handling WPA3 SAE Commit response Peer: {s}", .{ @errorName(err) });
+                                                log.warn("Issue handling WPA3 SAE Commit response Peer: {t}", .{ err });
                                                 return err;
                                             },
                                         };
@@ -707,7 +698,7 @@ pub const Connection = struct {
                                     .ready, .request => {
                                         self._nl80211_req_ctx.nextSeqID();
                                         sae.genConfirm(&auth_ctx.sae_ctx.?, auth_ctx.sae_peer.?) catch |err| {
-                                            log.warn("Issue generating WPA3 SAE Confirm data: {s}", .{ @errorName(err) });
+                                            log.warn("Issue generating WPA3 SAE Confirm data: {t}", .{ err });
                                             return err;
                                         };
                                         log.debug("WPA3 Auth SAE Confirm...", .{});
@@ -752,7 +743,7 @@ pub const Connection = struct {
                                                 nl.parse.freeBytes(core_ctx.alloc, nl._80211.AuthResponse, scr_data);
                                             core_ctx.alloc.free(sae_confirm_resp_data);
                                         }
-                                        log.debug("SAE Confirm Response Data: {d}B{s}", .{ sae_confirm_resp_data[0].FRAME.len, HexF{ .bytes = sae_confirm_resp_data[0].FRAME } });
+                                        log.debug("SAE Confirm Response Data: {d}B{f}", .{ sae_confirm_resp_data[0].FRAME.len, HexF{ .bytes = sae_confirm_resp_data[0].FRAME } });
                                         const resp_type: u16 = mem.readInt(u16, sae_confirm_resp_data[0].FRAME[26..28], .little);
                                         if (resp_type != 2) {
                                             log.warn("Issue handling WPA3 SAE Confirm response data: Non-Confirm Response ({d})", .{ resp_type });
@@ -786,7 +777,7 @@ pub const Connection = struct {
                         }
                     },
                     else => |sec_proto| {
-                        log.err("The Security Protocol/Type '{s}' is not implemented.", .{ @tagName(sec_proto) });
+                        log.err("The Security Protocol/Type '{t}' is not implemented.", .{ sec_proto });
                         self._state = .{ .disconn = .start };
                         return error.UnimplementedSecurityType;
                     },
@@ -794,7 +785,7 @@ pub const Connection = struct {
             },
             .assoc => {
                 // Associate
-                log.debug("Connection {s} | {s}: Associating ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                log.debug("Connection {s} | {s}: Associating ({t})", .{ self.ssid, conn_if.name, self.security });
                 switch (self.security) {
                     .open, .wpa2, .wpa3t, .wpa3 => {
                         nlState: switch (self._nl_state) {
@@ -817,7 +808,7 @@ pub const Connection = struct {
                                     self.ssid,
                                     self._scan_result,
                                 ) catch |err| {
-                                    log.warn("Connection {s} | {s}: Association Error: {s}", .{ self.ssid, conn_if.name, @errorName(err) });
+                                    log.warn("Connection {s} | {s}: Association Error: {t}", .{ self.ssid, conn_if.name, err });
                                     switch (err) {
                                         //error.MissingOperatingClasses => self._retries = self.max_retries,
                                         else => {},
@@ -839,14 +830,14 @@ pub const Connection = struct {
                                 if (self._nl80211_req_ctx.getResponse()) |assoc_resp| {
                                     if (assoc_resp) |resp_data| {
                                         core_ctx.alloc.free(resp_data);
-                                        log.debug("Connection {s} | {s}: Associated ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                                        log.debug("Connection {s} | {s}: Associated ({t})", .{ self.ssid, conn_if.name, self.security });
                                         self._nl_state = .ready;
                                         self._state = .{ .eapol = 0 };
                                         continue :state self._state;
                                     }
                                     else |err| {
-                                        log.warn("Connection {s} | {s}: Association Error: {s}", .{ self.ssid, conn_if.name, @errorName(err) });
-                                        log.warn("Could not Associate to '{s}': {s}", .{ self.ssid, @errorName(err) });
+                                        log.warn("Connection {s} | {s}: Association Error: {t}", .{ self.ssid, conn_if.name, err });
+                                        log.warn("Could not Associate to '{s}': {t}", .{ self.ssid, err });
                                         return err;
                                     }
                                 }
@@ -854,7 +845,7 @@ pub const Connection = struct {
                         }
                     },
                     else => |sec_proto| {
-                        log.err("The Security Protocol/Type '{s}' is not implemented.", .{ @tagName(sec_proto) });
+                        log.err("The Security Protocol/Type '{t}' is not implemented.", .{ sec_proto });
                         return error.UnimplementedSecurityType;
                     },
                 }
@@ -865,7 +856,7 @@ pub const Connection = struct {
                         // EAPoL
                         switch (self.security) {
                             .wpa2, .wpa3t, .wpa3 => {
-                                log.debug("Connection {s} | {s}: Handling EAPoL ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                                log.debug("Connection {s} | {s}: Handling EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
                                 self._thread = try Thread.spawn(
                                     .{},
                                     handle4WHS,
@@ -939,7 +930,7 @@ pub const Connection = struct {
                                     continue :nlState self._nl_state;
                                 }
                                 self._thread_state = .ready;
-                                log.debug("Connection {s} | {s}: Finished EAPoL ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                                log.debug("Connection {s} | {s}: Finished EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
                                 self._state = .{ .dhcp = .ip };
                                 continue :state self._state;
                             },
@@ -961,7 +952,7 @@ pub const Connection = struct {
                                     self._state = .{ .conn = .init };
                                     continue :state self._state;
                                 };
-                                log.debug("Connection {s} | {s}: Handling DHCP ({s})", .{ self.ssid, conn_if.name, @tagName(self.security) });
+                                log.debug("Connection {s} | {s}: Handling DHCP ({t})", .{ self.ssid, conn_if.name, self.security });
                                 if (core_ctx.config.profile.mask) |pro_mask|
                                     dhcp_conf.hostname = pro_mask.hostname;
                                 self._thread = try Thread.spawn(
@@ -1006,7 +997,7 @@ pub const Connection = struct {
                                         defer self._nl_state = .ready;
                                         const add_ip_resp = self._rtnetlink_req_ctx.getResponse().?;
                                         const add_ip_data = add_ip_resp catch |err| {
-                                            log.warn("Couldn't add IP '{s}/{d}' to Interface '({d}) {s}'", .{
+                                            log.warn("Couldn't add IP '{f}/{d}' to Interface '({d}) {s}'", .{
                                                 IPF{ .bytes = self._dhcp_info.?.assigned_ip[0..] },
                                                 dhcp_cidr,
                                                 conn_if.index,
@@ -1015,7 +1006,7 @@ pub const Connection = struct {
                                             return err;
                                         };
                                         defer core_ctx.alloc.free(add_ip_data);
-                                        log.info("Added IP '{s}/{d}' to ({d}) {s}", .{
+                                        log.info("Added IP '{f}/{d}' to ({d}) {s}", .{
                                             IPF{ .bytes = self._dhcp_info.?.assigned_ip[0..] },
                                             dhcp_cidr,
                                             conn_if.index,
@@ -1061,12 +1052,12 @@ pub const Connection = struct {
                                 defer self._nl_state = .ready;
                                 const add_gw_resp = self._rtnetlink_req_ctx.getResponse().?;
                                 const add_gw_data = add_gw_resp catch |err| {
-                                    log.warn("Couldn't add Default Gateway '{s}/{d}' to Interface '({d}) {s}':\nError: {s}", .{
+                                    log.warn("Couldn't add Default Gateway '{f}/{d}' to Interface '({d}) {s}':\nError: {s}", .{
                                         IPF{ .bytes = self._dhcp_info.?.router[0..] },
                                         dhcp_cidr,
                                         conn_if.index,
                                         conn_if.name,
-                                        if (err == error.EXIST) "There's already a Default Gateway."
+                                        if (err == error.EXIST) "There's already a Default Gateway." //
                                         else @errorName(err),
                                     });
                                     if (err == error.EXIST) {
@@ -1077,7 +1068,7 @@ pub const Connection = struct {
                                     return err;
                                 };
                                 defer core_ctx.alloc.free(add_gw_data);
-                                log.info("Added Default Gateway '{s}/{d}' to ({d}) {s}", .{
+                                log.info("Added Default Gateway '{f}/{d}' to ({d}) {s}", .{
                                     IPF{ .bytes = self._dhcp_info.?.router[0..] },
                                     dhcp_cidr,
                                     conn_if.index,
@@ -1109,7 +1100,7 @@ pub const Connection = struct {
                                         for (dns_ips_buf[0..idx]) |prev_dns| {
                                             if (mem.eql(u8, prev_dns[0..], next_dns[0..])) continue :dnsLoop;
                                         }
-                                        //log.debug("- {s}", .{ IPF{ .bytes = next_dns[0..] } });
+                                        //log.debug("- {f}", .{ IPF{ .bytes = next_dns[0..] } });
                                         dns_ips_buf[idx] = next_dns;
                                         total_dns += 1;
                                     }
@@ -1128,7 +1119,7 @@ pub const Connection = struct {
                                 return error.DNSThreadTimeout;
                             },
                             .done => {
-                                log.info("Added DNS '{s}' to ({d}) {s}", .{
+                                log.info("Added DNS '{f}' to ({d}) {s}", .{
                                     IPF{ .bytes = self._dhcp_info.?.dns_ips[0].?[0..] },
                                     conn_if.index,
                                     conn_if.name,
@@ -1137,7 +1128,7 @@ pub const Connection = struct {
                                 self._state = .{ .conn = .init };
                             },
                             .err => |err| {
-                                log.err("Could not set DNS: {s}", .{ @errorName(err) });
+                                log.err("Could not set DNS: {t}", .{ err });
                                 return err;
                             },
                         }
@@ -1185,7 +1176,7 @@ pub const Connection = struct {
                                 //log.debug("Received Station Info Response.", .{});
                                 const station_resp = self._nl80211_req_ctx.getResponse() orelse error.NoStationInfo;
                                 const station_data = station_resp catch |err| {
-                                    log.warn("Could not update Station Status: {s}", .{ @errorName(err) });
+                                    log.warn("Could not update Station Status: {t}", .{ err });
                                     return err;
                                 };
                                 defer core_ctx.alloc.free(station_data);
@@ -1271,7 +1262,7 @@ pub const Connection = struct {
                                 continue :dhcpState self._thread_state;
                             },
                             .err => |err| {
-                                log.warn("- Unable to release DHCP for '{s}' on '{s}': {s}", .{ conn_if.name, self.ssid, @errorName(err) });
+                                log.warn("- Unable to release DHCP for '{s}' on '{s}': {t}", .{ conn_if.name, self.ssid, err });
                                 self._thread_state = .ready;
                                 disc_state.* = .ip;
                                 continue :discState disc_state.*;
@@ -1301,7 +1292,7 @@ pub const Connection = struct {
                                     ip,
                                     cidr,
                                 ) catch |err| {
-                                    log.warn("- Could not remove IP '{s}': {s}", .{ IPF{ .bytes = ip[0..] }, @errorName(err) });
+                                    log.warn("- Could not remove IP '{f}': {t}", .{ IPF{ .bytes = ip[0..] }, err });
                                     self._nl_state = .request;
                                     disc_state.* = .disassoc;
                                     continue :discState disc_state.*;
@@ -1318,10 +1309,10 @@ pub const Connection = struct {
                                 const ip_del_resp = self._rtnetlink_req_ctx.getResponse().?;
                                 if (ip_del_resp) |ip_del_data| {
                                     core_ctx.alloc.free(ip_del_data);
-                                    log.info("- Removed IP '{s}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
+                                    log.info("- Removed IP '{f}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
                                 }
                                 else |err| 
-                                    log.warn("- Could not remove IP '{s}': {s}", .{ IPF{ .bytes = ip[0..] }, @errorName(err) });
+                                    log.warn("- Could not remove IP '{f}': {t}", .{ IPF{ .bytes = ip[0..] }, err });
                                 disc_state.* = .disassoc;
                                 continue :discState disc_state.*;
                             },

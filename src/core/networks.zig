@@ -11,7 +11,9 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const time = std.time;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
+const Io = std.Io;
+const Thread = std.Thread;
 
 const zeit = @import("zeit");
 
@@ -63,14 +65,9 @@ pub const Network = struct {
             return @intFromFloat(@as(f128, @floatFromInt(@divFloor(self.frame_nums.len, total))) * 100);
         }
 
-        pub fn format(
-            self: @This(),
-            _: []const u8,
-            _: fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             var last_ts_buf: [50]u8 = undefined;
-            const last_ts = try self.last_seen.time().bufPrint(last_ts_buf[0..], .rfc3339);
+            const last_ts = self.last_seen.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
             try writer.print(
                 \\- Seen By:   {s}
                 \\- RSSI:      {d} dBm
@@ -98,12 +95,7 @@ pub const Network = struct {
         alloc.destroy(self.net_meta);
     }
 
-    pub fn format(
-        self: @This(),
-        _: []const u8,
-        _: fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         const ssid: []const u8 = ssid: {
             if (//
                 self.ssid.len > 0 and //
@@ -113,16 +105,16 @@ pub const Network = struct {
         };
         try writer.print(
             \\{s}
-            \\- BSSID:     {s} ({s})
-            \\- Security:  {s}
-            \\- Auth:      {s}
+            \\- BSSID:     {f} ({s})
+            \\- Security:  {t}
+            \\- Auth:      {t}
             \\- Channel:   {d} ({d} MHz)
             \\
             , .{
                 ssid,
-                MACF{ .bytes = self.bssid[0..] }, try netdata.oui.findOUI(.short, self.bssid),
-                @tagName(self.security),
-                @tagName(self.auth),
+                MACF{ .bytes = self.bssid[0..] }, netdata.oui.findOUI(.short, self.bssid) catch "OUI Unavailable",
+                self.security,
+                self.auth,
                 self.channel, self.freq,
             },
         );
@@ -131,7 +123,7 @@ pub const Network = struct {
         while (meta_iter.next()) |meta_entry| {
             try writer.print(
                 \\----------
-                \\{s}
+                \\{f}
                 , .{ meta_entry.value_ptr }
             );
         }
@@ -332,7 +324,7 @@ pub const Context = struct {
                                                     nl_ctx.nl_state = .request;
                                                 }
                                                 else |err| {
-                                                    log.warn("Could not trigger scan w/ Interface '{s}': {s}", .{ scan_if.name, @errorName(err) });
+                                                    log.warn("Could not trigger scan w/ Interface '{s}': {t}", .{ scan_if.name, err });
                                                     scan_if.addPenalty();
                                                     scan_if.usage = .available;
                                                 }
@@ -350,7 +342,7 @@ pub const Context = struct {
                                             var parse_time: time.Timer = try .start();
                                             defer log.debug("Parse Time: {d}ms", .{ @divFloor(parse_time.read(), time.ns_per_ms) });
                                             const scan_result_data: []const u8 = nl_ctx.req_ctx.getResponse().? catch |err| {
-                                                log.warn("Could not get Scan Results for Interface '{s}': {s}", .{ scan_if.name, @errorName(err) });
+                                                log.warn("Could not get Scan Results for Interface '{s}': {t}", .{ scan_if.name, err });
                                                 break :results;
                                             };
                                             defer core_ctx.alloc.free(scan_result_data);
@@ -403,7 +395,7 @@ pub const Context = struct {
                                                     //log.debug("{s}===================\n", .{ new_network });
                                                     confs: for (core_ctx.config.connect_configs) |conf| {
                                                         if (mem.eql(u8, conf.ssid, new_network.ssid)) {
-                                                            log.debug("{s}===================\n", .{ new_network });
+                                                            log.debug("{f}===================\n", .{ new_network });
                                                             break :confs;
                                                         }
                                                     }

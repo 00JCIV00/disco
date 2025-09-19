@@ -8,7 +8,7 @@ const log = std.log.scoped(.netlink);
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -20,7 +20,8 @@ pub fn primFromBytes(T: type, bytes: []const u8) !T {
     return switch (@typeInfo(T)) {
         .array => |ary| bytes[0..ary.len].*,
         .optional => |optl| try primFromBytes(bytes, optl.child),
-        .int, .float => @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
+        //.int, .float => @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
+        .int, .float => mem.bytesToValue(T, bytes),
         //.bool => if (bytes.len == 0) true else @as(*const align(1) T, @alignCast(@ptrCast(bytes))).*,
         .bool => true,
         else => error.NonPrimitiveType,
@@ -194,7 +195,7 @@ pub fn fromBytes(
     inline for (meta.fields(T)) |field| {
         const field_info = @typeInfo(field.type);
         if (field_info == .optional) @field(instance, field.name) = null;
-        if (field.default_value_ptr) |val| @field(instance, field.name) = @as(*const field.type, @alignCast(@ptrCast(val))).*;
+        if (field.default_value_ptr) |val| @field(instance, field.name) = mem.bytesToValue(field.type, val);
         if (field_info == .pointer and field_info.pointer.size == .slice)
             @field(instance, field.name) = &.{};
     }
@@ -261,9 +262,9 @@ pub fn baseFromBytes(
             return error.UnknownTag;
             //@panic("Debug Panic");
         };
-        //log.debug("{s}", .{ @tagName(tag) });
+        //log.debug("{t}", .{ tag });
         const diff = if (HdrT.full_len) hdr.len -| hdr_len else hdr.len;
-        //log.debug("Len: {d: <5} Num: {d: <5} Type: {s}", .{ hdr.len, hdr.type, @tagName(tag) });
+        //log.debug("Len: {d: <5} Num: {d: <5} Type: {t}", .{ hdr.len, hdr.type, tag });
         //log.debug(" - Start: {d}B, End: {d}B", .{ start, end + diff });
         start = end;
         end += diff;
@@ -294,7 +295,7 @@ pub fn baseFromBytes(
     //log.debug("---", .{});
     if (field_count < req_fields) {
         log.err(
-            "Error converting to Type '{s}'. Required Fields: {d}. Provided Fields: {d}.\n{s}", 
+            "Error converting to Type '{s}'. Required Fields: {d}. Provided Fields: {d}.\n{f}",
             .{ 
                 @typeName(T), 
                 req_fields, 

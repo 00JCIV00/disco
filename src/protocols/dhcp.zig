@@ -274,7 +274,7 @@ pub fn handleDHCP(
             \\-------------------------------------
             \\DISCOVER:
             \\ - Transaction ID: 0x{X:0>8}
-            \\ - Client MAC:     {s}
+            \\ - Client MAC:     {f}
             \\ - Options Length: {d}B
             \\
             , .{
@@ -291,7 +291,7 @@ pub fn handleDHCP(
                 mac_addr,
                 offer_buf[0..],
             ) catch |err| {
-                log.warn("Unexpected DHCP Response: {s}", .{ @errorName(err) });
+                log.warn("Unexpected DHCP Response: {t}", .{ err });
                 attempts += 1;
                 continue;
             };
@@ -389,10 +389,10 @@ pub fn handleDHCP(
             \\
             \\-------------------------------------
             \\OFFER:
-            \\ - Server ID:   {s}
-            \\ - Offered IP:  {s}
-            \\ - Subnet Mask: {s}
-            \\ - Router:      {s}
+            \\ - Server ID:   {f}
+            \\ - Offered IP:  {f}
+            \\ - Subnet Mask: {f}
+            \\ - Router:      {f}
             \\ - Lease Time:  {d}s
             \\
             , .{
@@ -407,11 +407,11 @@ pub fn handleDHCP(
         if (config.ip_addr) |req_ip| {
             const mismatch = !mem.eql(u8, offered_ip[0..], req_ip[0..]);
             if (mismatch and config.err_on_mismatch) {
-                log.err("Requested IP: {d} | Offered IP: {d}", .{ req_ip, offered_ip });
+                log.err("Requested IP: {f} | Offered IP: {f}", .{ IPF{ .bytes = req_ip[0..] }, IPF{ .bytes = offered_ip[0..] } });
                 return error.NotGivenRequestedIP;
             }
             if (mismatch and !config.err_on_mismatch) {
-                log.warn("Requested IP: {d} | Offered IP: {d}", .{ req_ip, offered_ip });
+                log.warn("Requested IP: {f} | Offered IP: {f}", .{ IPF{ .bytes = req_ip[0..] }, IPF{ .bytes = offered_ip[0..] } });
                 continue;
             }
         }
@@ -553,9 +553,9 @@ pub fn handleDHCP(
             \\-------------------------------------
             \\REQUEST:
             \\ - Transaction ID: 0x{X:0>8}
-            \\ - Client MAC:     {s}
-            \\ - Server ID:      {s}
-            \\ - Requested IP:   {s}
+            \\ - Client MAC:     {f}
+            \\ - Server ID:      {f}
+            \\ - Requested IP:   {f}
             \\ - Options Length: {d}B
             \\
             , .{
@@ -677,12 +677,12 @@ pub fn handleDHCP(
                     \\
                     \\-------------------------------------
                     \\ACK:
-                    \\ - Server ID:   {s}
-                    \\ - Assigned IP: {s}
-                    \\ - Subnet Mask: {s}
-                    \\ - Router:      {s}
-                    \\ - DNS:         {s}
-                    \\ - Lease Time:  {?d}s
+                    \\ - Server ID:   {f}
+                    \\ - Assigned IP: {f}
+                    \\ - Subnet Mask: {f}
+                    \\ - Router:      {f}
+                    \\ - DNS:         {f}
+                    \\ - Lease Time:  {d}s
                     \\
                     , .{
                         IPF{ .bytes = ack_server_id[0..] },
@@ -817,9 +817,9 @@ pub fn releaseDHCP(
         \\-------------------------------------
         \\RELEASE:
         \\ - Transaction ID: 0x{X:0>8}
-        \\ - Client MAC:     {s}
-        \\ - Client IP:      {s}
-        \\ - Server ID:      {s}
+        \\ - Client MAC:     {f}
+        \\ - Client IP:      {f}
+        \\ - Server ID:      {f}
         \\ - Options Length: {d}B
         \\
         , .{

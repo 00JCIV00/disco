@@ -84,7 +84,7 @@ pub fn genCommit(password: []const u8, addr1: [6]u8, addr2: [6]u8) !Context {
         const masked_pe = maskedPE: {
             const raw = try pe.mul(mask, .big);
             log.debug(
-                "Raw Masked CE:\n- X:{s}\n- Y:{s}"
+                "Raw Masked CE:\n- X:{f}\n- Y:{f}"
                 , .{
                     HexF{ .bytes = raw.x.toBytes(.big)[0..] },
                     HexF{ .bytes = raw.y.toBytes(.big)[0..] },
@@ -93,7 +93,7 @@ pub fn genCommit(password: []const u8, addr1: [6]u8, addr2: [6]u8) !Context {
             break :maskedPE try P256.fromAffineCoordinates(raw.affineCoordinates());
         };
         log.debug(
-            "Affine Masked PE:\n- X:{s}\n- Y:{s}"
+            "Affine Masked PE:\n- X:{f}\n- Y:{f}"
             , .{
                 HexF{ .bytes = masked_pe.x.toBytes(.big)[0..] },
                 HexF{ .bytes = masked_pe.y.toBytes(.big)[0..] },
@@ -111,17 +111,17 @@ pub fn genCommit(password: []const u8, addr1: [6]u8, addr2: [6]u8) !Context {
     };
     log.debug(
         \\Generated SAE Commit.
-        \\ - PE X:   {X:0>2}
-        \\ - PE Y:   {X:0>2}
-        \\ - Scalar: {X:0>2}
-        \\ - CE X:   {X:0>2}
-        \\ - CE Y:   {X:0>2}
+        \\ - PE X:   {f}
+        \\ - PE Y:   {f}
+        \\ - Scalar: {f}
+        \\ - CE X:   {f}
+        \\ - CE Y:   {f}
         , .{
-            pe.x.toBytes(.big),
-            pe.y.toBytes(.big),
-            scalar,
-            ce.x.toBytes(.big),
-            ce.y.toBytes(.big),
+            HexF{ .bytes = pe.x.toBytes(.big)[0..] },
+            HexF{ .bytes = pe.y.toBytes(.big)[0..] },
+            HexF{ .bytes = scalar[0..] },
+            HexF{ .bytes = ce.x.toBytes(.big)[0..] },
+            HexF{ .bytes = ce.y.toBytes(.big)[0..] },
         },
     );
     return .{
@@ -158,7 +158,7 @@ pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !P256 {
         if (mem.lessThan(u8, addr1[0..], addr2[0..])) .{ addr2, addr1 } 
         else .{ addr1, addr2 };
     const addrs: [12]u8 = max_addr ++ min_addr;
-    log.debug("- max addr (1): {s}, min addr (2): {s}", .{ MACF{ .bytes = max_addr[0..] }, MACF{ .bytes = min_addr[0..] } });
+    log.debug("- max addr (1): {f}, min addr (2): {f}", .{ MACF{ .bytes = max_addr[0..] }, MACF{ .bytes = min_addr[0..] } });
     var found_point: ?P256 = null;
     var found_iter: ?u8 = null;
     var x_coord: [32]u8 = undefined;
@@ -200,7 +200,7 @@ pub fn hashToElement(password: []const u8, addr1: [6]u8, addr2: [6]u8) !P256 {
     }
     if (found_point) |point| {
         log.debug(
-            "Generated Password Element Hash on Iteration {?d}.\nX: {s}\nY: {s}", 
+            "Generated Password Element Hash on Iteration {?d}.\nX: {f}\nY: {f}", 
             .{ 
                 found_iter,
                 HexF{ .bytes = point.x.toBytes(.big)[0..] },
@@ -217,9 +217,9 @@ pub fn genConfirm(ctx: *Context, peer: Commit) !void {
     log.debug("Generating SAE Confirm...", .{});
     log.debug(
         \\Peer Commit:
-        \\ - scalar: {s}
-        \\ - x:      {s}
-        \\ - y:      {s}
+        \\ - scalar: {f}
+        \\ - x:      {f}
+        \\ - y:      {f}
         \\
         , .{
             HexF{ .bytes = peer.scalar[0..] },
@@ -273,12 +273,12 @@ pub fn genConfirm(ctx: *Context, peer: Commit) !void {
     ctx.confirm = makeConfirm(peer, ctx.*);
     log.debug(
         \\Confirm Data:
-        \\ - Secret (k): {s}
-        \\ - Keyseed:    {s}
-        \\ - PMKID:      {s}
-        \\ - KCK:        {s}
-        \\ - PMK:        {s}
-        \\ - Confirm:    {s}
+        \\ - Secret (k): {f}
+        \\ - Keyseed:    {f}
+        \\ - PMKID:      {f}
+        \\ - KCK:        {f}
+        \\ - PMK:        {f}
+        \\ - Confirm:    {f}
         , .{
             HexF{ .bytes = k[0..] },
             HexF{ .bytes = keyseed[0..] },
@@ -312,8 +312,8 @@ pub fn checkConfirm(received: [32]u8, peer: Commit, ctx: Context) !void {
     if (!std.mem.eql(u8, expected[0..], received[0..])) {
         log.warn(
             \\Confirm Mismatch:
-            \\- Expected: {s}
-            \\- Received: {s}
+            \\- Expected: {f}
+            \\- Received: {f}
             \\
             , .{
                 HexF{ .bytes = expected[0..] },
@@ -336,8 +336,8 @@ test "commit & confirm" {
     try genConfirm(&router_ctx, client_ctx.commit);
     log.info(
         \\Confirm
-        \\- Client: {s}
-        \\- Router: {s}
+        \\- Client: {f}
+        \\- Router: {f}
         \\
         , .{
             HexF{ .bytes = client_ctx.confirm.?[0..] },

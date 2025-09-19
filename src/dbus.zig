@@ -62,10 +62,13 @@ pub fn authenticateDBus(sock: net.Stream) !void {
     const uid_str = try fmt.bufPrint(uid_buf[0..], "{d}", .{ try sys.getUID() });
     //log.debug("UID: {s}", .{ uid_str });
     // Convert UID to hex
-    var uid_hex_buf: [1024]u8 = @splat(0);
-    const uid_hex = try fmt.bufPrint(uid_hex_buf[0..], "{s}", .{ fmt.fmtSliceHexLower(uid_str) });
+    var uid_hex_buf: [1024]u8 = undefined;
+    for (uid_str, 0..) |b, i| //
+        @memcpy(uid_hex_buf[(i * 2)..((i + 1) * 2)], fmt.hex(b)[0..]);
+    const uid_hex = uid_hex_buf[0..(uid_str.len * 2)];
+    //const uid_hex = try fmt.bufPrint(uid_hex_buf[0..], "{s}", .{ fmt.fmtSliceHexLower(uid_str) });
     // Create authentication message
-    var auth_buf: [1024]u8 = @splat(0);
+    var auth_buf: [1024]u8 = undefined;
     const auth_msg = try fmt.bufPrint(
         auth_buf[0..],
         "AUTH EXTERNAL {s}\r\n",
@@ -76,7 +79,7 @@ pub fn authenticateDBus(sock: net.Stream) !void {
     try sock.writeAll(auth_msg);
     // Read response
     //log.debug("Reading Auth Response", .{});
-    var response_buf: [4096]u8 = @splat(0);
+    var response_buf: [4096]u8 = undefined;
     const auth_read = try sock.read(response_buf[0..]);
     //log.debug("Auth Response:\n{s}", .{ response_buf[0..auth_read] });
     if (!mem.startsWith(u8, response_buf[0..auth_read], "OK "))
@@ -120,7 +123,7 @@ pub fn helloDBus(sock: net.Stream, uuid_buf: []u8) ![]const u8 {
         },
     };
     // Set up Buffer
-    var msg_buf: [4096]u8 = @splat(0);
+    var msg_buf: [4096]u8 = undefined;
     // Send Hello
     try sendMsg(
         msg_buf[0..],
@@ -129,18 +132,18 @@ pub fn helloDBus(sock: net.Stream, uuid_buf: []u8) ![]const u8 {
         &.{},
     );
     // Verify Response
-    var response_buf: [4096]u8 = @splat(0);
+    var response_buf: [4096]u8 = undefined;
     const read = try sock.read(response_buf[0..]);
     if (read == 0) return error.DBusReadError;
-    //log.debug("Hello Response:\n{s}\n---\n{s}", .{ response_buf[0..read], HexF{ .bytes = response_buf[0..read] } });
-    try verifyResponse(response_buf[0..]);
+    //log.debug("Hello Response:\n{s}\n---\n{f}", .{ response_buf[0..read], HexF{ .bytes = response_buf[0..read] } });
+    try verifyResponse(response_buf[0..read]);
     // Parse the UUID
     const start = 8 + (mem.indexOf(u8, response_buf[0..read], &.{ 0x06, 0x01, 0x73, 0x00 }) orelse return error.InvalidStartOfUUID);
     const end = start + (mem.indexOf(u8, response_buf[start..read], &.{ 0 }) orelse return error.InvalidEndOfUUID);
     const uuid_len = end - start;
     @memcpy(uuid_buf[0..uuid_len], response_buf[start..end]);
     const uuid = uuid_buf[0..uuid_len];
-    //log.debug("Unique Name: ({d}-{d} | {d}B)\n{s}\n---\n{s}", .{ start, end, uuid_len, uuid, HexF{ .bytes = uuid } });
+    //log.debug("Unique Name: ({d}-{d} | {d}B)\n{s}\n---\n{f}", .{ start, end, uuid_len, uuid, HexF{ .bytes = uuid } });
     //log.debug("Unique Name:\n{s}\n", .{ uuid });
     return uuid;
 }
@@ -243,7 +246,7 @@ pub fn sendMsg(
     //    \\Sending Message: (Total: {d}B | Headers: {d}B | Body: {d}B)
     //    \\{s}
     //    \\---
-    //    \\{s}
+    //    \\{f}
     //    \\
     //    , .{ 
     //        offset,

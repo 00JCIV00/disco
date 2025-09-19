@@ -8,7 +8,7 @@ const mem = std.mem;
 const os = std.os;
 const posix = std.posix;
 const time = std.time;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const HashMap = std.AutoHashMapUnmanaged;
 const Thread = std.Thread;
 

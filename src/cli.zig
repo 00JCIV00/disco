@@ -195,7 +195,7 @@ pub const setup_cmd: CommandT = .{
                                 .allocate = .alloc_always,
                             },
                         ) catch |err| {
-                            log.err("Couldn't parse the Connection Info: {s}", .{ @errorName(err) });
+                            log.err("Couldn't parse the Connection Info: {t}", .{ err });
                             return err;
                         };
                     }
@@ -273,7 +273,7 @@ pub const setup_cmd: CommandT = .{
         },
         // TODO Implement these Base Options
         .{
-            .name = "log-path",
+            .name = "log_path",
             .description = "Save the JSON output to the specified Log Path.",
             .short_name = 'l',
             .long_name = "log-path",
@@ -283,21 +283,26 @@ pub const setup_cmd: CommandT = .{
             }),
         },
         .{
-            .name = "no-tui",
+            .name = "no_tui",
             .description = "Run DisCo without a TUI.",
             .short_name = 'n',
             .long_name = "no-tui",
         },
         .{
-            .name = "no-mouse",
+            .name = "no_mouse",
             .description = "Disable mouse events for the TUI.",
             .long_name = "no-mouse",
         },
         .{
-            .name = "no-conflict-pids",
+            .name = "no_conflict_pids",
             .description = "Ignore Conflict PIDs",
             .long_name = "no-conflict-pids",
         },
+        .{
+            .name = "no_default_config",
+            .description = "Ignore any Default Configs",
+            .long_name = "no-default-config",
+        }
     },
     .sub_cmds = &.{
         .{

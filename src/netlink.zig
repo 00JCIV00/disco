@@ -9,7 +9,7 @@ const mem = std.mem;
 const meta = std.meta;
 const os = std.os;
 const posix = std.posix;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 pub const AF = os.linux.AF;
 pub const IFLA = os.linux.IFLA;
@@ -344,14 +344,14 @@ pub fn request(
 pub fn handleAckBuf(msg_buf: []const u8) !void {
     var start: usize = 0;
     var end: usize = (start + @sizeOf(MessageHeader));
-    const nl_resp_hdr: *const MessageHeader = @alignCast(@ptrCast(msg_buf[start..end]));
+    const nl_resp_hdr: MessageHeader = mem.bytesToValue(MessageHeader, msg_buf[start..end]);
     if (nl_resp_hdr.len < @sizeOf(MessageHeader))
         return error.InvalidMessage;
     if (nl_resp_hdr.type > 4) return;
     if (@as(NLMSG, @enumFromInt(nl_resp_hdr.type)) == .ERROR) {
         start = end;
         end += @sizeOf(ErrorHeader);
-        const nl_err: *const ErrorHeader = @alignCast(@ptrCast(msg_buf[start..end]));
+        const nl_err: ErrorHeader = mem.bytesToValue(ErrorHeader, msg_buf[start..end]);
         switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
             .SUCCESS => return,
             .BUSY => return error.BUSY,

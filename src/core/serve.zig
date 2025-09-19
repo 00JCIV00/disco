@@ -12,6 +12,7 @@ const net = std.net;
 const os = std.os;
 const posix = std.posix;
 const time = std.time;
+const Thread = std.Thread;
 
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
@@ -124,7 +125,7 @@ pub fn serveDir(
         log.err("Could not bind to UDP Socket: {s}", .{ @errorName(err) });
         return;
     };
-    log.info("Serving '{s}' on '{s}:{d}'...", .{ conf.serve_path, IPF{ .bytes = conf.ip[0..] }, conf.port });
+    log.info("Serving '{s}' on '{f}:{d}'...", .{ conf.serve_path, IPF{ .bytes = conf.ip[0..] }, conf.port });
     // Set up event loop for both protocols
     const serve_path = if (mem.endsWith(u8, conf.serve_path, "/")) conf.serve_path[0..(conf.serve_path.len - 1)] else conf.serve_path;
     const job_count = jobCount: {
@@ -355,7 +356,7 @@ pub fn handleTFTP(
                 //);
                 //const ack_block = mem.bytesToValue(u16, ack_buf[2..4]);
                 //if (mem.bigToNative(u16, ack_block) != block_num) break;
-                time.sleep(100 * time.ns_per_us);
+                Thread.sleep(100 * time.ns_per_us);
                 block_num += 1;
                 if (bytes_read < 512) break;
             }
