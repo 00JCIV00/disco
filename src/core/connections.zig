@@ -1157,7 +1157,6 @@ pub const Connection = struct {
                             .ready, .request => {
                                 //log.debug("Requesting Station Info...", .{});
                                 self._nl80211_req_ctx.nextSeqID();
-                                self._nl80211_req_ctx.seq_id = 11111;
                                 try nl._80211.requestStation(
                                     core_ctx.alloc,
                                     &self._nl80211_req_ctx,
