@@ -252,10 +252,16 @@ pub fn baseFromBytes(
     var end: usize = hdr_len;
     while (end < bytes.len) {
         const hdr = mem.bytesToValue(HdrT, bytes[start..end]);
-        const tag: E = meta.intToEnum(E, hdr.type) catch meta.stringToEnum(E, "__UNKNOWN__") orelse {
+        const hdr_int: @TypeOf(hdr.type) = switch (@TypeOf(hdr.type)) {
+            u16 => 0x3FFF & hdr.type,
+            else => hdr.type,
+        };
+        const tag: E = meta.intToEnum(E, hdr_int) catch meta.stringToEnum(E, "__UNKNOWN__") orelse {
             log.err("The Tag # '{d}' does not match a field in the '{s}' Enum.", .{ hdr.type, @typeName(E) });
             return error.UnknownTag;
+            //@panic("Debug Panic");
         };
+        //log.debug("{s}", .{ @tagName(tag) });
         const diff = if (HdrT.full_len) hdr.len -| hdr_len else hdr.len;
         //log.debug("Len: {d: <5} Num: {d: <5} Type: {s}", .{ hdr.len, hdr.type, @tagName(tag) });
         //log.debug(" - Start: {d}B, End: {d}B", .{ start, end + diff });
@@ -352,6 +358,17 @@ pub fn freeOptBytes(alloc: mem.Allocator, T: type, instance: T) void {
     }
 }
 
+/// The Base Free function for freeing allocations made from `parse`.
+pub fn baseFreeBytes(alloc: mem.Allocator, T: type, instance: T) void {
+    switch (@typeInfo(T)) {
+        .optional => freeOptBytes(alloc, T, instance),
+        .pointer => freePtrBytes(alloc, T, instance),
+        .@"struct" => freeBytes(alloc, T, instance),
+        else => {},
+        //else => log.debug("__NOT FREED: {s} ({s})", .{ field.name, @typeName(T) }),
+    }
+}
+
 /// Recursively frees allocations made by `fromBytes()`.
 /// Note, this is a "best effort" in freeing all allocations made and an expensive operation.
 /// Prefer to use an Arena Allocator when possible to 
@@ -359,13 +376,7 @@ pub fn freeBytes(alloc: mem.Allocator, T: type, instance: T) void {
     //log.debug("-------\n       CHECK f/ Free: {s}", .{ @typeName(T) });
     inline for (meta.fields(T)) |field| {
         const in_field = @field(instance, field.name);
-        switch (@typeInfo(field.type)) {
-            .optional => freeOptBytes(alloc, field.type, in_field),
-            .pointer => freePtrBytes(alloc, field.type, in_field),
-            .@"struct" => freeBytes(alloc, field.type, in_field),
-            else => {},
-            //else => log.debug("__NOT FREED: {s} ({s})", .{ field.name, @typeName(field.type) }),
-        }
+        baseFreeBytes(alloc, field.type, in_field);
     }
     //log.debug("FINISH: {s}\n       -------", .{ @typeName(T) });
 }
@@ -536,7 +547,7 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
             const bytes = mem.toBytes(instance)[0..];
             return try alloc.dupe(u8, bytes);
         },
-        .bool => return try alloc.dupe(u8, &.{}),
+        .bool => return &.{}, //try alloc.dupe(u8, &.{}),
         else => {
             log.err("Unsupported Type: {s}", .{ @typeName(T) });
             return error.UnsupportedType;
@@ -547,7 +558,7 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
 /// Clone an `instance` of Netlink Type (`T`) using the provided Allocator (`alloc`).
 /// TODO: Make this less wasteful with Allocations
 pub fn clone(alloc: mem.Allocator, T: type, instance: T) !T {
-    var buf: [16_000]u8 = undefined;
+    var buf: [64_000]u8 = undefined;
     var fba: heap.FixedBufferAllocator = .init(buf[0..]);
     const bytes = try toBytes(fba.allocator(), T, instance);
     //const bytes = try toBytes(alloc, T, instance);

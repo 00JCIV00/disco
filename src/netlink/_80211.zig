@@ -556,6 +556,11 @@ pub const ATTR = enum(u16) {
     ASSOC_SPP_AMSDU = 330,
     WIPHY_RADIOS = 331,
     WIPHY_INTERFACE_COMBINATIONS = 332,
+    VIF_RADIO_MASK = 333,
+    SUPPORTED_SELECTORS = 334,
+    MLO_RECONF_REM_LINKS = 335,
+    EPCS = 336,
+    ASSOC_MLD_EXT_CAPA_OPS = 337,
 };
     
 /// Authentication Types
@@ -593,9 +598,9 @@ pub const Interface = struct {
     pub const AttrE = ATTR;
 
     /// Interface index (IFINDEX) if modifying an existing interface
-    IFINDEX: u32,
+    IFINDEX: ?u32 = null,
     /// Name of the interface (e.g., "wlan0")
-    IFNAME: []const u8,
+    IFNAME: ?[]const u8 = null,
     /// Type of interface (e.g., station, AP, monitor)
     IFTYPE: ?u32 = null,
     /// WIPHY index to associate the interface with a physical wireless device
@@ -2100,36 +2105,42 @@ pub const CHANNEL_WIDTH = enum(u32) {
 };
 
 pub const Channels = struct {
+    // 2.4GHz Channels
     pub const band_2G: []const usize = band2G: {
-        var channels: []usize = &.{};
+        var channels: [14]usize = undefined;
         for (1..15) |ch| {
-            if (validateChannel(ch)) channels = channels ++ &.{ ch };
+            if (!validateChannel(ch)) continue;
+            channels[ch - 1] = ch;
         }
-        break :band2G channels;
+        const ch_out = channels;
+        break :band2G ch_out[0..];
     };
+    // 5GHz Channels (20 MHz only)
     pub const band_5G: []const usize = band5G: {
-        var channels: []usize = &.{};
-        for (15..200) |ch| {
-            if (validateChannel(ch)) channels = channels ++ &.{ ch };
+        var channels: [43]usize = undefined;
+        var idx = 0;
+        for (33..200) |ch| {
+            if (!validateChannel(ch)) continue;
+            channels[idx] = ch;
+            idx += 1;
         }
-        break :band5G channels;
+        const ch_out = channels;
+        break :band5G ch_out[0..];
     };
     pub const all: []const usize = band_2G ++ band_5G;
 };
 
 pub const Frequencies = struct {
     pub const band_2G: []const usize = band2G: {
-        var freqs: []usize = &.{};
-        for (2000..3000) |freq| {
-            if (validateFreq(freq)) freqs = freqs ++ &.{ freq };
-        }
+        var freqs: [14]usize = undefined;
+        for (Channels.band_2G[0..], 0..) |ch, idx| 
+            freqs[idx] = freqFromChannel(ch) catch @compileError("Unknown WiFi Channel");
         break :band2G freqs;
     };
     pub const band_5G: []const usize = band5G: {
-        var freqs: []usize = &.{};
-        for (5000..6000) |freq| {
-            if (validateFreq(freq)) freqs = freqs ++ &.{ freq };
-        }
+        var freqs: [14]usize = undefined;
+        for (Channels.band_5G[0..], 0..) |ch, idx| 
+            freqs[idx] = freqFromChannel(ch) catch @compileError("Unknown WiFi Channel");
         break :band5G freqs;
     };
     pub const all: []const usize = band_2G ++ band_5G;
@@ -2140,7 +2151,8 @@ pub const Frequencies = struct {
 /// Get the corresponding Channel of the provided Frequency (`freq_mhz`).
 pub fn channelFromFreq(freq_mhz: usize) !usize {
     const channel = switch (freq_mhz) {
-        0...2500 => (freq_mhz -| 2407) / 5,
+        0...2483 => (freq_mhz -| 2407) / 5,
+        2484 => 14,
         5000...6000 => (freq_mhz -| 5000) / 5,
         else => return error.UnknownChannel,
     };
@@ -2530,7 +2542,7 @@ pub fn requestWIPHY(
         &.{
             .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
             .{ .hdr = .{ .type = c(ATTR).WIPHY }, .data = mem.toBytes(phy_index)[0..] },
-            //.{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = &.{} },
+            .{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = &.{} },
         },
         req_ctx,
     );
@@ -2556,7 +2568,7 @@ pub fn requestAllWIPHY(alloc: mem.Allocator, req_ctx: *nl.RequestContext) !void 
             },
         },
         &.{
-            .{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = mem.toBytes(@as(u32, 1))[0..] },
+            .{ .hdr = .{ .type = c(ATTR).SPLIT_WIPHY_DUMP }, .data = &.{} },
         },
         req_ctx,
     );
@@ -2657,6 +2669,9 @@ pub fn handleWIPHYBuf(alloc: mem.Allocator, msg_buf: []const u8) ![]const Wiphy 
         .config = .{
             .nl_type = info.FAMILY_ID,
             .fam_cmd = c(CMD).NEW_WIPHY,
+            .split_field = "WIPHY",
+            .repeated_fields = &.{ "WIPHY", "WIPHY_NAME" },
+            .slice_fields = &.{ "WIPHY_BANDS" },
         },
     };
     return try nl.handleTypeBuf(
@@ -3414,9 +3429,11 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
     const ie_freq = bss.FREQUENCY; // orelse return error.MissingFreq;
     const bands = wiphy.WIPHY_BANDS orelse return error.MissingBands;
     //const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+    var missing_freqs = true;
     for (bands) |band| {
-        for (band.FREQS orelse return error.MissingFreqs) |freq| {
+        for (band.FREQS orelse continue) |freq| {
             if (freq.FREQ != ie_freq) continue;
+            missing_freqs = false;
             if (freq.DISABLED orelse false) return .{ null, null };
             const ht = ht: {
                 var buf: [26]u8 = undefined;
@@ -3442,6 +3459,7 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
             return .{ ht, vht };
         }
     }
+    if (missing_freqs) return error.MissingFreqs;
     return .{ null, null };
 }
 

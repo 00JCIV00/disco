@@ -60,7 +60,7 @@ pub const Handler = struct {
     _alloc: mem.Allocator,
     /// Receive Buffer 
     /// *Internal Use*
-    _recv_buf: [16_000]u8 = undefined,
+    _recv_buf: [32_000]u8 = undefined,
     /// Responses for corresponing Sequence IDs
     /// *Internal Use*
     _seq_responses: ThreadHashMap(u32, Response) = .empty,

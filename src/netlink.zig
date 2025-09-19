@@ -210,7 +210,7 @@ pub const RequestContext = struct {
     /// Optional Netlink Request Handler
     handler: ?*io.Handler = null,
     /// Async Request Timeout in milliseconds (ms)
-    timeout: u32 = 1_000,
+    timeout: u32 = 3_000,
 
     /// Current Unique Sequence ID f/ new Netlink Requests
     var unique_seq_id: atomic.Value(u32) = .init(1000);
@@ -390,6 +390,12 @@ pub const HandleConfig = struct {
     fam_cmd: ?u8 = null,
     /// Log Parsing Errors as Warnings
     warn_parse_err: bool = false,
+    /// Split Field
+    split_field: ?[]const u8 = null,
+    /// Repeated Fields
+    repeated_fields: []const []const u8 = &.{},
+    /// Array Fields
+    slice_fields: []const []const u8 = &.{},
 };
 
 /// Context for Handling Responses.
@@ -421,9 +427,10 @@ pub fn handleTypeBuf(
     const fam_hdr_len = @sizeOf(FamHdrT);
     var resp_list: ArrayList(ResponseT) = .empty;
     var msg_iter: parse.Iterator(MessageHeader, .{}) = .{ .bytes = msg_buf[0..] };
+    var base_instance: ?ResponseT = null;
     while (msg_iter.next()) |msg| {
         defer {
-            if (msg.hdr.flags & c(NLM_F).MULTI == 0)
+            if (msg.hdr.flags & c(NLM_F).MULTI == 0) //
                 ctx.done = true;
         }
         if (msg.hdr.type == c(NLMSG).DONE) {
@@ -443,14 +450,88 @@ pub fn handleTypeBuf(
             return error.GenericHeaderRequired;
         };
         if (!(match_hdr and match_cmd)) continue;
-        const instance = parseFn(alloc, msg.data) catch |err| {
-            if (ctx.config.warn_parse_err)
+        const next_instance = parseFn(alloc, msg.data) catch |err| {
+            if (ctx.config.warn_parse_err) //
                 log.warn("Parsing Error: {s}", .{ @errorName(err) });
             continue;
         };
-        try resp_list.append(alloc, instance);
+        if (ctx.config.split_field) |split| {
+            const instance = instance: {
+                if (base_instance) |*inst| //
+                    break :instance inst //
+                else {
+                    base_instance = next_instance;
+                    continue;
+                }
+            };
+            const fields = meta.fields(ResponseT);
+            var same_instance: bool = false;
+            inline for (fields) |field| {
+                if (mem.eql(u8, split, field.name)) {
+                    same_instance = switch (@typeInfo(field.type)) {
+                        .int, .float => @field(instance.*, field.name) == @field(next_instance, field.name),
+                        .pointer => |ptr_info| //
+                            ptr_info.size == .slice and mem.eql(ptr_info.child, @field(instance.*, field.name), @field(next_instance, field.name)),
+                        else => return error.IncompatibleSplitID,
+                    };
+                }
+            }
+            if (!same_instance) {
+                try resp_list.append(alloc, base_instance.?);
+                base_instance = next_instance;
+                continue;
+            }
+            inline for (fields) |field| {
+                const non_repeat = nonRepeat: {
+                    for (ctx.config.repeated_fields) |r_field| {
+                        if (mem.eql(u8, field.name, r_field)) break :nonRepeat false;
+                    }
+                    break :nonRepeat true;
+                };
+                if (non_repeat) nonRepeat: {
+                    const is_slice = isSlice: {
+                        for (ctx.config.slice_fields) |slice_field| {
+                            if (mem.eql(u8, field.name, slice_field)) break :isSlice true;
+                        }
+                        break :isSlice false;
+                    };
+                    if (is_slice) sliceField: {
+                        const next_field = @field(next_instance, field.name);
+                        const type_info = @typeInfo(@TypeOf(next_field));
+                        const opt_child_info = switch (type_info) {
+                            .optional => |opt| @typeInfo(opt.child),
+                            else => break :sliceField,
+                        };
+                        if (opt_child_info != .pointer or opt_child_info.pointer.size != .slice) //
+                            break :nonRepeat;
+                        const next_slice = next_field orelse break :nonRepeat;
+                        if (@field(instance, field.name)) |*base_field| {
+                            const SliceChildT = switch (opt_child_info) {
+                                .pointer => |ptr| ptr.child,
+                                else => break :sliceField,
+                            };
+                            base_field.* = try mem.concat(
+                                alloc,
+                                SliceChildT,
+                                &.{ base_field.*, next_slice },
+                            );
+                            break :nonRepeat;
+                        }
+                    }
+                    @field(instance, field.name) = @field(next_instance, field.name);
+                } //
+                else //
+                    parse.baseFreeBytes(alloc, field.type, @field(next_instance, field.name));
+            }
+        } //
+        else {
+            base_instance = next_instance;
+            try resp_list.append(alloc, base_instance.?);
+        }
         //log.debug("Parsed {d} '{s}'", .{ resp_list.items.len, @typeName(ResponseT) });
     }
+    if (ctx.config.split_field) |_| if (base_instance) |instance| //
+        try resp_list.append(alloc, instance);
     return try resp_list.toOwnedSlice(alloc);
 }
 
