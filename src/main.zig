@@ -88,8 +88,8 @@ pub fn main() !void {
     //var sfba = heap.stackFallback(1_000_000, gpa_alloc);
     //const alloc = sfba.get();
     const alloc = switch (builtin.mode) {
-        .Debug => gpa.allocator(),
-        else => heap.smp_allocator,
+        .ReleaseFast => heap.smp_allocator,
+        else => gpa.allocator(),
     };
 
     // Get NL80211 Control Info

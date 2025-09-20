@@ -34,7 +34,7 @@ pub const NetlinkSocketConfig = struct {
     /// Process ID for the Netlink Socket
     /// If this is left `null` a unique pid will be created
     pid: ?u32 = null,
-    
+ 
     /// Current Unique PID f/ new Netlink Sockets
     var unique_pid: atomic.Value(u32) = .init(12321);
 };

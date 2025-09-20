@@ -127,7 +127,7 @@ pub const LeaseConfig = struct {
     /// Error on Request/Offer Mismatch
     err_on_mismatch: bool = true,
     /// Max Retries
-    max_attempts: u8 = 3,
+    max_attempts: u8 = 10,
 };
 
 /// DHCP Info. This is returned from `handleDHCP()` and passed to `releasedDHCP()`.
@@ -285,8 +285,10 @@ pub fn handleDHCP(
         );
         // OFFER
         var offer_buf: [1500]u8 = undefined;
-        const offer_len = offerLen: while (attempts < config.max_attempts) {
-            break :offerLen recvDHCPMsg(
+        const offer_len: usize,
+        const offer_hdr: l5.BOOTP.Header
+        = offer: while (attempts < config.max_attempts) {
+            const offer_len = recvDHCPMsg(
                 dhcp_sock,
                 mac_addr,
                 offer_buf[0..],
@@ -295,28 +297,31 @@ pub fn handleDHCP(
                 attempts += 1;
                 continue;
             };
+            // - Parse BOOTP header
+            start = 0;
+            end = bootp_hdr_len;
+            const offer_hdr = mem.bytesToValue(l5.BOOTP.Header, offer_buf[start..end]);
+            if (offer_hdr.tx_id != transaction_id) {
+                log.warn(
+                    \\Transaction ID Mismatch:
+                    \\ - Expected: 0x{X:0>8}
+                    \\ - Received: 0x{X:0>8}
+                    , .{
+                        transaction_id,
+                        offer_hdr.tx_id,
+                    }
+                );
+                attempts += 1;
+                continue;
+            }
+            if (offer_hdr.op != c(l5.BOOTP.OP).REPLY) {
+                log.warn("Not a BOOTP reply", .{});
+                attempts += 1;
+                continue;
+            }
+            break :offer .{ offer_len, offer_hdr };
         }
         else return error.CouldNotCompleteDHCP;
-        // - Parse BOOTP header
-        start = 0;
-        end = bootp_hdr_len;
-        const offer_hdr = mem.bytesAsValue(l5.BOOTP.Header, offer_buf[start..end]);
-        if (offer_hdr.tx_id != transaction_id) {
-            log.warn(
-                \\Transaction ID Mismatch:
-                \\ - Expected: 0x{X:0>8}
-                \\ - Received: 0x{X:0>8}
-                , .{
-                    transaction_id,
-                    offer_hdr.tx_id,
-                }
-            );
-            continue;
-        }
-        if (offer_hdr.op != c(l5.BOOTP.OP).REPLY) {
-            log.warn("Not a BOOTP reply", .{});
-            continue;
-        }
         // - Parse DHCP options
         var offer_msg_type_buf: ?u8 = null;
         var offer_server_id_buf: ?[4]u8 = null;
@@ -568,32 +573,40 @@ pub fn handleDHCP(
         );
         // ACK/NAK
         var ack_buf: [1500]u8 = undefined;
-        const ack_len = try recvDHCPMsg(
-            dhcp_sock,
-            mac_addr,
-            ack_buf[0..],
-        );
-        // - Parse BOOTP header
-        start = 0;
-        end = bootp_hdr_len;
-        const ack_header = mem.bytesAsValue(l5.BOOTP.Header, offer_buf[start..end]);
-        // - Validate transaction ID
-        if (ack_header.tx_id != transaction_id) {
-            log.warn(
-                \\Transaction ID Mismatch:
-                \\ - Expected: 0x{X:0>8}
-                \\ - Received: 0x{X:0>8}
-                , .{
-                    transaction_id,
-                    ack_header.tx_id,
-                }
+        const ack_len: usize,
+        const ack_header: l5.BOOTP.Header
+        = ack: while (attempts < config.max_attempts) {
+            const ack_len = try recvDHCPMsg(
+                dhcp_sock,
+                mac_addr,
+                ack_buf[0..],
             );
-            continue;
+            // - Parse BOOTP header
+            start = 0;
+            end = bootp_hdr_len;
+            const ack_header = mem.bytesToValue(l5.BOOTP.Header, offer_buf[start..end]);
+            // - Validate transaction ID
+            if (ack_header.tx_id != transaction_id) {
+                log.warn(
+                    \\Transaction ID Mismatch:
+                    \\ - Expected: 0x{X:0>8}
+                    \\ - Received: 0x{X:0>8}
+                    , .{
+                        transaction_id,
+                        ack_header.tx_id,
+                    }
+                );
+                attempts += 1;
+                continue;
+            }
+            if (ack_header.op != c(l5.BOOTP.OP).REPLY) {
+                log.warn("Not a BOOTP reply", .{});
+                attempts += 1;
+                continue;
+            }
+            break :ack .{ ack_len, ack_header };
         }
-        if (ack_header.op != c(l5.BOOTP.OP).REPLY) {
-            log.warn("Not a BOOTP reply", .{});
-            continue;
-        }
+        else return error.CouldNotCompleteDHCP;
         // - Parse DHCP options
         var ack_msg_type_buf: ?u8 = null;
         var ack_server_id_buf: ?[4]u8 = null;
