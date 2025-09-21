@@ -353,6 +353,8 @@ pub const Core = struct {
     };
     /// Print System & Interface Info
     pub fn printInfo(self: *@This(), writer: anytype, config: PrintConfig) !void {
+        if (config.sys_info == false and config.if_info == .none) //
+            return;
         try writer.print("DisCo Info:\n", .{});
         if (config.sys_info) {
             var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;

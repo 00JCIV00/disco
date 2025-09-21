@@ -2137,13 +2137,15 @@ pub const Frequencies = struct {
         var freqs: [14]usize = undefined;
         for (Channels.band_2G[0..], 0..) |ch, idx| 
             freqs[idx] = freqFromChannel(ch) catch @compileError("Unknown WiFi Channel");
-        break :band2G freqs;
+        const freq_out = freqs;
+        break :band2G freq_out[0..];
     };
     pub const band_5G: []const usize = band5G: {
-        var freqs: [14]usize = undefined;
+        var freqs: [43]usize = undefined;
         for (Channels.band_5G[0..], 0..) |ch, idx| 
             freqs[idx] = freqFromChannel(ch) catch @compileError("Unknown WiFi Channel");
-        break :band5G freqs;
+        const freq_out = freqs;
+        break :band5G freq_out[0..];
     };
     pub const all: []const usize = band_2G ++ band_5G;
 };

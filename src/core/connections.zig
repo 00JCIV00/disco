@@ -132,6 +132,14 @@ pub const Context = struct {
 
     /// Update Connections
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+        if (core_ctx.run_condition) |condition| {
+            switch (condition) {
+                .list_interfaces,
+                .mod_interfaces,
+                => return,
+                else => {},
+            }
+        }
         try self.scoreCandidates(core_ctx);
         //log.debug("Candidates: {d}", .{ self._candidates.items.len });
         const statuses = self.statuses.items();
@@ -505,7 +513,10 @@ pub const Connection = struct {
         errdefer {
             self._retries +%= 1;
             self._nl_state = .ready;
-            //self._thread_state = .ready;
+            defer self._thread_states.mutex.unlock();
+            var states_iter = self._thread_states.iterator();
+            while (states_iter.next()) |*state_entry| //
+                state_entry.value_ptr.* = .ready;
             conn_if.addPenalty();
         }
         if (self._if_index) |idx| idxCheck: {
@@ -574,6 +585,7 @@ pub const Connection = struct {
             },
             .auth => |*auth_ctx| {
                 errdefer {
+                    self._nl_state = .request;
                     auth_ctx.auth_timer.reset();
                 }
                 // Authenticate
@@ -1290,10 +1302,6 @@ pub const Connection = struct {
                         disc_state.* = .dhcp;
                         continue :discState disc_state.*;
                     },
-                    //.thread => {
-                    //    disc_state.* = .dhcp;
-                    //    continue :discState disc_state.*;
-                    //},
                     .dhcp => {
                         self._thread_states.mutex.lock();
                         defer self._thread_states.mutex.unlock();

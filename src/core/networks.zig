@@ -227,6 +227,14 @@ pub const Context = struct {
 
     /// Update Networks
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+        if (core_ctx.run_condition) |condition| {
+            switch (condition) {
+                .list_interfaces, 
+                .mod_interfaces,
+                => return,
+                else => {},
+            }
+        }
         //defer _ = self._arena.reset(.retain_capacity);
         if (self._arena.state.end_index > 1_000)
             _ = self._arena.reset(.retain_capacity);

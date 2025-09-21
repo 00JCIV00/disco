@@ -343,16 +343,35 @@ pub const Interface = struct {
         }
         try writer.print(
             \\- Support:
-            \\  - Channels: ({d} Channels)
+            //\\  - Channels: ({d} Channels)
             \\
-            , .{ self.supported_freqs.len }
+            //, .{ self.supported_freqs.len }
+            , .{},
         );
+        var chans_2G: u8 = 0;
+        var chans_5G: u8 = 0;
         for (self.supported_freqs) |freq| {
-            const ch = nl._80211.channelFromFreq(freq) catch {
-                log.warn("Invalid Freq: {d}MHz", .{ freq });
+            if (mem.indexOfScalar(usize, nl._80211.Frequencies.band_2G, @intCast(freq))) |_| {
+                chans_2G += 1;
                 continue;
-            };
-            try writer.print("    - {d} ({d})MHz\n", .{ ch, freq });
+            }
+            if (mem.indexOfScalar(usize, nl._80211.Frequencies.band_5G, @intCast(freq))) |_| {
+                chans_5G += 1;
+                continue;
+            }
+            //const ch = nl._80211.channelFromFreq(freq) catch {
+            //    log.warn("Invalid Freq: {d}MHz", .{ freq });
+            //    continue;
+            //};
+            //try writer.print("    - {d} ({d})MHz\n", .{ ch, freq });
+        }
+        if (chans_2G > 0 or chans_5G > 0) {
+            try writer.print("  - Bands:\n", .{});
+            if (chans_2G > 0) //
+                try writer.print("    - 2G: {d} channels\n", .{ chans_2G });
+            if (chans_5G > 0) //
+                try writer.print("    - 5G: {d} channels\n", .{ chans_5G });
+            //try writer.print("\n", .{});
         }
     }
 };
