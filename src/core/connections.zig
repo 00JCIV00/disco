@@ -88,8 +88,9 @@ pub const Context = struct {
     /// Connection Candidates
     /// *Internal Use Only*
     _candidates: *ArrayList(Candidate),
+    /// Thread State Maps for Connections
+    _thread_state_maps: *ArrayList(*ThreadHashMap([]const u8, Connection.ThreadState)),
     /// Status of Active & Previous Connections.
-    /// ID = 6B Network BSSID 
     statuses: *ThreadArrayList(Status),
     timer: time.Timer,
 
@@ -101,6 +102,8 @@ pub const Context = struct {
         self.statuses.* = .empty;
         self._candidates = core_ctx.alloc.create(ArrayList(Candidate)) catch @panic("OOM");
         self._candidates.* = .empty;
+        self._thread_state_maps = core_ctx.alloc.create(ArrayList(*ThreadHashMap([]const u8, Connection.ThreadState))) catch @panic("OOM");
+        self._thread_state_maps.* = .empty;
         self.timer = try .start();
         const nl80211_info = nl._80211.ctrl_info orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
         const nl80211_mlme = nl80211_info.MCAST_GROUPS.get("mlme") orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
@@ -119,6 +122,12 @@ pub const Context = struct {
         alloc.destroy(self.statuses);
         self._candidates.deinit(alloc);
         alloc.destroy(self._candidates);
+        for (self._thread_state_maps.items) |map| {
+            map.deinit(alloc);
+            alloc.destroy(map);
+        }
+        self._thread_state_maps.deinit(alloc);
+        alloc.destroy(self._thread_state_maps);
     }
 
     /// Update Connections
@@ -311,8 +320,7 @@ pub const Connection = struct {
     _nl_state: core.AsyncState = .ready,
     _nl80211_req_ctx: nl.io.RequestContext,
     _rtnetlink_req_ctx: nl.io.RequestContext,
-    _thread_state: ThreadState = .ready,
-    _thread: Thread = undefined,
+    _thread_states: *ThreadHashMap([]const u8, ThreadState),
 
     /// The Current State of a Connection.
     pub const State = union(enum) {
@@ -342,7 +350,7 @@ pub const Connection = struct {
         /// Disconnected from the Network
         disconn: enum {
             start,
-            thread,
+            //thread,
             dhcp,
             ip,
             disassoc,
@@ -375,7 +383,8 @@ pub const Connection = struct {
     /// Current Thread State for a Connection.
     const ThreadState = union(enum) {
         ready,
-        working: time.Timer,
+        starting,
+        working: struct { timer: time.Timer, id: u32 },
         done,
         err: anyerror,
     };
@@ -417,6 +426,9 @@ pub const Connection = struct {
         };
         const ssid = core_ctx.alloc.dupe(u8, candidate.config.ssid) catch @panic("OOM");
         errdefer core_ctx.alloc.free(ssid);
+        const thread_states: *ThreadHashMap([]const u8, ThreadState) = core_ctx.alloc.create(ThreadHashMap([]const u8, ThreadState)) catch @panic("OOM");
+        thread_states.* = .empty;
+        core_ctx.conn_ctx._thread_state_maps.append(core_ctx.alloc, thread_states) catch @panic("OOM");
         const self: @This() = .{
             .if_mac = candidate.conn_if,
             .bssid = candidate.bssid,
@@ -434,7 +446,14 @@ pub const Connection = struct {
             ._rsn_bytes = rsn_bytes,
             ._nl80211_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.nl80211_handler } }),
             ._rtnetlink_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.rtnetlink_handler } }),
+            ._thread_states = thread_states,
         };
+        self._thread_states.mutex.lock();
+        defer self._thread_states.mutex.unlock();
+        self._thread_states.map.put(core_ctx.alloc, "eapol", .ready) catch @panic("OOM");
+        self._thread_states.map.put(core_ctx.alloc, "dhcp", .ready) catch @panic("OOM");
+        self._thread_states.map.put(core_ctx.alloc, "dns", .ready) catch @panic("OOM");
+        self._thread_states.map.put(core_ctx.alloc, "rel_dhcp", .ready) catch @panic("OOM");
         try self._nl80211_req_ctx.handler.?.trackCommand(c(nl._80211.CMD).AUTHENTICATE);
         log.debug("Starting connection to '{s}' w/ '{f}'...", .{ candidate.config.ssid, MACF{ .bytes = candidate.conn_if[0..] } });
         return self;
@@ -486,7 +505,7 @@ pub const Connection = struct {
         errdefer {
             self._retries +%= 1;
             self._nl_state = .ready;
-            self._thread_state = .ready;
+            //self._thread_state = .ready;
             conn_if.addPenalty();
         }
         if (self._if_index) |idx| idxCheck: {
@@ -505,7 +524,7 @@ pub const Connection = struct {
                 nl_state: switch (self._nl_state) {
                     .ready, .request => {
                         self._nl_state = .ready;
-                        self._thread_state = .ready;
+                        //self._thread_state = .ready;
                         conn_if.resetPenalty();
                         self._nl80211_req_ctx.nextSeqID();
                         try nl._80211.requestRegisterFrames(
@@ -854,17 +873,21 @@ pub const Connection = struct {
                 }
             },
             .eapol => |*key_idx| {
-                eapol: switch (self._thread_state) {
+                self._thread_states.mutex.lock();
+                defer self._thread_states.mutex.unlock();
+                const eapol_state = self._thread_states.map.getEntry("eapol").?.value_ptr;
+                eapol: switch (eapol_state.*) {
                     .ready => {
                         // EAPoL
                         switch (self.security) {
                             .wpa2, .wpa3t, .wpa3 => {
                                 log.debug("Connection {s} | {s}: Handling EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
-                                self._thread = try Thread.spawn(
+                                eapol_state.* = .starting;
+                                const eapol_thread = try Thread.spawn(
                                     .{},
                                     handle4WHS,
                                     .{
-                                        &self._thread_state,
+                                        self._thread_states,
                                         &self._eapol_keys,
                                         conn_if.index,
                                         self._psk,
@@ -872,22 +895,17 @@ pub const Connection = struct {
                                         self.security,
                                     },
                                 );
-                                self._thread.detach();
-                                self._thread_state = .{
-                                    .working = time.Timer.start() catch |err| {
-                                        self._thread_state = .{ .err = err };
-                                        continue :eapol self._thread_state;
-                                    },
-                                };
-                                continue :eapol self._thread_state;
+                                eapol_thread.detach();
+                                continue :eapol eapol_state.*;
                             },
                             .open => {},
                             else => return error.UnsupportedSecurityType,
                         }
                     },
-                    .working => |*timer| working: {
-                        if (@divFloor(timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
-                        self._thread_state = .ready;
+                    .starting => {},
+                    .working => |*work| working: {
+                        if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
+                        eapol_state.* = .ready;
                         return error.EAPoLThreadTimeout;
                     },
                     .done => {
@@ -939,7 +957,7 @@ pub const Connection = struct {
                                     key_idx.* = 1;
                                     continue :nlState self._nl_state;
                                 }
-                                self._thread_state = .ready;
+                                eapol_state.* = .ready;
                                 log.debug("Connection {s} | {s}: Finished EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
                                 self._state = .{ .dhcp = .ip };
                                 continue :state self._state;
@@ -976,7 +994,10 @@ pub const Connection = struct {
                         continue :dhcpSetup dhcp_setup.*;
                     },
                     .ip => {
-                        dhcp: switch (self._thread_state) {
+                        self._thread_states.mutex.lock();
+                        defer self._thread_states.mutex.unlock();
+                        const dhcp_state = self._thread_states.map.getEntry("dhcp").?.value_ptr;
+                        dhcp: switch (dhcp_state.*) {
                             .ready => {
                                 var dhcp_conf = self.dhcp_conf orelse {
                                     self._state = .{ .conn = .init };
@@ -985,11 +1006,12 @@ pub const Connection = struct {
                                 log.debug("Connection {s} | {s}: Handling DHCP ({t})", .{ self.ssid, conn_if.name, self.security });
                                 if (core_ctx.config.profile.mask) |pro_mask| //
                                     dhcp_conf.hostname = pro_mask.hostname;
-                                self._thread = try Thread.spawn(
+                                dhcp_state.* = .starting;
+                                const dhcp_thread = try Thread.spawn(
                                     .{},
                                     handleDHCP,
                                     .{
-                                        &self._thread_state,
+                                        self._thread_states,
                                         &self._dhcp_info,
                                         conn_if.name,
                                         conn_if.index,
@@ -997,18 +1019,13 @@ pub const Connection = struct {
                                         dhcp_conf,
                                     },
                                 );
-                                self._thread.detach();
-                                self._thread_state = .{
-                                    .working = time.Timer.start() catch |err| {
-                                        self._thread_state = .{ .err = err };
-                                        continue :dhcp self._thread_state;
-                                    },
-                                };
-                                continue :dhcp self._thread_state;
+                                dhcp_thread.detach();
+                                continue :dhcp dhcp_state.*;
                             },
-                            .working => |*timer| working: {
-                                if (@divFloor(timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
-                                self._thread_state = .ready;
+                            .starting => {},
+                            .working => |*work| working: {
+                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
+                                dhcp_state.* = .ready;
                                 log.warn("Connection {s} | {s} DHCP Timed Out.", .{ self.ssid, conn_if.name });
                                 return error.DHCPThreadTimeout;
                             },
@@ -1050,7 +1067,7 @@ pub const Connection = struct {
                                             conn_if.index,
                                             conn_if.name,
                                         });
-                                        self._thread_state = .ready;
+                                        dhcp_state.* = .ready;
                                         if (self.add_gw) {
                                             self._state.dhcp = .gw;
                                             continue :dhcpSetup self._state.dhcp;
@@ -1122,11 +1139,14 @@ pub const Connection = struct {
                             self._state = .{ .conn = .init };
                             continue :state self._state;
                         }
+                        self._thread_states.mutex.lock();
+                        defer self._thread_states.mutex.unlock();
+                        const dns_state = self._thread_states.map.getEntry("dns").?.value_ptr;
                         errdefer {
-                            self._thread_state = .ready;
+                            dns_state.* = .ready;
                             self._state = .{ .conn = .init };
                         }
-                        dns: switch (self._thread_state) {
+                        dns: switch (dns_state.*) {
                             .ready => {
                                 var dns_ips_buf: [4][4]u8 = undefined;
                                 const dns_ips: []const [4]u8 = dnsIPs: {
@@ -1144,23 +1164,19 @@ pub const Connection = struct {
                                     }
                                     break :dnsIPs &.{};
                                 };
-                                self._thread = try Thread.spawn(
+                                dns_state.* = .starting;
+                                const dns_thread = try Thread.spawn(
                                     .{},
                                     handleDNS,
-                                    .{ &self._thread_state, dns.DNSConfig{ .if_index = conn_if.index, .servers = dns_ips[0..1] } },
+                                    .{ self._thread_states, dns.DNSConfig{ .if_index = conn_if.index, .servers = dns_ips[0..1] } },
                                 );
-                                self._thread.detach();
-                                self._thread_state = .{
-                                    .working = time.Timer.start() catch |err| {
-                                        self._thread_state = .{ .err = err };
-                                        continue :dns self._thread_state;
-                                    },
-                                };
-                                continue :dns self._thread_state;
+                                dns_thread.detach();
+                                continue :dns dns_state.*;
                             },
-                            .working => |*timer| working: {
-                                if (@divFloor(timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
-                                self._thread_state = .ready;
+                            .starting => {},
+                            .working => |*work| working: {
+                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
+                                dns_state.* = .ready;
                                 return error.DNSThreadTimeout;
                             },
                             .done => {
@@ -1169,7 +1185,7 @@ pub const Connection = struct {
                                     conn_if.index,
                                     conn_if.name,
                                 });
-                                self._thread_state = .ready;
+                                dns_state.* = .ready;
                                 self._state = .{ .conn = .init };
                             },
                             .err => |err| {
@@ -1271,56 +1287,58 @@ pub const Connection = struct {
                 discState: switch (disc_state.*) {
                     .start => {
                         log.info("Cleaning Connection (ssid: {s}, if: {s})...", .{ self.ssid, conn_if.name });
-                        disc_state.* = .thread;
-                        continue :discState disc_state.*;
-                    },
-                    .thread => {
-                        if (self._thread_state == .working) return;
                         disc_state.* = .dhcp;
                         continue :discState disc_state.*;
                     },
+                    //.thread => {
+                    //    disc_state.* = .dhcp;
+                    //    continue :discState disc_state.*;
+                    //},
                     .dhcp => {
-                        dhcpState: switch (self._thread_state) {
+                        self._thread_states.mutex.lock();
+                        defer self._thread_states.mutex.unlock();
+                        const rel_dhcp_state = self._thread_states.map.getEntry("rel_dhcp").?.value_ptr;
+                        errdefer {
+                            rel_dhcp_state.* = .ready;
+                            self._state = .{ .conn = .init };
+                        }
+                        dhcpState: switch (rel_dhcp_state.*) {
                             .ready => {
                                 const dhcp_info = self._dhcp_info orelse {
                                     disc_state.* = .ip;
                                     continue :discState disc_state.*;
                                 };
                                 log.debug("- Releasing DHCP...", .{});
-                                self._thread = try Thread.spawn(
+                                rel_dhcp_state.* = .starting;
+                                const rel_dhcp_thread = try Thread.spawn(
                                     .{},
                                     handleReleaseDHCP,
                                     .{
-                                        &self._thread_state,
+                                        self._thread_states,
                                         dhcp_info,
                                         conn_if.name,
                                         conn_if.index,
                                         conn_if.mac,
                                     },
                                 );
-                                self._thread_state = .{
-                                    .working = time.Timer.start() catch |err| {
-                                        self._thread_state = .{ .err = err };
-                                        continue :dhcpState self._thread_state;
-                                    },
-                                };
-                                self._thread.detach();
-                                continue :dhcpState self._thread_state;
+                                rel_dhcp_thread.detach();
+                                continue :dhcpState rel_dhcp_state.*;
                             },
-                            .working => |*timer| working: {
-                                if (@divFloor(timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
-                                self._thread_state = .{ .err = error.DHCPThreadTimeout };
-                                continue :dhcpState self._thread_state;
+                            .starting => {},
+                            .working => |*work| working: {
+                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
+                                rel_dhcp_state.* = .{ .err = error.DHCPThreadTimeout };
+                                continue :dhcpState rel_dhcp_state.*;
                             },
                             .err => |err| {
                                 log.warn("- Unable to release DHCP for '{s}' on '{s}': {t}", .{ conn_if.name, self.ssid, err });
-                                self._thread_state = .ready;
+                                rel_dhcp_state.* = .ready;
                                 disc_state.* = .ip;
                                 continue :discState disc_state.*;
                             },
                             .done => {
                                 log.info("- Released DHCP for '{s}' on '{s}'.", .{ conn_if.name, self.ssid });
-                                self._thread_state = .ready;
+                                rel_dhcp_state.* = .ready;
                                 disc_state.* = .ip;
                                 continue :discState disc_state.*;
                             },
@@ -1418,54 +1436,113 @@ pub const Connection = struct {
 
     /// Handle the 4-way Handshake via EAPoL
     fn handle4WHS(
-        state: *ThreadState,
+        states: *ThreadHashMap([]const u8, ThreadState),
         eapol_keys: *?nl._80211.EAPoLKeys,
         if_index: i32,
         pmk: [32]u8,
         m2_data: []const u8,
         security: nl._80211.SecurityType,
     ) void {
+        states.mutex.lock();
+        var state = states.map.getEntry("eapol").?.value_ptr;
+        state.* = .{
+            .working = .{
+                .timer = time.Timer.start() catch |err| {
+                    state.* = .{ .err = err };
+                    states.mutex.unlock();
+                    return;
+                },
+                .id = Thread.getCurrentId(),
+            },
+        };
+        states.mutex.unlock();
         eapol_keys.* = proto.wpa.handle4WHS(
             if_index,
             pmk,
             m2_data,
             security,
         ) catch |err| {
+            states.mutex.lock();
+            defer states.mutex.unlock();
+            state = states.map.getEntry("eapol").?.value_ptr;
+            if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+                return;
             state.* = .{ .err = err };
             return;
         };
+        states.mutex.lock();
+        defer states.mutex.unlock();
+        state = states.map.getEntry("eapol").?.value_ptr;
+        if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+            return;
         state.* = .done;
     }
 
     /// Handle DHCP
     fn handleDHCP(
-        state: *ThreadState,
+        states: *ThreadHashMap([]const u8, ThreadState),
         dhcp_info: *?proto.dhcp.Info,
         if_name: []const u8,
         if_index: i32,
         if_mac: [6]u8,
         dhcp_config: proto.dhcp.LeaseConfig,
     ) void {
+        states.mutex.lock();
+        var state = states.map.getEntry("dhcp").?.value_ptr;
+        state.* = .{
+            .working = .{
+                .timer = time.Timer.start() catch |err| {
+                    state.* = .{ .err = err };
+                    states.mutex.unlock();
+                    return;
+                },
+                .id = Thread.getCurrentId(),
+            },
+        };
+        states.mutex.unlock();
         dhcp_info.* = proto.dhcp.handleDHCP(
             if_name,
             if_index,
             if_mac,
             dhcp_config,
         ) catch |err| {
+            states.mutex.lock();
+            defer states.mutex.unlock();
+            state = states.map.getEntry("dhcp").?.value_ptr;
+            if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+                return;
             state.* = .{ .err = err };
             return;
         };
+        states.mutex.lock();
+        defer states.mutex.unlock();
+        state = states.map.getEntry("dhcp").?.value_ptr;
+        if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+            return;
         state.* = .done;
     }
 
     /// Handle Release DHCP
     fn handleReleaseDHCP(
-        state: *ThreadState,
+        states: *ThreadHashMap([]const u8, ThreadState),
         dhcp_info: proto.dhcp.Info,
         if_name: []const u8,
         if_index: i32,
         if_mac: [6]u8,
     ) void {
+        states.mutex.lock();
+        var state = states.map.getEntry("rel_dhcp").?.value_ptr;
+        state.* = .{
+            .working = .{
+                .timer = time.Timer.start() catch |err| {
+                    state.* = .{ .err = err };
+                    states.mutex.unlock();
+                    return;
+                },
+                .id = Thread.getCurrentId(),
+            },
+        };
+        states.mutex.unlock();
         proto.dhcp.releaseDHCP(
             if_name,
             if_index,
@@ -1473,18 +1550,51 @@ pub const Connection = struct {
             dhcp_info.server_id,
             dhcp_info.assigned_ip,
         ) catch |err| {
+            states.mutex.lock();
+            defer states.mutex.unlock();
+            state = states.map.getEntry("rel_dhcp").?.value_ptr;
+            if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+                return;
             state.* = .{ .err = err };
             return;
         };
+        states.mutex.lock();
+        defer states.mutex.unlock();
+        state = states.map.getEntry("rel_dhcp").?.value_ptr;
+        if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+            return;
         state.* = .done;
     }
 
     /// Handle DNS
-    fn handleDNS(state: *ThreadState, dns_config: dns.DNSConfig) void {
+    fn handleDNS(states: *ThreadHashMap([]const u8, ThreadState), dns_config: dns.DNSConfig) void {
+        states.mutex.lock();
+        var state = states.map.getEntry("dns").?.value_ptr;
+        state.* = .{
+            .working = .{
+                .timer = time.Timer.start() catch |err| {
+                    state.* = .{ .err = err };
+                    states.mutex.unlock();
+                    return;
+                },
+                .id = Thread.getCurrentId(),
+            },
+        };
+        states.mutex.unlock();
         dns.updateDNS(dns_config) catch |err| {
+            states.mutex.lock();
+            defer states.mutex.unlock();
+            state = states.map.getEntry("dns").?.value_ptr;
+            if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+                return;
             state.* = .{ .err = err };
             return;
         };
+        states.mutex.lock();
+        defer states.mutex.unlock();
+        state = states.map.getEntry("dns").?.value_ptr;
+        if (state.* != .working or state.working.id != Thread.getCurrentId()) //
+            return;
         state.* = .done;
     }
 
