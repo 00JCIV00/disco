@@ -22,11 +22,13 @@ const utils = @import("utils.zig");
 const c = utils.toStruct;
 const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
+pub const captures = @import("core/captures.zig");
+pub const connections = @import("core/connections.zig");
 pub const interfaces = @import("core/interfaces.zig");
 pub const networks = @import("core/networks.zig");
-pub const connections = @import("core/connections.zig");
 pub const profiles = @import("core/profiles.zig");
 pub const serve = @import("core/serve.zig");
+pub const sockets = @import("core/sockets.zig");
 
 
 /// Core Context of DisCo.
@@ -80,6 +82,8 @@ pub const Core = struct {
     nl80211_handler: *nl.io.Handler,
     /// Netlink Route Handler
     rtnetlink_handler: *nl.io.Handler,
+    /// Socket Event Loop
+    sock_event_loop: sockets.Loop,
     /// Interface Context
     if_ctx: interfaces.Context,
     /// Network Context
@@ -120,6 +124,7 @@ pub const Core = struct {
             .nl_event_loop = try .init(.{}),
             .nl80211_handler = nl80211_handler,
             .rtnetlink_handler = rtnetlink_handler,
+            .sock_event_loop = try .init(),
             .og_hostname = og_hostname,
             .if_ctx = undefined,
             .network_ctx = undefined,
@@ -229,14 +234,18 @@ pub const Core = struct {
         }
         // Available Interfaces
         log.debug("Searching for the following Interfaces: {f}", .{ SlicesF{ .slice = self.config.avail_if_names } });
-        // Event Loop
-        try self.nl_event_loop.start(self.alloc, &self.active); 
+        // Netlink Event Loop
+        try self.nl_event_loop.start(self.alloc, &self.active);
+        // Sockets Event Loop
+        try self.sock_event_loop.start(self);
         // Core Loop
         log.info("Started DisCo Core.", .{});
         while (self.active.load(.acquire)) {
             // Interface Tracking
             try self.if_ctx.update(self);
             Thread.sleep(1 * time.ns_per_ms);
+            // Socket Monitoring
+            try self.sock_event_loop.update(self);
             // Connection Tracking
             try self.conn_ctx.update(self);
             // Network Tracking
@@ -257,7 +266,7 @@ pub const Core = struct {
         },
         network_scan: struct {
             _cur_passes: u8 = 0,
-            max_passes: u8 = 1,
+            max_passes: u8 = 3,
         },
     };
     /// (WIP) Run the Core Context up To the provided `condition`.
@@ -330,6 +339,8 @@ pub const Core = struct {
         log.info("- Deinitialized Connection Tracking.", .{});
         self.serve_ctx.deinit(self.alloc);
         log.info("- Deinitialized File Serving.", .{});
+        self.sock_event_loop.deinit(self.alloc);
+        log.info("- Deinitialized Socket Event Loop.", .{});
         //self.arena.deinit();
         self.nl_event_loop.deinit(self.alloc);
         self.alloc.destroy(self.nl80211_handler);

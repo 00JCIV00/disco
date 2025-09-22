@@ -5,6 +5,7 @@ const ascii = std.ascii;
 const atomic = std.atomic;
 const fmt = std.fmt;
 const heap = std.heap;
+const linux = std.os.linux;
 const log = std.log.scoped(.interfaces);
 const math = std.math;
 const mem = std.mem;
@@ -22,6 +23,7 @@ const netdata = @import("../netdata.zig");
 const address = netdata.address;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
+const l2 = netdata.l2;
 const nl = @import("../netlink.zig");
 const protocols = @import("../protocols.zig");
 const dns = protocols.dns;
@@ -124,6 +126,34 @@ pub const Interface = struct {
         nl.parse.freeBytes(alloc, nl._80211.Wiphy, self.wiphy);
         //if (self.ssid) |ssid| alloc.free(ssid);
         self._init = false;
+    }
+
+    /// Initialize the Raw Socket for this Interface
+    pub fn initSock(self: *@This()) !void {
+        if (self.raw_sock) |sock| {
+            posix.close(sock);
+            self.raw_sock = null;
+        }
+        const if_sock = try posix.socket(nl.AF.PACKET, nl.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).ALL));
+        const sock_addr: posix.sockaddr.ll = .{
+            .ifindex = self.index,
+            .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).ALL),
+            .hatype = 0,
+            .pkttype = 0,
+            .halen = 6,
+            .addr = @splat(0),
+        };
+        try posix.bind(if_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
+        try posix.setsockopt(
+            if_sock,
+            posix.SOL.SOCKET,
+            posix.SO.RCVTIMEO,
+            mem.toBytes(posix.timeval{ .sec = 0, .usec = 10_000 })[0..],
+        );
+        self.raw_sock = if_sock;
+        log.debug("Initialized Raw Socket for '{s}'", .{ self.name });
+        //TODO: Figure out Promiscuous mode?
+        //try posix.setsockopt(if_sock, linux.SOL.PACKET, linux.PACKET.ADD_MEMBERSHIP, linux);
     }
 
     /// Check if the Interface is currently under a Penalty.
@@ -444,7 +474,14 @@ pub const Context = struct {
     /// Update the status of all Interfaces
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
         if (self._timer) |*timer| {
-            if (@divFloor(timer.read(), time.ns_per_ms) < 1_000) return;
+            const wait: u64 = wait: {
+                const run_cond = core_ctx.run_condition orelse break :wait 500;
+                break :wait switch (run_cond) {
+                    .list_interfaces => 0,
+                    else => 500,
+                };
+            };
+            if (@divFloor(timer.read(), time.ns_per_ms) < wait) return;
             timer.reset();
         }
         else self._timer = try .start();
@@ -660,12 +697,14 @@ pub const Context = struct {
                         const upd_if = upd_if_entry.value_ptr;
                         if (add_if.index != upd_if.index) {
                             log.debug("Interface '{s}' has a new Index: {d}", .{ add_if.name, add_if.index });
+                            try add_if.initSock();
                             if (upd_if.usage == .err) {
                                 log.debug("Reset interface '{s}' from errored state.", .{ add_if.name });
                                 break :updIf;
                             }
                         }
                         add_if.usage = upd_if.usage;
+                        add_if.raw_sock = upd_if.raw_sock;
                         add_if.penalty_time = upd_if.penalty_time;
                         add_if.penalty = upd_if.penalty;
                         add_if.min_penalty = upd_if.min_penalty;
@@ -731,6 +770,7 @@ pub const Context = struct {
                             }
                         }
                         log.info("Available Interface Found:\n{f}", .{ net_if });
+                        try net_if.initSock();
                         core_ctx.network_ctx.scan_configs.mutex.lock();
                         defer core_ctx.network_ctx.scan_configs.mutex.unlock();
                         if (core_ctx.network_ctx.scan_configs.map.getEntry(net_if.name)) |scan_cfg_entry| scanCfg: {
@@ -763,10 +803,14 @@ pub const Context = struct {
                 },
                 // Check for old WiFi Interface
                 .available,
-                .err,
                 .connect,
                 .scan,
+                .err,
                 => {
+                    if (net_if.usage == .err) if (net_if.raw_sock) |sock| {
+                        posix.close(sock);
+                        net_if.raw_sock = null;
+                    };
                     const now = try zeit.instant(.{});
                     const since_upd = @divFloor((now.timestamp -| net_if.last_upd.timestamp), @as(i128, time.ns_per_ms));
                     if (since_upd < 5000) continue;

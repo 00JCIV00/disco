@@ -229,7 +229,7 @@ pub const Context = struct {
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
         if (core_ctx.run_condition) |condition| {
             switch (condition) {
-                .list_interfaces, 
+                .list_interfaces,
                 .mod_interfaces,
                 => return,
                 else => {},
