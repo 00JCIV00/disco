@@ -38,7 +38,6 @@ const ThreadArrayList = utils.ThreadArrayList;
 const ThreadHashMap = utils.ThreadHashMap;
 
 
-
 /// Config for All Connections.
 pub const GlobalConfig = struct {
     /// The Max Age, in milliseconds, of a Network that's allowed for Connection attempts.
@@ -313,7 +312,7 @@ pub const Connection = struct {
     add_gw: bool = false,
     max_retries: u8,
     max_inactive_age: usize,
-    thread_timeout: usize = 9_000,
+    thread_timeout: usize = 30_000,
     // Derived
     _if_index: ?i32 = null,
     _psk: [32]u8 = @splat(0),
@@ -659,13 +658,13 @@ pub const Connection = struct {
                                 nlState: switch (self._nl_state) {
                                     .ready, .request => {
                                         self._nl80211_req_ctx.nextSeqID();
-                                        const sae_commit: [102]u8 =
+                                        const sae_commit: [102]u8 = //
                                             // Commit
-                                            mem.toBytes(@as(u32, 1)) ++
+                                            mem.toBytes(@as(u32, 1)) ++ //
                                             // Group
-                                            mem.toBytes(@as(u16, 19)) ++
-                                            auth_ctx.sae_ctx.?.commit.scalar ++
-                                            auth_ctx.sae_ctx.?.commit.element.x.toBytes(.big) ++
+                                            mem.toBytes(@as(u16, 19)) ++ //
+                                            auth_ctx.sae_ctx.?.commit.scalar ++ //
+                                            auth_ctx.sae_ctx.?.commit.element.x.toBytes(.big) ++ //
                                             auth_ctx.sae_ctx.?.commit.element.y.toBytes(.big);
                                         log.debug("SAE Commit Data:{f}\n", .{ HexF{ .bytes = sae_commit[0..] } });
                                         log.debug("WPA3 Auth SAE Commit...", .{});

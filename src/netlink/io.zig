@@ -3,10 +3,10 @@
 const std = @import("std");
 const atomic = std.atomic;
 const heap = std.heap;
+const linux = std.os.linux;
 const log = std.log.scoped(.nl_io);
 const math = std.math;
 const mem = std.mem;
-const os = std.os;
 const posix = std.posix;
 const time = std.time;
 const ArrayList = std.ArrayList;
@@ -52,7 +52,7 @@ pub fn initSock(nl_sock_conf: NetlinkSocketConfig) !posix.socket_t {
     };
     try posix.bind(nl_sock, @ptrCast(&nl_addr), @sizeOf(posix.sockaddr.nl));
     if (!nl_sock_conf.blocking)
-        _ = try posix.fcntl(nl_sock, posix.F.SETFL, os.linux.SOCK.NONBLOCK);
+        _ = try posix.fcntl(nl_sock, posix.F.SETFL, linux.SOCK.NONBLOCK);
     if (nl_sock_conf.timeout) |timeout| {
         try posix.setsockopt(
             nl_sock,
@@ -258,7 +258,7 @@ pub const Handler = struct {
     /// *Internal Use*
     _cmd_response_maps: ThreadHashMap(u16, ThreadHashMap(u32, Response)) = .empty,
     /// Epoll Event
-    epoll_event: posix.system.epoll_event,
+    epoll_event: linux.epoll_event,
     /// Netlink Socket Protocol
     /// *Read Only*
     nl_sock_proto: u32,
@@ -280,7 +280,7 @@ pub const Handler = struct {
             .us_cb_fn = init_config.us_cb_fn,
             .err_fn = init_config.err_fn,
             .epoll_event = .{
-                .events = os.linux.EPOLL.IN,
+                .events = linux.EPOLL.IN,
                 .data = .{ .fd = nl_sock },
             },
         };
@@ -592,7 +592,6 @@ pub const Loop = struct {
     pub fn start(self: *@This(), alloc: mem.Allocator, active: *atomic.Value(bool)) !void {
         if (self._active.load(.acquire)) return;
         self._active.store(true, .monotonic);
-        //self._epoll_fd = @intCast(try posix.epoll_create1(0));
         self._thread = try .spawn(
             .{ .allocator = alloc },
             startThread,
@@ -636,7 +635,7 @@ pub const Loop = struct {
         try self._handlers.put(alloc, handler.nl_sock, handler);
         try posix.epoll_ctl(
             self._epoll_fd,
-            os.linux.EPOLL.CTL_ADD,
+            linux.EPOLL.CTL_ADD,
             handler.nl_sock,
             &handler.epoll_event,
         );

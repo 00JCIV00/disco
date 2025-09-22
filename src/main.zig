@@ -72,7 +72,7 @@ pub fn main() !void {
         },
         null,
     );
-    var stdout_file = fs.File.stdout();
+    var stdout_file: fs.File =  .stdout();
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = stdout_file.writer(stdout_buf[0..]);
     const stdout = &stdout_writer.interface;
@@ -506,7 +506,7 @@ pub fn main() !void {
         core_thread.detach();
         while (!(&core_ctx).active.load(.acquire)) //
             Thread.sleep(10 * time.ns_per_ms);
-        var stdin_file = fs.File.stdin();
+        var stdin_file: fs.File = .stdin();
         var stdin_buf: [16]u8 = undefined;
         var stdin_reader = stdin_file.reader(stdin_buf[0..]);
         const stdin = &stdin_reader.interface;
@@ -817,6 +817,10 @@ pub fn main() !void {
     // - Scan
     if (main_cmd.matchSubCmd("scan")) |scan_cmd| {
         _ = scan_cmd;
+        if (core_ctx.config.avail_if_names.len == 0) {
+            log.err("Using `scan` requires at least one Interface to be specified using either `-i/--interfaces` or a config file.", .{});
+            return;
+        }
         log.info("Scanning for WiFi Networks...", .{});
         try core_ctx.runTo(.{ .network_scan = .{} });
         var networks_iter = core_ctx.network_ctx.networks.iterator();

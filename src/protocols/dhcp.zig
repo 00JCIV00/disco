@@ -2,11 +2,11 @@
 
 const std = @import("std");
 const crypto = std.crypto;
+const linux = std.os.linux;
 const log = std.log.scoped(.dhcp);
 const mem = std.mem;
 const net = std.net;
 const posix = std.posix;
-const os = std.os;
 
 const netdata = @import("../netdata.zig");
 const l5 = netdata.l5;
@@ -148,7 +148,7 @@ pub fn handleDHCP(
 ) !Info {
     //log.debug("Starting DHCP...", .{});
     //defer log.debug("Finished DHCP!", .{});
-    const dhcp_sock = try posix.socket(posix.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(Eth.ETH_P).IPv4));
+    const dhcp_sock = try posix.socket(posix.AF.PACKET, linux.SOCK.RAW, mem.nativeToBig(u16, c(Eth.ETH_P).IPv4));
     defer posix.close(dhcp_sock);
     const sock_addr = posix.sockaddr.ll{
         .ifindex = if_index,

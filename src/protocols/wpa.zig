@@ -442,7 +442,7 @@ pub fn handle4WHS(
     }
     const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE));
     defer posix.close(hs_sock);
-    const sock_addr = posix.sockaddr.ll{
+    const sock_addr: posix.sockaddr.ll = .{
         .ifindex = if_index,
         .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE),
         .hatype = 0,
