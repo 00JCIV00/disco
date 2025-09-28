@@ -53,6 +53,8 @@ pub const Core = struct {
         global_connect_config: connections.GlobalConfig = .{},
         /// Connection Configs
         connect_configs: []const connections.Config = &.{},
+        /// PCAP Config
+        pcap_config: captures.Config = .{},
         /// Serve Config
         serve_config: ?serve.Config = null,
     };
@@ -92,6 +94,8 @@ pub const Core = struct {
     conn_ctx: connections.Context,
     /// Serve Context
     serve_ctx: serve.Context,
+    /// Capture Writer
+    cap_writer: captures.Writer,
     /// Original Hostname
     og_hostname: []const u8,
     /// Forced Close
@@ -130,6 +134,7 @@ pub const Core = struct {
             .network_ctx = undefined,
             .conn_ctx = undefined,
             .serve_ctx = undefined,
+            .cap_writer = undefined,
         };
         errdefer self.nl_event_loop.deinit(alloc);
         try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
@@ -143,6 +148,8 @@ pub const Core = struct {
         errdefer self.conn_ctx.deinit(alloc);
         self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
         errdefer self.serve_ctx.deinit(alloc);
+        self.cap_writer = try .init(&self);
+        errdefer self.cap_writer.deinit(&self);
         // Context Setup
         //self.conn_ctx.global_config.* = config.global_connect_config;
         //for (config.connect_configs) |conn_conf| {
@@ -241,6 +248,7 @@ pub const Core = struct {
         // Core Loop
         log.info("Started DisCo Core.", .{});
         while (self.active.load(.acquire)) {
+            defer Thread.sleep(10 * time.ns_per_ms);
             // Interface Tracking
             try self.if_ctx.update(self);
             Thread.sleep(1 * time.ns_per_ms);
@@ -250,7 +258,8 @@ pub const Core = struct {
             try self.conn_ctx.update(self);
             // Network Tracking
             try self.network_ctx.update(self);
-            Thread.sleep(10 * time.ns_per_ms);
+            // Capture Writing
+            try self.cap_writer.update(self);
         }
         //self._thread_pool.waitAndWork(&self._wait_group);
         self._thread_pool.deinit();
@@ -266,7 +275,7 @@ pub const Core = struct {
         },
         network_scan: struct {
             _cur_passes: u8 = 0,
-            max_passes: u8 = 3,
+            max_passes: u8 = 4,
         },
     };
     /// (WIP) Run the Core Context up To the provided `condition`.
@@ -339,6 +348,8 @@ pub const Core = struct {
         log.info("- Deinitialized Connection Tracking.", .{});
         self.serve_ctx.deinit(self.alloc);
         log.info("- Deinitialized File Serving.", .{});
+        self.cap_writer.deinit(self);
+        log.info("- Deinitialized PCAP Writing.", .{});
         self.sock_event_loop.deinit(self.alloc);
         log.info("- Deinitialized Socket Event Loop.", .{});
         //self.arena.deinit();

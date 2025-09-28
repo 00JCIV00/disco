@@ -407,7 +407,10 @@ pub const Handler = struct {
     /// Handle a Netlink Response
     pub fn handleResponse(self: *@This()) void {
         // Receive Netlink Messages from Socket
-        const recv_len = posix.recv(self.nl_sock, self._recv_buf[0..], 0) catch |err| return self.handleError(err);
+        const recv_len = posix.recv(self.nl_sock, self._recv_buf[0..], 0) catch |err| switch (err) {
+            error.WouldBlock => return,
+            else => return self.handleError(err),
+        };
         const recv_buf = self._recv_buf[0..recv_len];
         // Iterate over each Netlink Message
         var msg_iter: nl.parse.Iterator(nl.MessageHeader, .{}) = .{ .bytes = recv_buf };
@@ -515,6 +518,8 @@ pub const Handler = struct {
             //else |err|
             //    log.debug("Errored Response for Seq ID: {d}, Err: {s}", .{ msg.hdr.seq, @errorName(err) });
         }
+        //self.handleResponse();
+        //@call(.always_tail, Handler.handleResponse, .{ self });
     }
 
     /// Handle an Error with this Netlink Message Handler
