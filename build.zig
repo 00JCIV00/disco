@@ -1,9 +1,16 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    //const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{
         .preferred_optimize_mode = .ReleaseSafe,
+    });
+    const target = b.standardTargetOptions(.{
+        .default_target = .{
+            .cpu_model = //
+                if (optimize == .Debug)  .determined_by_arch_os //
+                else .baseline,
+        },
     });
 
     // Cova
@@ -29,7 +36,9 @@ pub fn build(b: *std.Build) void {
     defer b.allocator.free(exe_name);
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
-        .target = target,
+        .target = //
+            if (optimize == .Debug) target //
+            else target,
         .optimize = optimize,
     });
     const exe = b.addExecutable(.{

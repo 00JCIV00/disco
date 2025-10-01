@@ -4,7 +4,8 @@ Config:
 * `scan_configs`:          A list of Scan Configurations. (See Scan)
 * `global_connect_config`: The Global Connection Configuration. (See Global Connect)
 * `connect_configs`:       A list of Connection Configurations. (See Connect)
-* `serve_config`:          File Server Config.     
+* `pcap_config`:           The PCAP Configuration. (See PCAP)
+* `serve_config`:          File Server Config.
 * `conflict_processes`:    A list of Processes that could Conflict w/ DisCo.
 
 Profile:
@@ -34,15 +35,27 @@ Connect:
 * `add_gw`:     Add the Connecting Interface as a Default Route (Gateway) w/ DNS. (Requires `dhcp`).
 
 Global Connect:
-* `network_max_age`: The Max Age, in milliseconds, of a Network that's allowed for Connection attempts.
-* `dhcp`:            DHCP Lease Config in JSON format. The DHCP Server may ignore these settings:
-* `add_gw`:          Add the Connecting Interface as a Default Route (Gateway) w/ DNS. (Requires `dhcp`).
+* `network_max_age`:  The Max Age, in milliseconds, of a Network that's allowed for Connection attempts.
+* `dhcp`:             DHCP Lease Config in JSON format. The DHCP Server may ignore these settings:
+* `add_gw`:           Add the Connecting Interface as a Default Route (Gateway) w/ DNS. (Requires `dhcp`).
+* `max_network_age`:  The Max Age, in milliseconds, of a Network that's allowed for Connection attempts. (Default 60_000ms)
+* `max_inactive_age`: The Max Age, in milliseconds, of an inactive Connection before it's dropped. (Default 30_000ms)
+* `max_retries`:      The Max # of Retries that will be attempted on error before a Connection is dropped. (Default 3)
 
 DHCP:
 * `ip_addr`:        Request an IP Address.
 * `lease_time`:     Request a Lease Time in seconds.
 * `renewal_time`:   Request a Renewal Time in seconds.
 * `rebinding_time`: Request a Rebinding Time in seconds.
+
+PCAP:
+* `file`: PCAP File Configuration
+** `dir`:          Directory to write PCAP-NG files to.
+** `prefix`:       Prefix for PCAP-NG files.
+** `suffix`:       Suffix for PCAP-NG files.
+** `max_filesize`: Max File Size in Kilobytes (KB)
+* `tcp`: TCP PCAP Stream Configuration
+** `ip_port`:      IP & Port to host the TCP PCAP Stream on (Ex: 0.0.0.0:12345)
 
 Serve:
 * `ip_port`:    The IP & Port to serve on.
