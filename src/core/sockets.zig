@@ -60,7 +60,7 @@ pub const Parser = struct {
             .ctx = .{ .if_mac = if_mac },
             .io_reader = .{
                 .vtable = &.{
-                    .stream = io_stream,
+                    .stream = ioStream,
                 },
                 .buffer = &.{},
                 .seek = 0,
@@ -68,7 +68,7 @@ pub const Parser = struct {
             },
             .io_writer = .{
                 .vtable = &.{
-                    .drain = io_drain,
+                    .drain = ioDrain,
                 },
                 .buffer = &.{},
             },
@@ -110,7 +110,7 @@ pub const Parser = struct {
     }
 
     /// Satisfy the `Io.Reader` Interface.
-    fn io_stream(self: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
+    fn ioStream(self: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
         const parser: *@This() = @alignCast(@fieldParentPtr("io_reader", self));
         if (parser.ctx.state == .down) return 0;
         //log.debug("Reading Data...", .{});
@@ -133,7 +133,7 @@ pub const Parser = struct {
     }
 
     /// Satisfy the `Io.Writer` Interface.
-    fn io_drain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
+    fn ioDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
         if (data.len == 0) return 0;
         const parser: *@This() = @fieldParentPtr("io_writer", self);
         //log.debug("Writing {d} Frames", .{ data.len });
@@ -355,7 +355,7 @@ pub const Loop = struct {
             if (//
                 sock_parser.eth_list.items.len == 0 and //
                 sock_parser.wifi_list.items.len == 0 //
-            ) return;
+            ) continue;
             const eth_frames = try sock_parser.getEthFrames();
             defer {
                 for (eth_frames) |frame| core_ctx.alloc.free(frame);
@@ -366,7 +366,7 @@ pub const Loop = struct {
                 for (wifi_frames) |frame| core_ctx.alloc.free(frame);
                 core_ctx.alloc.free(wifi_frames);
             }
-            //log.debug("Handling {d} Eth and {d} WiFi Frames", .{ eth_frames.len, wifi_frames.len });
+            //log.debug("Handling {d} Eth and {d} WiFi Frames for '{s}'", .{ eth_frames.len, wifi_frames.len, sock_if.name });
             defer self.handlers.mutex.unlock();
             var handler_iter = self.handlers.iterator();
             while (handler_iter.next()) |handler_entry| {

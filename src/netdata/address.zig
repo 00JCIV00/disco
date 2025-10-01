@@ -5,6 +5,7 @@ const ascii = std.ascii;
 const crypto = std.crypto;
 const fmt = std.fmt;
 const mem = std.mem;
+const net = std.net;
 const ArrayList = std.ArrayList;
 const Io = std.Io;
 
@@ -151,7 +152,16 @@ pub fn getRandomMAC(kind: RandomMACKind) [6]u8 {
     return mac;
 }
 
-/// Parse an IP Address from the provided String (`str`).
+/// Parse an IPv4 Address with a Port from the provided String (`str`).
+pub fn parseIPPort(addr: []const u8) !net.Address {
+    var iter = mem.splitScalar(u8, addr, ':');
+    return try net.Address.parseIp(
+        iter.first(),
+        try fmt.parseInt(u16, iter.next() orelse "-", 10),
+    );
+}
+
+/// Parse an IPv4 Address from the provided String (`str`).
 pub fn parseIP(ip_str: []const u8) ![4]u8 {
     const str = mem.trim(u8, ip_str, ascii.whitespace[0..]);
     const trimmed = mem.trim(u8, str[0..], ascii.whitespace[0..]);
