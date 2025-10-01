@@ -416,15 +416,17 @@ pub const Handler = struct {
         var msg_iter: nl.parse.Iterator(nl.MessageHeader, .{}) = .{ .bytes = recv_buf };
         while (msg_iter.next()) |msg| {
             //log.debug("Handling Response for Seq ID: {d}", .{ msg.hdr.seq });
+            self._seq_responses.mutex.lock();
+            defer self._seq_responses.mutex.unlock();
+            self._cmd_response_maps.mutex.lock();
+            defer self._cmd_response_maps.mutex.unlock();
             const response = respCtx: {
-                defer self._seq_responses.mutex.unlock();
-                if (self._seq_responses.getEntry(msg.hdr.seq)) |resp_entry| break :respCtx resp_entry.value_ptr;
+                if (self._seq_responses.map.getEntry(msg.hdr.seq)) |resp_entry| break :respCtx resp_entry.value_ptr;
                 const msg_cmd = self.detectCmd(msg.hdr, msg.data) catch |err| {
                     self.handleError(err);
                     continue;
                 };
-                defer self._cmd_response_maps.mutex.unlock();
-                const cmd_resp_map_entry = self._cmd_response_maps.getEntry(msg_cmd) orelse continue;
+                const cmd_resp_map_entry = self._cmd_response_maps.map.getEntry(msg_cmd) orelse continue;
                 const cmd_resp_map = cmd_resp_map_entry.value_ptr;
                 cmd_resp_map.mutex.lock();
                 defer cmd_resp_map.mutex.unlock();
