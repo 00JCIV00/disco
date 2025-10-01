@@ -686,7 +686,7 @@ pub fn handleDHCP(
         switch (ack_msg_type) {
             c(l5.DHCP.MessageType).ACK => {
                 const assigned_ip = mem.bytesToValue([4]u8, &ack_header.self_addr);
-                log.debug(
+                log.info(
                     \\
                     \\-------------------------------------
                     \\ACK:

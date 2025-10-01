@@ -248,6 +248,7 @@ pub const Core = struct {
         // Core Loop
         log.info("Started DisCo Core.", .{});
         while (self.active.load(.acquire)) {
+            //log.debug("Core Update", .{});
             defer Thread.sleep(10 * time.ns_per_ms);
             // Interface Tracking
             try self.if_ctx.update(self);
@@ -334,7 +335,7 @@ pub const Core = struct {
             else |err|
                 log.warn("- Couldn't reset the Hostname: {t}", .{ err });
         }
-        self.if_ctx.restore(self.alloc);
+        self.if_ctx.restore(self);
         self.alloc.free(self.og_hostname);
         if (self.forced_close) {
             log.warn("- Forced close. Leaving memory clean up to the OS.", .{});

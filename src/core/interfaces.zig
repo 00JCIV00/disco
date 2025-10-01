@@ -362,7 +362,7 @@ pub const Interface = struct {
             },
         );
         if (self.channel) |ch| //
-            try writer.print("- Channel: {d} | {s}MHz Wide\n", .{ ch, if (self.ch_width) |width| @tagName(width) else "-" });
+            try writer.print("- Channel: {d} | {s}\n", .{ ch, if (self.ch_width) |width| @tagName(width) else "-" });
         if (self.ips[0] != null) ips: {
             try writer.print("- IPs:\n", .{});
             for (self.ips, self.cidrs) |_ip, _cidr| {
@@ -460,14 +460,23 @@ pub const Context = struct {
     }
 
     /// Restore All Interfaces to their Original MAC Addresses and remove any IP Addresses.
-    pub fn restore(self: *@This(), alloc: mem.Allocator) void {
+    pub fn restore(self: *@This(), core_ctx: *core.Core) void {
         if (self.interfaces.count() == 0) return;
         var if_iter = self.interfaces.iterator();
         defer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const res_if = if_entry.value_ptr;
-            if (res_if.usage == .unavailable or res_if.usage == .err) continue;
-            res_if.restore(alloc, &.{ .ips, .mac, .dns });
+            //if (res_if.usage == .unavailable or res_if.usage == .err) continue;
+            switch (res_if.usage) {
+                .unavailable,
+                .err,
+                => continue,
+                .connect => |*conn| {
+                    conn.stop(core_ctx);
+                },
+                else => {},
+            }
+            res_if.restore(core_ctx.alloc, &.{ .ips, .mac, .dns });
         }
     }
     
