@@ -425,6 +425,7 @@ pub fn main() !void {
                     log.info("Imported the Default Config at '{s}'!", .{ default_conf_path });
                     break :importConf config;
                 }
+                log.info("No Default Configs found. Using default settings.", .{});
             }
             break :importConf config;
         };
@@ -816,13 +817,15 @@ pub fn main() !void {
     }
     // - Scan
     if (main_cmd.matchSubCmd("scan")) |scan_cmd| {
-        _ = scan_cmd;
         if (core_ctx.config.avail_if_names.len == 0) {
             log.err("Using `scan` requires at least one Interface to be specified using either `-i/--interfaces` or a config file.", .{});
             return;
         }
+        const scan_opts = try scan_cmd.getOpts(.{});
+        const passes_opt = scan_opts.get("passes").?;
+        const passes = try passes_opt.val.getAs(u8);
         log.info("Scanning for WiFi Networks...", .{});
-        try core_ctx.runTo(.{ .network_scan = .{} });
+        try core_ctx.runTo(.{ .network_scan = .{ .max_passes = passes } });
         var networks_iter = core_ctx.network_ctx.networks.iterator();
         defer core_ctx.network_ctx.networks.mutex.unlock();
         try stdout.print("WiFi Networks:\n\n", .{});

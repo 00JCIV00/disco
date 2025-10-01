@@ -56,11 +56,7 @@ pub const CommandT = cova.Command.Custom(.{
                 .ChildT = net.Address,
                 .parse_fn = struct{
                     pub fn parseIP(addr: []const u8, _: mem.Allocator) !net.Address {
-                        var iter = mem.splitScalar(u8, addr, ':');
-                        return net.Address.parseIp(
-                            iter.first(),
-                            try fmt.parseInt(u16, iter.next() orelse "-", 10)
-                        ) catch |err| {
+                        return netdata.address.parseIPPort(addr) catch |err| {
                             log.err("The provided destination address '{s}' is invalid.", .{ addr });
                             return err;
                         };
@@ -358,6 +354,17 @@ pub const setup_cmd: CommandT = .{
             .description = "Scan for WiFi Networks.",
             .cmd_group = "ACTIVE",
             .allow_inheritable_opts = true,
+            .opts = &.{
+                .{
+                    .name = "passes",
+                    .description = "The number of Scan Passes to be done by all provided interfaces in total.",
+                    .long_name = "passes",
+                    .short_name = 'p',
+                    .val = .ofType(u8, .{
+                        .default_val = 4,
+                    }),
+                }
+            }
         },
         .{
             .name = "list",

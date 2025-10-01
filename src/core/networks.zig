@@ -227,12 +227,34 @@ pub const Context = struct {
 
     /// Update Networks
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
-        if (core_ctx.run_condition) |condition| {
-            switch (condition) {
+        if (core_ctx.run_condition) |*condition| {
+            switch (condition.*) {
                 .list_interfaces,
                 .mod_interfaces,
                 => return,
-                else => {},
+                .network_scan => |*scan_cond| {
+                    scan_cond._cur_iter +|= 1;
+                    const usable_ifs: u8 = usableIFs: {
+                        var usable_ifs: u8 = 0;
+                        defer core_ctx.if_ctx.interfaces.mutex.unlock();
+                        var if_iter = core_ctx.if_ctx.interfaces.iterator();
+                        while (if_iter.next()) |check_if_entry| {
+                            const check_if = check_if_entry.value_ptr;
+                            switch (check_if.usage) {
+                                .unavailable, .err => continue,
+                                else => usable_ifs += 1,
+                            }
+                        }
+                        break :usableIFs usable_ifs;
+                    };
+                    if ( //
+                        scan_cond._cur_iter >= 5 and //
+                        usable_ifs == 0 //
+                    ) {
+                        log.err("No usable Interfaces found.", .{});
+                        return error.NoUsableInterfaces;
+                    }
+                },
             }
         }
         //defer _ = self._arena.reset(.retain_capacity);

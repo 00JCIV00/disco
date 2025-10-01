@@ -251,7 +251,7 @@ pub const Core = struct {
             defer Thread.sleep(10 * time.ns_per_ms);
             // Interface Tracking
             try self.if_ctx.update(self);
-            Thread.sleep(1 * time.ns_per_ms);
+            //Thread.sleep(1 * time.ns_per_ms);
             // Socket Monitoring
             try self.sock_event_loop.update(self);
             // Connection Tracking
@@ -274,6 +274,7 @@ pub const Core = struct {
             complete: bool = false,
         },
         network_scan: struct {
+            _cur_iter: u8 = 0,
             _cur_passes: u8 = 0,
             max_passes: u8 = 4,
         },
