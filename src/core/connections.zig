@@ -131,6 +131,8 @@ pub const Context = struct {
 
     /// Update Connections
     pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+        //log.debug("Start Conn Update", .{});
+        //defer log.debug("End Conn Update", .{});
         if (core_ctx.run_condition) |condition| {
             switch (condition) {
                 .list_interfaces,
@@ -146,9 +148,12 @@ pub const Context = struct {
         core_ctx.if_ctx.interfaces.mutex.lock();
         defer core_ctx.if_ctx.interfaces.mutex.unlock();
         var if_iter = core_ctx.if_ctx.interfaces.map.iterator();
+        //log.debug("Updating Active Connections...", .{});
         while (if_iter.next()) |conn_if_entry| {
             const conn_if = conn_if_entry.value_ptr;
             if (conn_if.usage != .connect) continue;
+            //log.debug("Updating '{s}' Connection...", .{ conn_if.name });
+            //defer log.debug("Updated '{s}' Connection.", .{ conn_if.name });
             conn_if.usage.connect.handle(core_ctx) catch |err| {
                 switch (err) {
                     error.OSError => {
@@ -166,6 +171,7 @@ pub const Context = struct {
                 }
             };
         }
+        //log.debug("Updated Active Connections.", .{});
         connLoop: for (self._candidates.items) |candidate| {
             const conn_if_entry = core_ctx.if_ctx.interfaces.map.getEntry(candidate.conn_if) orelse continue;
             const conn_if = conn_if_entry.value_ptr;
@@ -477,10 +483,10 @@ pub const Connection = struct {
             .disconn => {
                 for (0..10) |_| {
                     self.handle(core_ctx) catch break;
-                    Thread.sleep(10 * time.ns_per_ms);
+                    Thread.sleep(1 * time.ns_per_ms);
                 }
             },
-            else => self.deinit(core_ctx.alloc),
+            else => {},//self.deinit(core_ctx.alloc),
         }
     }
     
@@ -1266,7 +1272,8 @@ pub const Connection = struct {
                                     const sta = self._station.?;
                                     const last_seen = sta.STA_INFO.INACTIVE_TIME orelse return error.IncompleteStation;
                                     if (last_seen >= self.max_inactive_age) {
-                                        log.warn("The Connection to '{s}' has been inactive for too long.", .{ self.ssid });
+                                        log.warn("The Connection to '{s}' has been inactive for too long ({d}s).", .{ self.ssid, @divFloor(self.max_inactive_age, 1_000) });
+                                        self._retries = self.max_retries;
                                         return error.InactiveConnection;
                                     }
                                     //log.debug(
@@ -1288,7 +1295,7 @@ pub const Connection = struct {
                                     //);
                                 }
                                 self._nl_state = .request;
-                                continue :nlState self._nl_state;
+                                //continue :nlState self._nl_state; <-- This can lock up the entire program
                             },
                         }
                     },
