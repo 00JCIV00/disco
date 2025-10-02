@@ -75,6 +75,7 @@ pub fn serveDir(
     ctx: *Context, 
     active: *const atomic.Value(bool),
 ) void {
+    log.debug("Starting File Server...", .{});
     const conf: *Config = ctx.conf;
     if (conf.protocols.len == 0) {
         log.err("At least one Protocol must be provided for the Server.", .{});
@@ -127,7 +128,10 @@ pub fn serveDir(
     };
     log.info("Serving '{s}' on '{f}:{d}'...", .{ conf.serve_path, IPF{ .bytes = conf.ip[0..] }, conf.port });
     // Set up event loop for both protocols
-    const serve_path = if (mem.endsWith(u8, conf.serve_path, "/")) conf.serve_path[0..(conf.serve_path.len - 1)] else conf.serve_path;
+    const serve_path = //
+        if (mem.endsWith(u8, conf.serve_path, "/")) //
+            conf.serve_path[0..(conf.serve_path.len - 1)] //
+        else conf.serve_path;
     const job_count = jobCount: {
         if (mem.indexOfScalar(Protocol, conf.protocols, .all)) |_|
             break :jobCount enums.values(Protocol).len - 1;

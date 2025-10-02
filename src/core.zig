@@ -228,8 +228,17 @@ pub const Core = struct {
         }
         // File Serving
         if (self.config.serve_config) |_| {
-            self._thread_pool.spawnWg(
-                &self._wait_group,
+            //self._thread_pool.spawnWg(
+            //    &self._wait_group,
+            //    serve.serveDir,
+            //    .{
+            //        self.alloc,
+            //        &self.serve_ctx,
+            //        &self.active,
+            //    },
+            //);
+            const serve_thread: Thread = try .spawn(
+                .{ .allocator = self.alloc },
                 serve.serveDir,
                 .{
                     self.alloc,
@@ -237,8 +246,9 @@ pub const Core = struct {
                     &self.active,
                 },
             );
-            log.info("- Started File Serving.", .{});
+            serve_thread.detach();
         }
+        self._wait_group.start();
         // Available Interfaces
         log.debug("Searching for the following Interfaces: {f}", .{ SlicesF{ .slice = self.config.avail_if_names } });
         // Netlink Event Loop

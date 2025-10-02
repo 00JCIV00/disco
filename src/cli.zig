@@ -455,7 +455,8 @@ pub const setup_cmd: CommandT = .{
                         .alias_child_type= "path",
                         .valid_fn = struct{
                             pub fn validatePath(path: []const u8, _: mem.Allocator) bool {
-                                var dir = fs.openDirAbsolute(path, .{}) catch return false;
+                                const cwd = fs.cwd();
+                                var dir = cwd.openDir(path, .{}) catch return false;
                                 defer dir.close();
                                 return true;
                             }
