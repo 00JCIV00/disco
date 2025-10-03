@@ -18,10 +18,13 @@ const zeit = @import("zeit");
 
 const core = @import("../core.zig");
 const netdata = @import("../netdata.zig");
+const address = netdata.address;
 const pcap = netdata.pcap;
-const MACF = netdata.address.MACFormatter;
+const IPF = address.IPFormatter;
+const MACF = address.MACFormatter;
 const utils = @import("../utils.zig");
 const HexF = utils.HexFormatter;
+const SocketWriter = utils.SocketWriter;
 const ThreadArrayList = utils.ThreadArrayList;
 const ThreadHashMap = utils.ThreadHashMap;
 
@@ -43,7 +46,9 @@ pub const Config = struct {
     
     pub const TCPConfig = struct {
         /// IP & Port to host the TCP PCAP Stream on (Ex: 0.0.0.0:12345)
-        ip_port: []const u8,
+        ip_port: []const u8 = "0.0.0.0:12071",
+        /// Max # of Connections
+        max_conns: u8 = 10,
     };
 };
 
@@ -61,6 +66,23 @@ pub const FileContext = struct {
     basename: []const u8 = "",
     /// Counter for File Splitting
     split_count: usize = 0,
+};
+
+/// TCP Context
+pub const TCPContext = struct {
+    /// TCP Config
+    config: Config.TCPConfig,
+    /// Accept Socket
+    accept_sock: posix.socket_t,
+    /// Connections List 
+    conn_list: ThreadArrayList(Connection) = .empty,
+
+    /// Connected Client
+    pub const Connection = struct {
+        sock: posix.socket_t,
+        addr: posix.sockaddr.in,
+        writer: SocketWriter,
+    };
 };
 
 /// Interface Description Block (IDB) Pair for Managed & Monitor versions of an Interface
@@ -86,7 +108,7 @@ pub const Writer = struct {
     /// File Context
     file_ctx: ?FileContext = null,
     /// PCAP TCP Stream Host Address
-    addr: ?net.Address = null,
+    tcp_ctx: ?TCPContext = null,
     /// Frame Writer
     frame_writer: Io.Writer,
     /// Current Parser Context for writing Frames
@@ -97,12 +119,12 @@ pub const Writer = struct {
     pub fn init(core_ctx: *core.Core) !@This() {
         const config = &core_ctx.config.pcap_config;
         var file_ctx: ?FileContext = fileCtx: {
-            if (config.file) |*conf_file| {
+            if (config.file) |*file_conf| {
                 const cwd = fs.cwd();
-                var pcap_dir = cwd.openDir(conf_file.dir, .{}) catch |err| switch (err) {
+                var pcap_dir = cwd.openDir(file_conf.dir, .{}) catch |err| switch (err) {
                     error.FileNotFound => pcapDir: {
-                        log.warn("Unable to find '{s}'. Writing to the Current Directory instead.", .{ conf_file.dir });
-                        conf_file.dir = ".";
+                        log.warn("Unable to find '{s}'. Writing to the Current Directory instead.", .{ file_conf.dir });
+                        file_conf.dir = ".";
                         break :pcapDir cwd;
                     },
                     else => return err,
@@ -117,15 +139,15 @@ pub const Writer = struct {
                     break :baseName fn_w.toOwnedSlice() catch @panic("OOM");
                 };
                 try fn_writer.print("{s}{s}{s}", .{
-                    conf_file.prefix,
+                    file_conf.prefix,
                     basename,
-                    conf_file.suffix,
+                    file_conf.suffix,
                 });
                 const filename = try fn_w.toOwnedSlice();
                 errdefer core_ctx.alloc.free(filename);
                 const file = try pcap_dir.createFile(filename, .{ .read = true });
                 break :fileCtx .{
-                    .config = conf_file.*,
+                    .config = file_conf.*,
                     .file = file,
                     .filename = filename,
                     .basename = basename,
@@ -141,12 +163,38 @@ pub const Writer = struct {
                 f_ctx.dir.close();
             f_ctx.file.close();
         };
+        const tcp_ctx: ?TCPContext = tcpCtx: {
+            if (config.tcp) |tcp_conf| {
+                const tcp_addr = address.parseIPPort(tcp_conf.ip_port) catch |err| {
+                    log.err("Could not parse IP/Port: {t}", .{ err });
+                    break :tcpCtx null;
+                };
+                const tcp_sock = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch |err| {
+                    log.err("Could not create TCP Socket: {t}", .{ err });
+                    break :tcpCtx null;
+                };
+                posix.bind(tcp_sock, &tcp_addr.any, tcp_addr.getOsSockLen()) catch |err| {
+                    log.err("Could not bind to TCP Socket: {t}", .{ err });
+                    break :tcpCtx null;
+                };
+                posix.listen(tcp_sock, 0) catch |err| {
+                    log.err("Could not listen on TCP Socket: {t}", .{ err });
+                    break :tcpCtx null;
+                };
+                break :tcpCtx .{
+                    .config = tcp_conf,
+                    .accept_sock = tcp_sock,
+                };
+            }
+            break :tcpCtx null;
+        };
         var self: @This() = .{
             .shb = .{
                 .block_total_len = @sizeOf(pcap.SectionHeaderBlock) + 4,
                 .section_len = 0,
             },
             .file_ctx = file_ctx,
+            .tcp_ctx = tcp_ctx,
             .frame_writer = .{
                 .vtable = &.{
                     .drain = frameDrain,
@@ -175,6 +223,14 @@ pub const Writer = struct {
             file_ctx.file.close();
             core_ctx.alloc.free(file_ctx.filename);
             core_ctx.alloc.free(file_ctx.basename);
+        }
+        if (self.tcp_ctx) |*tcp_ctx| {
+            posix.close(tcp_ctx.accept_sock);
+            for (tcp_ctx.conn_list.items()) |conn| //
+                posix.close(conn.sock);
+            log.info("Closed {d} TCP Connections", .{ tcp_ctx.conn_list.list.items.len });
+            tcp_ctx.conn_list.mutex.unlock();
+            tcp_ctx.conn_list.deinit(core_ctx.alloc);
         }
         self.shb_opts.deinit(core_ctx.alloc);
         self.idbs.deinit(core_ctx.alloc);
@@ -206,18 +262,62 @@ pub const Writer = struct {
                 var fn_writer = &fn_w.writer;
                 errdefer fn_w.deinit();
                 file_ctx.split_count +%= 1;
-                try fn_writer.print("{s}{s}-{d}{s}", .{
+                fn_writer.print("{s}{s}-{d}{s}", .{
                     file_ctx.config.prefix,
                     file_ctx.basename,
                     file_ctx.split_count,
                     file_ctx.config.suffix,
-                });
+                }) catch @panic("OOM?");
                 core_ctx.alloc.free(file_ctx.filename);
                 break :fileName fn_w.toOwnedSlice() catch @panic("OOM");
             };
             file.* = try dir.createFile(file_ctx.filename, .{ .read = true });
             var file_w = file.writer(&.{});
             try self.writeSHB(&file_w.interface);
+        }
+        // Check for TCP Connections
+        if (self.tcp_ctx) |*tcp_ctx| newTCP: {
+            if (tcp_ctx.conn_list.list.items.len >= tcp_ctx.config.max_conns) //
+                break :newTCP;
+            var poll_fd: [1]posix.pollfd = .{ .{
+                .fd = tcp_ctx.accept_sock,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            } };
+            const poll_resp = posix.poll(poll_fd[0..], 0) catch break :newTCP;
+            if (poll_resp == 0 or poll_fd[0].revents & posix.POLL.IN == 0) //
+                break :newTCP;
+            var conn_addr: posix.sockaddr = undefined;
+            var addr_size: u32 = @truncate(@sizeOf(posix.sockaddr.in));
+            const conn_sock = posix.accept(
+                tcp_ctx.accept_sock,
+                &conn_addr,
+                &addr_size,
+                0,
+            ) catch |err| {
+                log.err("Could not accept new TCP Connection: {t}", .{ err });
+                break :newTCP;
+            };
+            const conn_addr_in: *posix.sockaddr.in = @ptrCast(@alignCast(&conn_addr));
+            const conn_ip = mem.asBytes(&conn_addr_in.addr);
+            var conn_writer: SocketWriter = .init(conn_sock, &.{});
+            self.writeSHB(&conn_writer.io_writer) catch |err| {
+                log.err("Could not write Section Header Block to new TCP Connection at '{f}': {t}", .{ IPF{ .bytes = conn_ip }, err });
+                break :newTCP;
+            };
+            self.writeIDBs(&conn_writer.io_writer) catch |err| {
+                log.err("Could not write Interface Description Block to new TCP Connection at '{f}': {t}", .{ IPF{ .bytes = conn_ip }, err });
+                break :newTCP;
+            };
+            tcp_ctx.conn_list.append(
+                core_ctx.alloc,
+                .{
+                    .sock = conn_sock,
+                    .addr = conn_addr_in.*,
+                    .writer = conn_writer,
+                },
+            ) catch @panic("OOM");
+            log.info("New TCP Connection from '{f}'", .{ IPF{ .bytes = conn_ip } });
         }
         // Update Interfaces
         if (core_ctx.if_ctx.interfaces.count() == self.cur_if_ids.count()) return;
@@ -347,66 +447,118 @@ pub const Writer = struct {
                 .monitor => if_id_pair.monitor,
             };
         };
-        if (pcap_writer.file_ctx) |file_ctx| {
-            const file = &file_ctx.file;
-            var file_w = file.writer(&.{});
-            //file_w.end() catch return error.WriteFailed;
-            file_w.seekTo(file.getEndPos() catch return error.WriteFailed) catch return error.WriteFailed;
-            const file_writer = &file_w.interface;
-            self.end = 0;
-            var n: usize = 0;
-            if (self.buffered().len > 0) {
-                const bytes = self.buffered();
-                //log.debug("Frame Hex: {f}", .{ HexF{ .bytes = bytes } });
-                const cap_len = mem.alignForward(u32, @truncate(bytes.len), 4);
-                const epb_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
-                const epb_ts: Timestamp = .get();
-                const epb_hdr: pcap.EnhancedPacketBlock = .{
-                    .block_total_len = epb_len,
-                    .interface_id = if_id,
-                    .ts_high = epb_ts.high,
-                    .ts_low = epb_ts.low,
-                    .cap_packet_len = cap_len,
-                    .og_packet_len = @truncate(bytes.len),
-                };
+        var file_w = fileWriter: {
+            if (pcap_writer.file_ctx) |file_ctx| {
+                const file = &file_ctx.file;
+                var file_w = file.writer(&.{});
+                //file_w.end() catch return error.WriteFailed;
+                file_w.seekTo(file.getEndPos() catch return error.WriteFailed) catch return error.WriteFailed;
+                break :fileWriter file_w;
+            }
+            break :fileWriter null;
+        };
+        self.end = 0;
+        var n: usize = 0;
+        var add_bytes = false;
+        if (self.buffered().len > 0) {
+            const bytes = self.buffered();
+            //log.debug("Frame Hex: {f}", .{ HexF{ .bytes = bytes } });
+            const cap_len = mem.alignForward(u32, @truncate(bytes.len), 4);
+            const epb_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
+            const epb_ts: Timestamp = .get();
+            const epb_hdr: pcap.EnhancedPacketBlock = .{
+                .block_total_len = epb_len,
+                .interface_id = if_id,
+                .ts_high = epb_ts.high,
+                .ts_low = epb_ts.low,
+                .cap_packet_len = cap_len,
+                .og_packet_len = @truncate(bytes.len),
+            };
+            const pad_bytes = mem.alignForward(usize, bytes.len, 4);
+            if (file_w) |*fw| {
+                const file_writer = &fw.interface;
                 try file_writer.writeStruct(epb_hdr, .little);
                 _ = try file_writer.write(bytes);
-                const pad_bytes = mem.alignForward(usize, bytes.len, 4);
-                for (0..pad_bytes) |_| //
-                    try file_writer.writeByte(0);
-                try file_writer.writeInt(u32, epb_hdr.block_total_len, .little);
-                n += bytes.len;
-            }
-            for (data) |bytes| {
-                const cap_len: u32 = @truncate(bytes.len);
-                const epb_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
-                const epb_ts: Timestamp = .get();
-                const epb_hdr: pcap.EnhancedPacketBlock = .{
-                    .block_total_len = epb_len,
-                    .interface_id = if_id,
-                    .ts_high = epb_ts.high,
-                    .ts_low = epb_ts.low,
-                    .cap_packet_len = cap_len,
-                    .og_packet_len = cap_len,
-                };
-                try file_writer.writeStruct(epb_hdr, .little);
-                //log.debug("EPB: Hdr {d}B | Len {d}B {f}", .{ @sizeOf(pcap.EnhancedPacketBlock), epb_hdr.block_total_len, HexF{ .bytes = mem.asBytes(&epb_hdr) } });
-                n += try file_writer.write(bytes);
-                //log.debug("Frame Hex: {d}B {f}", .{ bytes.len, HexF{ .bytes = bytes } });
-                const pad_bytes = mem.alignForward(usize, bytes.len, 4) - bytes.len;
                 for (0..pad_bytes) |_| {
                     try file_writer.writeByte(0);
                     n += 1;
                 }
                 try file_writer.writeInt(u32, epb_hdr.block_total_len, .little);
-                //log.debug("EPB Footer:\n{X:0>8}", .{ epb_hdr.block_total_len });
-                n += bytes.len;
+                add_bytes = true;
             }
-            try file_writer.flush();
-            return n;
+            if (pcap_writer.tcp_ctx) |*tcp_ctx| {
+                defer tcp_ctx.conn_list.mutex.unlock();
+                for (tcp_ctx.conn_list.items()) |*conn| {
+                    const conn_writer = &conn.writer.io_writer;
+                    try conn_writer.writeStruct(epb_hdr, .little);
+                    _ = try conn_writer.write(bytes);
+                    for (0..pad_bytes) |_| {
+                        try conn_writer.writeByte(0);
+                        n += 1;
+                    }
+                    try conn_writer.writeInt(u32, epb_hdr.block_total_len, .little);
+                }
+                add_bytes = true;
+            }
+            if (add_bytes) n += bytes.len;
         }
+        for (data) |bytes| {
+            const cap_len: u32 = @truncate(bytes.len);
+            const epb_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
+            const epb_ts: Timestamp = .get();
+            const epb_hdr: pcap.EnhancedPacketBlock = .{
+                .block_total_len = epb_len,
+                .interface_id = if_id,
+                .ts_high = epb_ts.high,
+                .ts_low = epb_ts.low,
+                .cap_packet_len = cap_len,
+                .og_packet_len = cap_len,
+            };
+            const pad_bytes = mem.alignForward(usize, bytes.len, 4) - bytes.len;
+            if (file_w) |*fw| {
+                const file_writer = &fw.interface;
+                try file_writer.writeStruct(epb_hdr, .little);
+                //log.debug("EPB: Hdr {d}B | Len {d}B {f}", .{ @sizeOf(pcap.EnhancedPacketBlock), epb_hdr.block_total_len, HexF{ .bytes = mem.asBytes(&epb_hdr) } });
+                n += try file_writer.write(bytes);
+                //log.debug("Frame Hex: {d}B {f}", .{ bytes.len, HexF{ .bytes = bytes } });
+                for (0..pad_bytes) |_| {
+                    try file_writer.writeByte(0);
+                    n += 1;
+                }
+                try file_writer.writeInt(u32, epb_hdr.block_total_len, .little);
+                add_bytes = true;
+            }
+            if (pcap_writer.tcp_ctx) |*tcp_ctx| {
+                defer tcp_ctx.conn_list.mutex.unlock();
+                for (tcp_ctx.conn_list.items()) |*conn| {
+                    const conn_writer = &conn.writer.io_writer;
+                    try conn_writer.writeStruct(epb_hdr, .little);
+                    _ = try conn_writer.write(bytes);
+                    for (0..pad_bytes) |_| {
+                        try conn_writer.writeByte(0);
+                        n += 1;
+                    }
+                    try conn_writer.writeInt(u32, epb_hdr.block_total_len, .little);
+                }
+                add_bytes = true;
+            }
+            //log.debug("EPB Footer:\n{X:0>8}", .{ epb_hdr.block_total_len });
+            if (add_bytes) n += bytes.len;
+        }
+        if (file_w) |*fw| {
+            const file_writer = &fw.interface;
+            try file_writer.flush();
+        }
+        if (pcap_writer.tcp_ctx) |*tcp_ctx| {
+            defer tcp_ctx.conn_list.mutex.unlock();
+            for (tcp_ctx.conn_list.items()) |*conn| {
+                const conn_writer = &conn.writer.io_writer;
+                try conn_writer.flush();
+            }
+        }
+        return n;
         //log.debug("Wrote {d} Frames | {d}B", .{ data.len, n });
-        return 0;
+        //return 0;
     }
 };
 

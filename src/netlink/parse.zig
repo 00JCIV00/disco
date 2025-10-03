@@ -675,7 +675,7 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
             else => try primToBytes(alloc, field.type, in_field),
         };
         defer alloc.free(bytes);
-        hdr.len +|= @intCast(bytes.len);
+        hdr.len +|= @truncate(bytes.len);
         const add_hdr = addHdr: {
             const hdr_child,
             const hdr_info =

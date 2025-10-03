@@ -9,6 +9,7 @@ const io = std.io;
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
+const posix = std.posix;
 const ArrayList = std.ArrayListUnmanaged;
 const Io = std.Io;
 
@@ -237,3 +238,34 @@ pub fn ThreadHashMap(K: type, V: type) type {
     };
 }
 
+/// POSIX Socket Writer
+pub const SocketWriter = struct {
+    /// POSIX Socket
+    sock: posix.socket_t,
+    /// `Io.Writer` Interface
+    io_writer: Io.Writer,
+
+    /// Initialize a new POSIX Socket Writer
+    pub fn init(sock: posix.socket_t, buf: []u8) @This() {
+        return .{
+            .sock = sock,
+            .io_writer = .{
+                .vtable = &.{
+                    .drain = ioDrain,
+                },
+                .buffer = buf,
+            },
+        };
+    }
+
+    /// Satisfy the `Io.Writer` Interface.
+    fn ioDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
+        const writer: *@This() = @fieldParentPtr("io_writer", self);
+        var n: usize = 0;
+        if (self.buffered().len > 0) //
+            n += posix.write(writer.sock, self.buffered()) catch return error.WriteFailed;
+        for (data) |bytes| //
+            n += posix.write(writer.sock, bytes) catch return error.WriteFailed;
+        return n;
+    }
+};
