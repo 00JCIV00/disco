@@ -245,10 +245,11 @@ pub const Context = struct {
                                 else => usable_ifs += 1,
                             }
                         }
+                        //log.debug("Usable IFs: {d}", .{ usable_ifs });
                         break :usableIFs usable_ifs;
                     };
                     if ( //
-                        scan_cond._cur_iter >= 5 and //
+                        scan_cond._cur_iter >= 250 and //
                         usable_ifs == 0 //
                     ) {
                         log.err("No usable Interfaces found.", .{});
