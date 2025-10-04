@@ -373,6 +373,7 @@ pub const Loop = struct {
                 const handler = handler_entry.value_ptr;
                 handler.handleEth(eth_frames, sock_parser.ctx) catch {
                     log.warn("There was an issue handling an Ethernet Frame w/ the '{s}' Handler.", .{ handler_entry.key_ptr.* });
+                    //@panic("TODO");
                 };
                 handler.handleWifi(wifi_frames, sock_parser.ctx) catch {
                     log.warn("There was an issue handling a Wifi Frame w/ the '{s}' Handler.", .{ handler_entry.key_ptr.* });

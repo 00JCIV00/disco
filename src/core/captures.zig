@@ -226,8 +226,10 @@ pub const Writer = struct {
         }
         if (self.tcp_ctx) |*tcp_ctx| {
             posix.close(tcp_ctx.accept_sock);
-            for (tcp_ctx.conn_list.items()) |conn| //
+            for (tcp_ctx.conn_list.items()) |conn| {
                 posix.close(conn.sock);
+                core_ctx.alloc.free(conn.writer.io_writer.buffer);
+            }
             log.info("Closed {d} TCP Connections", .{ tcp_ctx.conn_list.list.items.len });
             tcp_ctx.conn_list.mutex.unlock();
             tcp_ctx.conn_list.deinit(core_ctx.alloc);
@@ -300,23 +302,26 @@ pub const Writer = struct {
             };
             const conn_addr_in: *posix.sockaddr.in = @ptrCast(@alignCast(&conn_addr));
             const conn_ip = mem.asBytes(&conn_addr_in.addr);
-            var conn_writer: SocketWriter = .init(conn_sock, &.{});
-            self.writeSHB(&conn_writer.io_writer) catch |err| {
+            var conn_w: SocketWriter = .init(conn_sock, core_ctx.alloc.alloc(u8, 4096) catch @panic("OOM"));
+            const conn_writer = &conn_w.io_writer;
+            self.writeSHB(conn_writer) catch |err| {
                 log.err("Could not write Section Header Block to new TCP Connection at '{f}': {t}", .{ IPF{ .bytes = conn_ip }, err });
                 break :newTCP;
             };
-            self.writeIDBs(&conn_writer.io_writer) catch |err| {
+            self.writeIDBs(conn_writer) catch |err| {
                 log.err("Could not write Interface Description Block to new TCP Connection at '{f}': {t}", .{ IPF{ .bytes = conn_ip }, err });
                 break :newTCP;
             };
-            tcp_ctx.conn_list.append(
-                core_ctx.alloc,
-                .{
-                    .sock = conn_sock,
-                    .addr = conn_addr_in.*,
-                    .writer = conn_writer,
-                },
-            ) catch @panic("OOM");
+            conn_writer.flush() catch |err| {
+                log.err("Could not write PCAP data to the new TCP Connection at '{f}': {t}", .{ IPF{ .bytes = conn_ip }, err });
+                break :newTCP;
+            };
+            const new_conn: TCPContext.Connection = .{
+                .sock = conn_sock,
+                .addr = conn_addr_in.*,
+                .writer = conn_w,
+            };
+            tcp_ctx.conn_list.append(core_ctx.alloc, new_conn) catch @panic("OOM");
             log.info("New TCP Connection from '{f}'", .{ IPF{ .bytes = conn_ip } });
         }
         // Update Interfaces
@@ -435,6 +440,7 @@ pub const Writer = struct {
     /// Satisfy the `Io.Writer` Interface.
     /// This will inject Enahanced Packet Block Headers for each Frame.
     fn frameDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
+        defer self.end = 0;
         const pcap_writer: *@This() = @fieldParentPtr("frame_writer", self);
         const parser_ctx = pcap_writer.parser_ctx orelse return error.WriteFailed;
         const if_id = ifID: {
@@ -457,7 +463,6 @@ pub const Writer = struct {
             }
             break :fileWriter null;
         };
-        self.end = 0;
         var n: usize = 0;
         var add_bytes = false;
         if (self.buffered().len > 0) {
@@ -488,15 +493,17 @@ pub const Writer = struct {
             }
             if (pcap_writer.tcp_ctx) |*tcp_ctx| {
                 defer tcp_ctx.conn_list.mutex.unlock();
-                for (tcp_ctx.conn_list.items()) |*conn| {
+                for (tcp_ctx.conn_list.items(), 0..) |*conn, idx| {
                     const conn_writer = &conn.writer.io_writer;
                     try conn_writer.writeStruct(epb_hdr, .little);
                     _ = try conn_writer.write(bytes);
                     for (0..pad_bytes) |_| {
                         try conn_writer.writeByte(0);
-                        n += 1;
+                        if (idx == 0 and file_w == null) //
+                            n += 1;
                     }
                     try conn_writer.writeInt(u32, epb_hdr.block_total_len, .little);
+                    try conn_writer.flush();
                 }
                 add_bytes = true;
             }
@@ -504,7 +511,9 @@ pub const Writer = struct {
         }
         for (data) |bytes| {
             const cap_len: u32 = @truncate(bytes.len);
-            const epb_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
+            const epb_raw_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
+            const epb_len: u32 = mem.alignForward(u32, epb_raw_len, 4);
+            const pad_bytes: u32 = epb_len - epb_raw_len;
             const epb_ts: Timestamp = .get();
             const epb_hdr: pcap.EnhancedPacketBlock = .{
                 .block_total_len = epb_len,
@@ -514,7 +523,7 @@ pub const Writer = struct {
                 .cap_packet_len = cap_len,
                 .og_packet_len = cap_len,
             };
-            const pad_bytes = mem.alignForward(usize, bytes.len, 4) - bytes.len;
+            //const pad_bytes = mem.alignForward(usize,  bytes.len, 4) - bytes.len;
             if (file_w) |*fw| {
                 const file_writer = &fw.interface;
                 try file_writer.writeStruct(epb_hdr, .little);
@@ -530,15 +539,26 @@ pub const Writer = struct {
             }
             if (pcap_writer.tcp_ctx) |*tcp_ctx| {
                 defer tcp_ctx.conn_list.mutex.unlock();
-                for (tcp_ctx.conn_list.items()) |*conn| {
+                for (tcp_ctx.conn_list.items(), 0..) |*conn, idx| {
                     const conn_writer = &conn.writer.io_writer;
                     try conn_writer.writeStruct(epb_hdr, .little);
                     _ = try conn_writer.write(bytes);
                     for (0..pad_bytes) |_| {
                         try conn_writer.writeByte(0);
-                        n += 1;
+                        if (idx == 0 and file_w == null) //
+                            n += 1;
                     }
                     try conn_writer.writeInt(u32, epb_hdr.block_total_len, .little);
+                    conn_writer.flush() catch |err| {
+                        log.debug("TCP -> EPB Error: {t}\n{d}B\n{f}\n{f}\nPad: {d}B", .{ 
+                            err,
+                            epb_hdr.block_total_len,
+                            HexF{ .bytes = mem.asBytes(&epb_hdr) },
+                            HexF{ .bytes = bytes },
+                            pad_bytes,
+                        });
+                        return err;
+                    };
                 }
                 add_bytes = true;
             }
@@ -556,8 +576,8 @@ pub const Writer = struct {
                 try conn_writer.flush();
             }
         }
-        return n;
         //log.debug("Wrote {d} Frames | {d}B", .{ data.len, n });
+        return n;
         //return 0;
     }
 };

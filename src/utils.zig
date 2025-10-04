@@ -70,7 +70,6 @@ pub fn SliceFormatter(T: type, comptime fmt_str: []const u8) type {
     };
 }
 
-
 /// Thread Safe ArrayList
 pub fn ThreadArrayList(T: type) type {
     return struct {
@@ -262,10 +261,12 @@ pub const SocketWriter = struct {
     fn ioDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
         const writer: *@This() = @fieldParentPtr("io_writer", self);
         var n: usize = 0;
+        //defer std.log.debug("Socket Writer: wrote {d}B", .{ n });
         if (self.buffered().len > 0) //
             n += posix.write(writer.sock, self.buffered()) catch return error.WriteFailed;
         for (data) |bytes| //
             n += posix.write(writer.sock, bytes) catch return error.WriteFailed;
+        self.end = 0;
         return n;
     }
 };
