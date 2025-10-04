@@ -148,8 +148,10 @@ pub const Core = struct {
         errdefer self.conn_ctx.deinit(alloc);
         self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
         errdefer self.serve_ctx.deinit(alloc);
-        self.cap_writer = try .init(&self);
-        errdefer self.cap_writer.deinit(&self);
+        if (self.run_condition == null) //
+            self.cap_writer = try .init(&self);
+        errdefer if (self.run_condition == null) //
+            self.cap_writer.deinit(&self);
         // Context Setup
         //self.conn_ctx.global_config.* = config.global_connect_config;
         //for (config.connect_configs) |conn_conf| {
@@ -360,8 +362,10 @@ pub const Core = struct {
         log.info("- Deinitialized Connection Tracking.", .{});
         self.serve_ctx.deinit(self.alloc);
         log.info("- Deinitialized File Serving.", .{});
-        self.cap_writer.deinit(self);
-        log.info("- Deinitialized PCAP Writing.", .{});
+        if (self.run_condition == null) {
+            self.cap_writer.deinit(self);
+            log.info("- Deinitialized PCAP Writing.", .{});
+        }
         self.sock_event_loop.deinit(self.alloc);
         log.info("- Deinitialized Socket Event Loop.", .{});
         //self.arena.deinit();

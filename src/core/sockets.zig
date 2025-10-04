@@ -371,12 +371,12 @@ pub const Loop = struct {
             var handler_iter = self.handlers.iterator();
             while (handler_iter.next()) |handler_entry| {
                 const handler = handler_entry.value_ptr;
-                handler.handleEth(eth_frames, sock_parser.ctx) catch {
-                    log.warn("There was an issue handling an Ethernet Frame w/ the '{s}' Handler.", .{ handler_entry.key_ptr.* });
+                handler.handleEth(eth_frames, sock_parser.ctx) catch |err| {
+                    log.warn("There was an issue handling an Ethernet Frame w/ the '{s}' Handler: {t}", .{ handler_entry.key_ptr.*, err });
                     //@panic("TODO");
                 };
-                handler.handleWifi(wifi_frames, sock_parser.ctx) catch {
-                    log.warn("There was an issue handling a Wifi Frame w/ the '{s}' Handler.", .{ handler_entry.key_ptr.* });
+                handler.handleWifi(wifi_frames, sock_parser.ctx) catch |err| {
+                    log.warn("There was an issue handling a Wifi Frame w/ the '{s}' Handler: {t}", .{ handler_entry.key_ptr.*, err });
                 };
                 //log.debug("- {s} handled {d} Eth and {d} WiFi Frames", .{ handler_entry.key_ptr.*, eth_frames.len, wifi_frames.len });
             }

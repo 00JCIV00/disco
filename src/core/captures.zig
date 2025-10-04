@@ -11,6 +11,7 @@ const mem = std.mem;
 const net = std.net;
 const posix = std.posix;
 const time = std.time;
+const ArrayList = std.ArrayList;
 const Io = std.Io;
 const Thread = std.Thread;
 
@@ -23,6 +24,7 @@ const pcap = netdata.pcap;
 const IPF = address.IPFormatter;
 const MACF = address.MACFormatter;
 const utils = @import("../utils.zig");
+const c = utils.toStruct;
 const HexF = utils.HexFormatter;
 const SocketWriter = utils.SocketWriter;
 const ThreadArrayList = utils.ThreadArrayList;
@@ -93,16 +95,22 @@ pub const IDBPair = struct {
     managed: u32,
 };
 
+/// PCAP Block Option
+pub const PCAPOption = struct {
+    hdr: pcap.OptionHeader,
+    data: []const u8,
+};
+
 /// PCAP-NG Writer
 pub const Writer = struct {
     /// Section Header Block
     shb: pcap.SectionHeaderBlock,
     /// Section Header Block Options
-    shb_opts: ThreadArrayList(pcap.OptionHeader) = .empty,
+    shb_opts: ThreadArrayList(PCAPOption) = .empty,
     /// Interface Description Blocks
     idbs: ThreadArrayList(pcap.InterfaceDescriptionBlock) = .empty,
     /// Interface Description Block Options
-    idb_opts: ThreadHashMap(usize, []const pcap.OptionHeader) = .empty,
+    idb_opts: ThreadHashMap(usize, []const PCAPOption) = .empty,
     /// Current Interface IDs for Interfaces
     cur_if_ids: ThreadHashMap([6]u8, IDBPair) = .empty,
     /// File Context
@@ -239,6 +247,8 @@ pub const Writer = struct {
         var idb_opts_iter = self.idb_opts.iterator();
         while (idb_opts_iter.next()) |opts_entry| {
             const opts = opts_entry.value_ptr.*;
+            for (opts) |opt| //
+                core_ctx.alloc.free(opt.data);
             core_ctx.alloc.free(opts);
         }
         self.idb_opts.map.deinit(core_ctx.alloc);
@@ -355,14 +365,54 @@ pub const Writer = struct {
                     },
                 },
             ) catch @panic("OOM");
+            const man_id: u32 = @truncate(self.idbs.list.items.len - 2);
+            const mon_id: u32 = @truncate(self.idbs.list.items.len - 1);
             self.cur_if_ids.put(
                 core_ctx.alloc,
                 if_mac,
                 .{
-                    .managed = @truncate(self.idbs.list.items.len - 2),
-                    .monitor = @truncate(self.idbs.list.items.len - 1),
+                    .managed = man_id,
+                    .monitor = mon_id,
                 },
             ) catch @panic("OOM");
+            inline for (&.{ man_id, mon_id }) |id| {
+                var opt_list: ArrayList(PCAPOption) = .empty;
+                opt_list.append(
+                    core_ctx.alloc,
+                    .{
+                        .hdr = .{
+                            .code = c(pcap.InterfaceDescriptionBlock.OptionCode).name,
+                            .len = @truncate(sock_if.name.len),
+                        },
+                        .data = core_ctx.alloc.dupe(u8, sock_if.name) catch @panic("OOM"),
+                    }
+                ) catch @panic("OOM");
+                opt_list.append(
+                    core_ctx.alloc,
+                    .{
+                        .hdr = .{
+                            .code = c(pcap.InterfaceDescriptionBlock.OptionCode).mac_addr,
+                            .len = 6,
+                        },
+                        .data = core_ctx.alloc.dupe(u8, sock_if.og_mac[0..]) catch @panic("OOM"),
+                    },
+                ) catch @panic("OOM");
+                const id_name = //
+                    if (id % 2 == 0) "managed" //
+                    else "monitor";
+                opt_list.append(
+                    core_ctx.alloc,
+                    .{
+                        .hdr = .{
+                            .code = c(pcap.InterfaceDescriptionBlock.OptionCode).description,
+                            .len = @truncate(id_name.len),
+                        },
+                        .data = core_ctx.alloc.dupe(u8, id_name) catch @panic("OOM"),
+                    },
+                ) catch @panic("OOM");
+                const opts = opt_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+                self.idb_opts.put(core_ctx.alloc, id, opts) catch @panic("OOM");
+            }
             log.debug("Tracking Interface '{s}' for PCAP.", .{ sock_if.name });
         }
         if (self.cur_if_ids.count() >= 1 and core_ctx.sock_event_loop.handlers.get("pcap") == null) {
@@ -414,7 +464,7 @@ pub const Writer = struct {
 
     /// Write the provided Interface Description Blocks (`idbs`) to the provided `Io.Writer` (`writer`).
     pub fn writeIDBs(self: *@This(), writer: *Io.Writer) !void {
-        var opt_buf: [256]u8 = undefined;
+        var opt_buf: [512]u8 = undefined;
         var opt_w: Io.Writer = .fixed(opt_buf[0..]);
         self.idb_opts.mutex.lock();
         defer {
@@ -425,13 +475,23 @@ pub const Writer = struct {
             defer _ = opt_w.consumeAll();
             const opt_bytes: []const u8 = optBytes: {
                 const idb_opts = self.idb_opts.map.get(idx) orelse &.{};
-                for (idb_opts) |opt| //
-                    _ = try opt_w.writeStruct(opt, .little);
+                for (idb_opts) |opt| {
+                    _ = try opt_w.writeStruct(opt.hdr, .little);
+                    _ = try opt_w.write(opt.data);
+                    const opt_pad = mem.alignForward(u32, opt.hdr.len, 4) - opt.hdr.len;
+                    for (0..opt_pad) |_| //
+                        try opt_w.writeByte(0);
+                }
+                log.debug("IDB Options: {f}", .{ HexF{ .bytes = opt_w.buffered() } });
                 break :optBytes opt_w.buffered();
             };
-            idb.block_total_len = @truncate(@sizeOf(pcap.InterfaceDescriptionBlock) + opt_bytes.len + 4);
+            const idb_raw_len: u32 = @truncate(@sizeOf(pcap.InterfaceDescriptionBlock) + opt_bytes.len + 4);
+            idb.block_total_len = mem.alignForward(u32, idb_raw_len, 4);
             try writer.writeStruct(idb.*, .little);
             _ = try writer.write(opt_bytes);
+            const pad_bytes = idb.block_total_len - idb_raw_len;
+            for (0..pad_bytes) |_| //
+                try writer.writeByte(0);
             try writer.writeInt(u32, idb.block_total_len, .little);
             try writer.flush();
         }
@@ -468,8 +528,10 @@ pub const Writer = struct {
         if (self.buffered().len > 0) {
             const bytes = self.buffered();
             //log.debug("Frame Hex: {f}", .{ HexF{ .bytes = bytes } });
-            const cap_len = mem.alignForward(u32, @truncate(bytes.len), 4);
-            const epb_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
+            const cap_len: u32 = @truncate(bytes.len);
+            const epb_raw_len: u32 = @sizeOf(pcap.EnhancedPacketBlock) + cap_len + 4;
+            const epb_len: u32 = mem.alignForward(u32, epb_raw_len, 4);
+            const pad_bytes: u32 = epb_len - epb_raw_len;
             const epb_ts: Timestamp = .get();
             const epb_hdr: pcap.EnhancedPacketBlock = .{
                 .block_total_len = epb_len,
@@ -479,7 +541,6 @@ pub const Writer = struct {
                 .cap_packet_len = cap_len,
                 .og_packet_len = @truncate(bytes.len),
             };
-            const pad_bytes = mem.alignForward(usize, bytes.len, 4);
             if (file_w) |*fw| {
                 const file_writer = &fw.interface;
                 try file_writer.writeStruct(epb_hdr, .little);
@@ -523,7 +584,6 @@ pub const Writer = struct {
                 .cap_packet_len = cap_len,
                 .og_packet_len = cap_len,
             };
-            //const pad_bytes = mem.alignForward(usize,  bytes.len, 4) - bytes.len;
             if (file_w) |*fw| {
                 const file_writer = &fw.interface;
                 try file_writer.writeStruct(epb_hdr, .little);
