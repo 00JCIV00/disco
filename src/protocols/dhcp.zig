@@ -738,7 +738,7 @@ pub fn releaseDHCP(
     server_id: [4]u8,
     client_ip: [4]u8,
 ) !void {
-    log.debug("Releasing DHCP lease...", .{});
+    log.info("Releasing DHCP lease...", .{});
     defer log.debug("DHCP lease released!", .{});
     const dhcp_sock = try posix.socket(posix.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(Eth.ETH_P).IPv4));
     defer posix.close(dhcp_sock);
@@ -825,7 +825,7 @@ pub fn releaseDHCP(
         server_id,
         rel_buf[0..end],
     );
-    log.debug(
+    log.info(
         \\
         \\-------------------------------------
         \\RELEASE:
@@ -833,14 +833,14 @@ pub fn releaseDHCP(
         \\ - Client MAC:     {f}
         \\ - Client IP:      {f}
         \\ - Server ID:      {f}
-        \\ - Options Length: {d}B
+        //\\ - Options Length: {d}B
         \\
         , .{
             transaction_id,
             MACF{ .bytes = mac_addr[0..] },
             IPF{ .bytes = client_ip[0..] },
             IPF{ .bytes = server_id[0..] },
-            end - bootp_hdr_len,
+            //end - bootp_hdr_len,
         },
     );
 }
