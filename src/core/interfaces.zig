@@ -59,14 +59,15 @@ pub const Interface = struct {
     ch_width: ?nl._80211.CHANNEL_WIDTH = null,
     ssid: ?[]const u8 = null,
     supported_freqs: []const u32 = &.{},
-    // Netlink Data
+    // Netlink 
     wiphy: nl._80211.Wiphy,
+    mod_list: ArrayList(ModifyContext) = .empty,
 
     /// DisCo Usage State of an Interface
     pub const UsageState = union(enum) {
         err: anyerror,
         unavailable,
-        modify: ArrayList(*ModifyContext),
+        //modify: ArrayList(*ModifyContext),
         available,
         scan: core.networks.NetworkScanContext,
         connect: core.connections.Connection,
@@ -113,13 +114,14 @@ pub const Interface = struct {
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         if (!self._init) return;
         switch (self.usage) {
-            .modify => |*mods| {
-                for (mods.items) |mod| alloc.destroy(mod);
-                mods.deinit(alloc);
-            },
+            //.modify => |*mods| {
+            //    for (mods.items) |mod| alloc.destroy(mod);
+            //    mods.deinit(alloc);
+            //},
             .connect => |*conn| conn.deinit(alloc),
             else => {},
         }
+        self.mod_list.deinit(alloc);
         alloc.free(self.name);
         alloc.free(self.phy_name);
         alloc.free(self.supported_freqs);
@@ -198,27 +200,36 @@ pub const Interface = struct {
 
     /// Modify this Interface
     pub fn modify(self: *@This(), core_ctx: *core.Core, mod_field: ModifyField) !void {
-        if (self.usage != .modify) self.usage = .{ .modify = .empty };
-        const mod_ctx: *ModifyContext = modReq: {
+        //if (self.usage != .modify) self.usage = .{ .modify = .empty };
+        const mod_ctx: ModifyContext = modReq: {
             const req_handler: *nl.io.Handler = switch (mod_field) {
                 .mode,
                 .channel,
                 => core_ctx.nl80211_handler,
                 else => core_ctx.rtnetlink_handler,
             };
-            const mod_ctx: *ModifyContext = core_ctx.alloc.create(ModifyContext) catch @panic("OOM");
-            errdefer core_ctx.alloc.destroy(mod_ctx);
-            mod_ctx.* = .{
+            //const mod_ctx: *ModifyContext = core_ctx.alloc.create(ModifyContext) catch @panic("OOM");
+            //errdefer core_ctx.alloc.destroy(mod_ctx);
+            //mod_ctx.* = .{
+            //    .req_ctx = try .init(.{ .handler = .{ .handler = req_handler } }),
+            //    .mod_field = mod_field,
+            //};
+            //break :modReq mod_ctx;
+            break :modReq .{
                 .req_ctx = try .init(.{ .handler = .{ .handler = req_handler } }),
                 .mod_field = mod_field,
             };
-            break :modReq mod_ctx;
+        };
+        self.mod_list.append(core_ctx.alloc, mod_ctx) catch @panic("OOM");
+        const mod_req_ctx = modReqCtx: {
+            var mod = &self.mod_list.items[self.mod_list.items.len - 1];
+            break :modReqCtx &mod.req_ctx;
         };
         switch (mod_field) {
             .mac => |mac| {
                 try nl.route.requestSetMAC(
                     core_ctx.alloc,
-                    &mod_ctx.req_ctx,
+                    mod_req_ctx,
                     self.index,
                     mac,
                 );
@@ -226,7 +237,7 @@ pub const Interface = struct {
             .state => |state| {
                 try nl.route.requestSetState(
                     core_ctx.alloc,
-                    &mod_ctx.req_ctx,
+                    mod_req_ctx,
                     self.index,
                     state,
                 );
@@ -234,7 +245,7 @@ pub const Interface = struct {
             .add_ip => |add_ip| {
                 try nl.route.requestAddIP(
                     core_ctx.alloc,
-                    &mod_ctx.req_ctx,
+                    mod_req_ctx,
                     self.index,
                     add_ip.addr,
                     add_ip.cidr,
@@ -243,7 +254,7 @@ pub const Interface = struct {
             .del_ip => |del_ip| {
                 try nl.route.requestDeleteIP(
                     core_ctx.alloc,
-                    &mod_ctx.req_ctx,
+                    mod_req_ctx,
                     self.index,
                     del_ip.addr,
                     del_ip.cidr,
@@ -252,7 +263,7 @@ pub const Interface = struct {
             .mode => |mode| {
                 try nl._80211.requestSetMode(
                     core_ctx.alloc,
-                    &mod_ctx.req_ctx,
+                    mod_req_ctx,
                     self.index,
                     mode,
                 );
@@ -260,14 +271,14 @@ pub const Interface = struct {
             .channel => |channel| {
                 try nl._80211.requestSetFreq(
                     core_ctx.alloc,
-                    &mod_ctx.req_ctx,
+                    mod_req_ctx,
                     self.index,
                     try nl._80211.freqFromChannel(channel.ch),
                     channel.width,
                 );
             },
         }
-        self.usage.modify.append(core_ctx.alloc, mod_ctx) catch @panic("OOM");
+        //self.usage.modify.append(core_ctx.alloc, mod_ctx) catch @panic("OOM");
         Thread.sleep(1 * time.ns_per_ms);
     }
 
@@ -567,12 +578,8 @@ pub const Context = struct {
                             mod.complete = modified: {
                                 while (if_iter.next()) |mod_if_entry| {
                                     const mod_if = mod_if_entry.value_ptr;
-                                    switch (mod_if.usage) {
-                                        .modify => |mod_list| {
-                                            if (mod_list.items.len > 0) break :modified false;
-                                        },
-                                        else => continue,
-                                    }
+                                    if (mod_if.mod_list.items.len > 0) //
+                                        break :modified false;
                                 }
                                 break :modified true;
                             };
@@ -789,21 +796,21 @@ pub const Context = struct {
                             errdefer scan_list.deinit(core_ctx.alloc);
                             for (freqs) |freq| {
                                 if (mem.indexOfScalar(u32, net_if.supported_freqs, freq) == null) continue;
-                                try scan_list.append(core_ctx.alloc, freq);
+                                scan_list.append(core_ctx.alloc, freq) catch @panic("OOM");
                             }
                             if (scan_list.items.len == 0) {
                                 log.warn("The provided Channels for '{s}' are not supported by the Interface. Defaulting to supported Channels.", .{ net_if.name });
                                 scan_config.freqs = null;
                                 break :scanCfg;
                             }
-                            scan_config.freqs = try scan_list.toOwnedSlice(core_ctx.alloc);
+                            scan_config.freqs = scan_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
                         }
                         if (core_ctx.config.profile.mask) |pro_mask| {
                             var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
                             if (pro_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
-                            if (net_if.state & c(nl.route.IFF).UP != c(nl.route.IFF).DOWN) 
+                            if (net_if.state & c(nl.route.IFF).UP != c(nl.route.IFF).DOWN) //
                                 try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN });
-                            if (mem.eql(u8, net_if.mac[0..], net_if.og_mac[0..]))
+                            if (mem.eql(u8, net_if.mac[0..], net_if.og_mac[0..])) //
                                 try net_if.modify(core_ctx, .{ .mac = mask_mac });
                         }
                         try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).UP });
@@ -828,67 +835,64 @@ pub const Context = struct {
                     rm_macs[rm_count] = net_if_entry.key_ptr.*;
                     rm_count +|= 1;
                 },
-                // Check for complete Modifications of the WiFi Interface
-                .modify => |*mod_list| {
-                    var seq_list: ArrayList(u32) = .empty;
-                    defer seq_list.deinit(core_ctx.alloc);
-                    for (mod_list.items) |mod| {
-                        const mod_resp = mod.req_ctx.getResponse() orelse continue;
-                        defer if (mod_resp) |resp_data| core_ctx.alloc.free(resp_data) else |_| {};
-                        seq_list.append(core_ctx.alloc, mod.req_ctx.seq_id) catch @panic("OOM");
-                        switch (mod.mod_field) {
-                            .mac => |mac| {
-                                if (mod_resp) |_|
-                                    log.info("Changed MAC of '{s}' to '{f}'.", .{ net_if.name, MACF{ .bytes = mac[0..] } })
-                                else |err|
-                                    log.warn("Unable to change MAC of '{s}': {t}", .{ net_if.name, err });
-                            },
-                            .state => |state| {
-                                if (mod_resp) |_|
-                                    log.info("Changed State of '{s}' to '{f}'.", .{ net_if.name, Interface.IFStateF{ .flags = state } })
-                                else |err|
-                                    log.warn("Unable to change State of '{s}': {t}", .{ net_if.name, err });
-                            },
-                            .mode => |mode| {
-                                if (mod_resp) |_|
-                                    log.info("Changed Mode of '{s}' to '{t}'.", .{ net_if.name, @as(nl._80211.IFTYPE, @enumFromInt(mode)) })
-                                else |err|
-                                    log.warn("Unable to change Mode of '{s}': {t}", .{ net_if.name, err });
-                            },
-                            .add_ip => |add_ip| {
-                                if (mod_resp) |_|
-                                    log.info("Added IP to '{s}': '{f}/{d}'", .{ net_if.name, IPF{ .bytes = add_ip.addr[0..] }, add_ip.cidr })
-                                else |err|
-                                    log.warn("Unable to add IP to '{s}': {t}", .{ net_if.name, err });
-                            },
-                            .del_ip => |del_ip| {
-                                if (mod_resp) |_|
-                                    log.info("Deleted IP from '{s}': '{f}/{d}'", .{ net_if.name, IPF{ .bytes = del_ip.addr[0..] }, del_ip.cidr })
-                                else |err|
-                                    log.warn("Unable to delete IP from '{s}': {t}", .{ net_if.name, err });
-                            },
-                            .channel => |ch| {
-                                if (mod_resp) |_|
-                                    log.info("Changed Channel of '{s}' to '{d} | {t}'", .{ net_if.name, ch.ch, ch.width })
-                                else |err|
-                                    log.warn("Unable to change channel of '{s}': {t}", .{ net_if.name, err });
-                            },
-                        }
-                    }
-                    for (seq_list.items) |seq| {
-                        for (mod_list.items, 0..) |mod, idx| {
-                            if (mod.req_ctx.seq_id != seq) continue;
-                            core_ctx.alloc.destroy(mod);
-                            _ = mod_list.orderedRemove(idx);
-                            break;
-                        }
-                    }
-                    if (mod_list.items.len == 0) {
-                        mod_list.deinit(core_ctx.alloc);
-                        net_if.usage = .available;
-                    }
-                },
                 else => {},
+            }
+            // Check for complete Modifications of the WiFi Interface
+            var seq_list: ArrayList(u32) = .empty;
+            defer seq_list.deinit(core_ctx.alloc);
+            for (net_if.mod_list.items) |mod| {
+                const mod_resp = mod.req_ctx.getResponse() orelse continue;
+                defer if (mod_resp) |resp_data| core_ctx.alloc.free(resp_data) else |_| {};
+                seq_list.append(core_ctx.alloc, mod.req_ctx.seq_id) catch @panic("OOM");
+                switch (mod.mod_field) {
+                    .mac => |mac| {
+                        if (mod_resp) |_| //
+                            log.info("Changed MAC of '{s}' to '{f}'.", .{ net_if.name, MACF{ .bytes = mac[0..] } }) //
+                        else |err| //
+                            log.warn("Unable to change MAC of '{s}': {t}", .{ net_if.name, err });
+                    },
+                    .state => |state| {
+                        if (mod_resp) |_| //
+                            log.info("Changed State of '{s}' to '{f}'.", .{ net_if.name, Interface.IFStateF{ .flags = state } }) //
+                        else |err| //
+                            log.warn("Unable to change State of '{s}': {t}", .{ net_if.name, err });
+                    },
+                    .mode => |mode| {
+                        if (mod_resp) |_| //
+                            log.info("Changed Mode of '{s}' to '{t}'.", .{ net_if.name, @as(nl._80211.IFTYPE, @enumFromInt(mode)) }) //
+                        else |err| //
+                            log.warn("Unable to change Mode of '{s}': {t}", .{ net_if.name, err });
+                    },
+                    .add_ip => |add_ip| {
+                        if (mod_resp) |_| //
+                            log.info("Added IP to '{s}': '{f}/{d}'", .{ net_if.name, IPF{ .bytes = add_ip.addr[0..] }, add_ip.cidr }) //
+                        else |err| //
+                            log.warn("Unable to add IP to '{s}': {t}", .{ net_if.name, err });
+                    },
+                    .del_ip => |del_ip| {
+                        if (mod_resp) |_| //
+                            log.info("Deleted IP from '{s}': '{f}/{d}'", .{ net_if.name, IPF{ .bytes = del_ip.addr[0..] }, del_ip.cidr }) //
+                        else |err| //
+                            log.warn("Unable to delete IP from '{s}': {t}", .{ net_if.name, err });
+                    },
+                    .channel => |ch| {
+                        if (mod_resp) |_| //
+                            log.info("Changed Channel of '{s}' to '{d} | {t}'", .{ net_if.name, ch.ch, ch.width }) //
+                        else |err| //
+                            log.warn("Unable to change channel of '{s}': {t}", .{ net_if.name, err });
+                    },
+                }
+            }
+            for (seq_list.items) |seq| {
+                for (net_if.mod_list.items, 0..) |mod, idx| {
+                    if (mod.req_ctx.seq_id != seq) continue;
+                    _ = net_if.mod_list.orderedRemove(idx);
+                    break;
+                }
+            }
+            if (net_if.mod_list.items.len == 0) {
+                net_if.mod_list.deinit(core_ctx.alloc);
+                net_if.mod_list = .empty;
             }
         }
         for (rm_macs[0..rm_count]) |mac| {

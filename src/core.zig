@@ -148,10 +148,6 @@ pub const Core = struct {
         errdefer self.conn_ctx.deinit(alloc);
         self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
         errdefer self.serve_ctx.deinit(alloc);
-        if (self.run_condition == null) //
-            self.cap_writer = try .init(&self);
-        errdefer if (self.run_condition == null) //
-            self.cap_writer.deinit(&self);
         // Context Setup
         //self.conn_ctx.global_config.* = config.global_connect_config;
         //for (config.connect_configs) |conn_conf| {
@@ -257,6 +253,8 @@ pub const Core = struct {
         try self.nl_event_loop.start(self.alloc, &self.active);
         // Sockets Event Loop
         try self.sock_event_loop.start(self);
+        // PCAP Handling
+        self.cap_writer = try .init(self);
         // Core Loop
         log.info("Started DisCo Core.", .{});
         while (self.active.load(.acquire)) {

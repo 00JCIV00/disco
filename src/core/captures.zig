@@ -225,7 +225,10 @@ pub const Writer = struct {
             log.warn("There was a problem finalizing the PCAP file/stream: {t}", .{ err });
         };
         if (self.file_ctx) |*file_ctx| {
-            log.info("Wrote PCAP file to '{s}'.", .{ file_ctx.filename });
+            const dir_name = //
+                if (mem.eql(u8, file_ctx.config.dir, ".")) "" //
+                else file_ctx.config.dir;
+            log.info("Wrote PCAP file to '{s}/{s}'.", .{ dir_name, file_ctx.filename });
             if (!mem.eql(u8, file_ctx.config.dir, ".")) //
                 file_ctx.dir.close();
             file_ctx.file.close();
@@ -238,7 +241,8 @@ pub const Writer = struct {
                 posix.close(conn.sock);
                 core_ctx.alloc.free(conn.writer.io_writer.buffer);
             }
-            log.info("Closed {d} TCP Connections", .{ tcp_ctx.conn_list.list.items.len });
+            if (tcp_ctx.conn_list.list.items.len > 0) //
+                log.info("Closed {d} TCP Connection(s)", .{ tcp_ctx.conn_list.list.items.len });
             tcp_ctx.conn_list.mutex.unlock();
             tcp_ctx.conn_list.deinit(core_ctx.alloc);
         }
@@ -482,7 +486,7 @@ pub const Writer = struct {
                     for (0..opt_pad) |_| //
                         try opt_w.writeByte(0);
                 }
-                log.debug("IDB Options: {f}", .{ HexF{ .bytes = opt_w.buffered() } });
+                //log.debug("IDB Options: {f}", .{ HexF{ .bytes = opt_w.buffered() } });
                 break :optBytes opt_w.buffered();
             };
             const idb_raw_len: u32 = @truncate(@sizeOf(pcap.InterfaceDescriptionBlock) + opt_bytes.len + 4);
