@@ -29,6 +29,7 @@ pub const networks = @import("core/networks.zig");
 pub const profiles = @import("core/profiles.zig");
 pub const serve = @import("core/serve.zig");
 pub const sockets = @import("core/sockets.zig");
+pub const requests = @import("core/requests.zig");
 
 
 /// Core Context of DisCo.
