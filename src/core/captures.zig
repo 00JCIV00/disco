@@ -490,7 +490,7 @@ pub const Writer = struct {
             self.idbs.mutex.unlock();
             self.idb_opts.mutex.unlock();
         }
-        for (self.idbs.items()[idb_pair.managed..idb_pair.monitor], 0..) |*idb, idx| {
+        for (self.idbs.items()[idb_pair.managed..(idb_pair.monitor + 1)], 0..) |*idb, idx| {
             defer _ = opt_w.consumeAll();
             const opt_bytes: []const u8 = optBytes: {
                 const idb_opts = self.idb_opts.map.get(idb_pair.managed + idx) orelse &.{};
