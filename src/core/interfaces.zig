@@ -61,7 +61,7 @@ pub const Interface = struct {
     supported_freqs: []const u32 = &.{},
     // Netlink 
     wiphy: nl._80211.Wiphy,
-    mod_list: ArrayList(ModifyContext) = .empty,
+    mod_queue: []ModifyContext = &.{},
 
     /// DisCo Usage State of an Interface
     pub const UsageState = union(enum) {
@@ -121,7 +121,7 @@ pub const Interface = struct {
             .connect => |*conn| conn.deinit(alloc),
             else => {},
         }
-        self.mod_list.deinit(alloc);
+        alloc.free(self.mod_queue);
         alloc.free(self.name);
         alloc.free(self.phy_name);
         alloc.free(self.supported_freqs);
@@ -220,9 +220,11 @@ pub const Interface = struct {
                 .mod_field = mod_field,
             };
         };
-        self.mod_list.append(core_ctx.alloc, mod_ctx) catch @panic("OOM");
+        var mod_list: ArrayList(ModifyContext) = .fromOwnedSlice(self.mod_queue);
+        defer self.mod_queue = mod_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+        mod_list.append(core_ctx.alloc, mod_ctx) catch @panic("OOM");
         const mod_req_ctx = modReqCtx: {
-            var mod = &self.mod_list.items[self.mod_list.items.len - 1];
+            var mod = &mod_list.items[mod_list.items.len - 1];
             break :modReqCtx &mod.req_ctx;
         };
         switch (mod_field) {
@@ -578,7 +580,7 @@ pub const Context = struct {
                             mod.complete = modified: {
                                 while (if_iter.next()) |mod_if_entry| {
                                     const mod_if = mod_if_entry.value_ptr;
-                                    if (mod_if.mod_list.items.len > 0) //
+                                    if (mod_if.mod_queue.len > 0) //
                                         break :modified false;
                                 }
                                 break :modified true;
@@ -726,6 +728,7 @@ pub const Context = struct {
                         add_if.min_penalty = upd_if.min_penalty;
                         add_if.max_penalty = upd_if.max_penalty;
                         add_if.supported_freqs = upd_if.supported_freqs;
+                        add_if.mod_queue = upd_if.mod_queue;
                         core_ctx.alloc.free(upd_if.name);
                         core_ctx.alloc.free(upd_if.phy_name);
                         nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
@@ -829,8 +832,8 @@ pub const Context = struct {
                     };
                     const now = try zeit.instant(.{});
                     const since_upd = @divFloor((now.timestamp -| net_if.last_upd.timestamp), @as(i128, time.ns_per_ms));
-                    if (since_upd < 5000) continue;
-                    log.warn("Interface '{s}' is no longer available.", .{ net_if.name });
+                    if (since_upd < 15_000) continue;
+                    log.warn("Interface '{s}' is no longer available. Last seen {d}s ago", .{ net_if.name, @divFloor(since_upd, 1_000) });
                     net_if.deinit(core_ctx.alloc);
                     rm_macs[rm_count] = net_if_entry.key_ptr.*;
                     rm_count +|= 1;
@@ -840,7 +843,7 @@ pub const Context = struct {
             // Check for complete Modifications of the WiFi Interface
             var seq_list: ArrayList(u32) = .empty;
             defer seq_list.deinit(core_ctx.alloc);
-            for (net_if.mod_list.items) |mod| {
+            for (net_if.mod_queue) |mod| {
                 const mod_resp = mod.req_ctx.getResponse() orelse continue;
                 defer if (mod_resp) |resp_data| core_ctx.alloc.free(resp_data) else |_| {};
                 seq_list.append(core_ctx.alloc, mod.req_ctx.seq_id) catch @panic("OOM");
@@ -883,17 +886,20 @@ pub const Context = struct {
                     },
                 }
             }
+            var mod_list: ArrayList(Interface.ModifyContext) = .fromOwnedSlice(net_if.mod_queue);
             for (seq_list.items) |seq| {
-                for (net_if.mod_list.items, 0..) |mod, idx| {
+                for (mod_list.items, 0..) |mod, idx| {
                     if (mod.req_ctx.seq_id != seq) continue;
-                    _ = net_if.mod_list.orderedRemove(idx);
+                    _ = mod_list.orderedRemove(idx);
                     break;
                 }
             }
-            if (net_if.mod_list.items.len == 0) {
-                net_if.mod_list.deinit(core_ctx.alloc);
-                net_if.mod_list = .empty;
+            if (mod_list.items.len == 0) {
+                mod_list.deinit(core_ctx.alloc);
+                net_if.mod_queue = &.{};
             }
+            else //
+                net_if.mod_queue = mod_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
         }
         for (rm_macs[0..rm_count]) |mac| {
             _ = self.interfaces.map.remove(mac);
