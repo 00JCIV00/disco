@@ -513,7 +513,7 @@ pub const Writer = struct {
                 try writer.writeByte(0);
             try writer.writeInt(u32, idb.block_total_len, .little);
             try writer.flush();
-            log.debug("New IDB: {d} ({d}B)", .{ idb_pair.managed + idx, idb.block_total_len });
+            //log.debug("New IDB: {d} ({d}B)", .{ idb_pair.managed + idx, idb.block_total_len });
         }
     }
 
@@ -549,7 +549,7 @@ pub const Writer = struct {
                 try writer.writeByte(0);
             try writer.writeInt(u32, idb.block_total_len, .little);
             try writer.flush();
-            log.debug("New IDB: {d} ({d}B)", .{ idx, idb.block_total_len });
+            //log.debug("New IDB: {d} ({d}B)", .{ idx, idb.block_total_len });
         }
     }
 

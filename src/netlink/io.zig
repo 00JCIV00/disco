@@ -601,7 +601,7 @@ pub const Loop = struct {
         self._active.store(true, .monotonic);
         self._thread = try .spawn(
             .{ .allocator = alloc },
-            startThread,
+            run,
             .{
                 self,
                 active,
@@ -609,8 +609,8 @@ pub const Loop = struct {
         );
     }
 
-    /// Start the Event Loop Thread
-    fn startThread(self: *@This(), active: *atomic.Value(bool)) void {
+    /// Run the Event Loop Thread
+    fn run(self: *@This(), active: *atomic.Value(bool)) void {
         var events: [64]posix.system.epoll_event = undefined;
         while (active.load(.acquire) and self._active.load(.acquire)) {
             const event_count = posix.epoll_wait(self._epoll_fd, events[0..], -1);

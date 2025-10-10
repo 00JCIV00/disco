@@ -34,8 +34,6 @@ pub const Parser = struct {
     io_reader: Io.Reader,
     /// The underlying `Io.Writer` Interface
     io_writer: Io.Writer,
-    /// Buffer for the IO Writer
-    io_buf: [16_000]u8 = undefined,
     /// Ethernet Frames List
     eth_list: ArrayList([]const u8) = .empty,
     /// WiFi Frames List
@@ -54,7 +52,7 @@ pub const Parser = struct {
 
     /// Initialize a new Parser
     pub fn init(alloc: mem.Allocator, sock: posix.socket_t, if_mac: [6]u8) @This() {
-        var self: @This() = .{
+        return .{
             .alloc = alloc,
             .sock = sock,
             .ctx = .{ .if_mac = if_mac },
@@ -70,17 +68,16 @@ pub const Parser = struct {
                 .vtable = &.{
                     .drain = ioDrain,
                 },
-                .buffer = &.{},
+                .buffer = alloc.alloc(u8, 16_000) catch @panic("OOM"),
             },
         };
-        self.io_writer.buffer = self.io_buf[0..];
-        return self;
     }
 
     /// Deinitialize this Parser
     pub fn deinit(self: *@This()) void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.alloc.free(self.io_writer.buffer);
         for (self.eth_list.items) |frame| self.alloc.free(frame);
         self.eth_list.deinit(self.alloc);
         for (self.wifi_list.items) |frame| self.alloc.free(frame);
@@ -237,7 +234,7 @@ pub const Loop = struct {
         self._active.store(true, .monotonic);
         self._thread = try .spawn(
             .{ .allocator = core_ctx.alloc },
-            startThread,
+            run,
             .{
                 self,
                 core_ctx,
@@ -245,8 +242,8 @@ pub const Loop = struct {
         );
     }
 
-    /// Start the Event Loop Thread
-    fn startThread(self: *@This(), core_ctx: *core.Core) void {
+    /// Run the Event Loop Thread
+    fn run(self: *@This(), core_ctx: *core.Core) void {
         var events: [64]posix.system.epoll_event = undefined;
         while (core_ctx.active.load(.acquire) and self._active.load(.acquire)) {
             //log.debug("Start: SOCKET THREAD", .{});
