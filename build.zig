@@ -40,12 +40,12 @@ pub fn build(b: *std.Build) void {
             if (optimize == .Debug) target //
             else target,
         .optimize = optimize,
+        .sanitize_thread = if (optimize == .Debug) true else null,
     });
     const exe = b.addExecutable(.{
         .name = exe_name,
         .root_module = exe_mod,
         .use_llvm = true,
-        //.sanitize_thread = if (optimize == .Debug) true else null,
     });
     exe.root_module.addImport("cova", cova_mod);
     //exe.root_module.addImport("vaxis", vaxis_mod);
