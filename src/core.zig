@@ -332,7 +332,7 @@ pub const Core = struct {
         // TODO Archive Session Data
         self.cleanUp();
         log.info("Stopped DisCo Core.", .{});
-        if (stop_timer) |*st|
+        if (stop_timer) |*st| //
             log.debug("Stop Time: {d}ms", .{ @divTrunc(st.read(), time.ns_per_ms) });
     }
 
@@ -341,15 +341,17 @@ pub const Core = struct {
     pub fn cleanUp(self: *@This()) void {
         log.info("Cleaning up DisCo Core...", .{});
         if (self.config.profile.mask != null and self.config.profile.change_sys_hostname) {
-            if (sys.setHostName(self.og_hostname)) 
+            if (sys.setHostName(self.og_hostname)) //
                 log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname })
-            else |err|
+            else |err| //
                 log.warn("- Couldn't reset the Hostname: {t}", .{ err });
         }
+        if (self.run_condition == null) //
+            self.cap_writer.deinit(self);
         self.if_ctx.restore(self);
         self.alloc.free(self.og_hostname);
         if (self.forced_close) {
-            log.warn("- Forced close. Leaving memory clean up to the OS.", .{});
+            log.warn("- Forced close. Leaving resource clean up to the OS.", .{});
             return;
         }
         self.if_ctx.deinit(self.alloc);
@@ -361,10 +363,8 @@ pub const Core = struct {
         log.info("- Deinitialized Connection Tracking.", .{});
         self.serve_ctx.deinit(self.alloc);
         log.info("- Deinitialized File Serving.", .{});
-        if (self.run_condition == null) {
-            self.cap_writer.deinit(self);
+        if (self.run_condition == null) //
             log.info("- Deinitialized PCAP Writing.", .{});
-        }
         self.sock_event_loop.deinit(self.alloc);
         log.info("- Deinitialized Socket Event Loop.", .{});
         //self.arena.deinit();

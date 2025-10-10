@@ -172,34 +172,32 @@ pub const Writer = struct {
             f_ctx.file.close();
         };
         const tcp_ctx: ?TCPContext = tcpCtx: {
-            if (config.tcp) |tcp_conf| {
-                const tcp_addr = address.parseIPPort(tcp_conf.ip_port) catch |err| {
-                    log.err("Could not parse IP/Port: {t}", .{ err });
-                    break :tcpCtx null;
-                };
-                const tcp_sock = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch |err| {
-                    log.err("Could not create TCP Socket: {t}", .{ err });
-                    break :tcpCtx null;
-                };
-                posix.bind(tcp_sock, &tcp_addr.any, tcp_addr.getOsSockLen()) catch |err| {
-                    log.err("Could not bind to TCP Socket: {t}", .{ err });
-                    break :tcpCtx null;
-                };
-                posix.listen(tcp_sock, 0) catch |err| {
-                    log.err("Could not listen on TCP Socket: {t}", .{ err });
-                    break :tcpCtx null;
-                };
-                break :tcpCtx .{
-                    .config = tcp_conf,
-                    .accept_sock = tcp_sock,
-                };
-            }
-            break :tcpCtx null;
+            const tcp_conf = config.tcp orelse break :tcpCtx null;
+            const tcp_addr = address.parseIPPort(tcp_conf.ip_port) catch |err| {
+                log.err("Could not parse IP/Port: {t}", .{ err });
+                break :tcpCtx null;
+            };
+            const tcp_sock = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch |err| {
+                log.err("Could not create TCP Socket: {t}", .{ err });
+                break :tcpCtx null;
+            };
+            posix.bind(tcp_sock, &tcp_addr.any, tcp_addr.getOsSockLen()) catch |err| {
+                log.err("Could not bind to TCP Socket: {t}", .{ err });
+                break :tcpCtx null;
+            };
+            posix.listen(tcp_sock, 0) catch |err| {
+                log.err("Could not listen on TCP Socket: {t}", .{ err });
+                break :tcpCtx null;
+            };
+            break :tcpCtx .{
+                .config = tcp_conf,
+                .accept_sock = tcp_sock,
+            };
         };
         var self: @This() = .{
             .shb = .{
                 .block_total_len = @sizeOf(pcap.SectionHeaderBlock) + 4,
-                .section_len = 0,
+                .section_len = math.maxInt(u64),
             },
             .file_ctx = file_ctx,
             .tcp_ctx = tcp_ctx,
@@ -213,17 +211,19 @@ pub const Writer = struct {
         //log.debug("SHB Hex: {f}", .{ HexF{ .bytes = mem.asBytes(&self.shb)} });
         if (self.file_ctx) |*f_ctx| {
             const pcap_file = &f_ctx.file;
-            var file_w = pcap_file.writer(&.{});
+            var file_w = pcap_file.writerStreaming(&.{});
             try self.writeSHB(&file_w.interface);
+            try self.writeIDBs(&file_w.interface);
+            log.debug("Started PCAP file: {s} ({d}B)", .{ f_ctx.filename, (try pcap_file.stat()).size });
         }
         return self;
     }
 
     /// Deinitialize the PCAP-NG Writer
     pub fn deinit(self: *@This(), core_ctx: *core.Core) void {
-        self.finalize(core_ctx) catch |err| {
-            log.warn("There was a problem finalizing the PCAP file/stream: {t}", .{ err });
-        };
+        //self.finalize(core_ctx) catch |err| {
+        //    log.warn("There was a problem finalizing the PCAP file/stream: {t}", .{ err });
+        //};
         if (self.file_ctx) |*file_ctx| {
             const dir_name = //
                 if (mem.eql(u8, file_ctx.config.dir, ".")) "" //
@@ -270,7 +270,7 @@ pub const Writer = struct {
             if (try file.getEndPos() +| offset < file_ctx.config.max_filesize * 1_000) //
                 break :newFile;
             log.info("Rolling PCAP File. ({d}kB / {d}kB)", .{ @divFloor(try file.getEndPos(), 1_000), file_ctx.config.max_filesize });
-            try self.finalize(core_ctx);
+            //try self.finalize(core_ctx);
             file.close();
             const dir = file_ctx.dir;
             file_ctx.filename = fileName: {
@@ -288,8 +288,9 @@ pub const Writer = struct {
                 break :fileName fn_w.toOwnedSlice() catch @panic("OOM");
             };
             file.* = try dir.createFile(file_ctx.filename, .{ .read = true });
-            var file_w = file.writer(&.{});
+            var file_w = file.writerStreaming(&.{});
             try self.writeSHB(&file_w.interface);
+            try self.writeIDBs(&file_w.interface);
         }
         // Check for TCP Connections
         if (self.tcp_ctx) |*tcp_ctx| newTCP: {
@@ -417,6 +418,19 @@ pub const Writer = struct {
                 const opts = opt_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
                 self.idb_opts.put(core_ctx.alloc, id, opts) catch @panic("OOM");
             }
+            if (self.file_ctx) |file_ctx| {
+                const file = file_ctx.file;
+                var file_w = file.writerStreaming(&.{});
+                const file_writer = &file_w.interface;
+                try self.writeIfIDBs(file_writer, sock_if.og_mac);
+            }
+            if (self.tcp_ctx) |*tcp_ctx| {
+                defer tcp_ctx.conn_list.mutex.unlock();
+                for (tcp_ctx.conn_list.items()) |*conn| {
+                    const conn_writer = &conn.writer.io_writer;
+                    try self.writeIfIDBs(conn_writer, sock_if.og_mac);
+                }
+            }
             log.debug("Tracking Interface '{s}' for PCAP.", .{ sock_if.name });
         }
         if (self.cur_if_ids.count() >= 1 and core_ctx.sock_event_loop.handlers.get("pcap") == null) {
@@ -441,7 +455,7 @@ pub const Writer = struct {
         const no_idb_buf = try file_reader.readAlloc(core_ctx.alloc, try file.getEndPos());
         defer core_ctx.alloc.free(no_idb_buf);
         const epb_buf = no_idb_buf[self.shb.block_total_len..];
-        var file_w = file.writer(&.{});
+        var file_w = file.writerStreaming(&.{});
         try file_w.seekTo(self.shb.block_total_len);
         const file_writer = &file_w.interface;
         try self.writeIDBs(file_writer);
@@ -464,6 +478,43 @@ pub const Writer = struct {
         _ = try writer.writeStruct(self.shb, .little);
         _ = try writer.writeInt(u32, self.shb.block_total_len, .little);
         try writer.flush();
+    }
+
+    /// Write the IDBs for the provided Interface ('if_mac') to the provided `Io.Writer` ('writer').
+    pub fn writeIfIDBs(self: *@This(), writer: *Io.Writer, if_mac: [6]u8) !void {
+        const idb_pair = self.cur_if_ids.get(if_mac) orelse return;
+        var opt_buf: [512]u8 = undefined;
+        var opt_w: Io.Writer = .fixed(opt_buf[0..]);
+        self.idb_opts.mutex.lock();
+        defer {
+            self.idbs.mutex.unlock();
+            self.idb_opts.mutex.unlock();
+        }
+        for (self.idbs.items()[idb_pair.managed..idb_pair.monitor], 0..) |*idb, idx| {
+            defer _ = opt_w.consumeAll();
+            const opt_bytes: []const u8 = optBytes: {
+                const idb_opts = self.idb_opts.map.get(idb_pair.managed + idx) orelse &.{};
+                for (idb_opts) |opt| {
+                    _ = try opt_w.writeStruct(opt.hdr, .little);
+                    _ = try opt_w.write(opt.data);
+                    const opt_pad = mem.alignForward(u32, opt.hdr.len, 4) - opt.hdr.len;
+                    for (0..opt_pad) |_| //
+                        try opt_w.writeByte(0);
+                }
+                //log.debug("IDB Options: {f}", .{ HexF{ .bytes = opt_w.buffered() } });
+                break :optBytes opt_w.buffered();
+            };
+            const idb_raw_len: u32 = @truncate(@sizeOf(pcap.InterfaceDescriptionBlock) + opt_bytes.len + 4);
+            idb.block_total_len = mem.alignForward(u32, idb_raw_len, 4);
+            try writer.writeStruct(idb.*, .little);
+            _ = try writer.write(opt_bytes);
+            const pad_bytes = idb.block_total_len - idb_raw_len;
+            for (0..pad_bytes) |_| //
+                try writer.writeByte(0);
+            try writer.writeInt(u32, idb.block_total_len, .little);
+            try writer.flush();
+            log.debug("New IDB: {d} ({d}B)", .{ idb_pair.managed + idx, idb.block_total_len });
+        }
     }
 
     /// Write the provided Interface Description Blocks (`idbs`) to the provided `Io.Writer` (`writer`).
@@ -498,6 +549,7 @@ pub const Writer = struct {
                 try writer.writeByte(0);
             try writer.writeInt(u32, idb.block_total_len, .little);
             try writer.flush();
+            log.debug("New IDB: {d} ({d}B)", .{ idx, idb.block_total_len });
         }
     }
 
@@ -520,8 +572,7 @@ pub const Writer = struct {
         var file_w = fileWriter: {
             if (pcap_writer.file_ctx) |file_ctx| {
                 const file = &file_ctx.file;
-                var file_w = file.writer(&.{});
-                //file_w.end() catch return error.WriteFailed;
+                var file_w = file.writerStreaming(&.{});
                 file_w.seekTo(file.getEndPos() catch return error.WriteFailed) catch return error.WriteFailed;
                 break :fileWriter file_w;
             }
