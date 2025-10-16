@@ -324,7 +324,6 @@ pub const Connection = struct {
     _psk: [32]u8 = @splat(0),
     _scan_result: nl._80211.ScanResults,
     _rsn_bytes: []const u8 = &.{},
-    _eapol_keys: ?nl._80211.EAPoLKeys = null,
     _dhcp_info: ?dhcp.Info = null,
     _station: ?nl._80211.Station = null,
     // State
@@ -355,7 +354,11 @@ pub const Connection = struct {
         /// Associating to the Network
         assoc,
         /// Handling the 4 Way Handshake w/ the Router
-        eapol: u8,
+        eapol: struct {
+            handler: ?wpa.HandshakeHandler = null,
+            key_idx: u8 = 0,
+            keys: ?nl._80211.EAPoLKeys = null,
+        },
         /// Requesting Routing Info via DHCP
         dhcp: enum { wait, ip, gw, dns },
         /// Connected to the Network
@@ -433,9 +436,9 @@ pub const Connection = struct {
             const bytes = try nl.parse.toBytes(core_ctx.alloc, nl._80211.InformationElements.RobustSecurityNetwork, rsn);
             var buf = ArrayList(u8).fromOwnedSlice(bytes);
             errdefer buf.deinit(core_ctx.alloc);
-            try buf.insert(core_ctx.alloc, 0, @intCast(bytes.len));
-            try buf.insert(core_ctx.alloc, 0, c(nl._80211.IE).RSN);
-            break :rsnBytes try buf.toOwnedSlice(core_ctx.alloc);
+            buf.insert(core_ctx.alloc, 0, @intCast(bytes.len)) catch @panic("OOM");
+            buf.insert(core_ctx.alloc, 0, c(nl._80211.IE).RSN) catch @panic("OOM");
+            break :rsnBytes buf.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
         };
         const ssid = core_ctx.alloc.dupe(u8, candidate.config.ssid) catch @panic("OOM");
         errdefer core_ctx.alloc.free(ssid);
@@ -490,13 +493,20 @@ pub const Connection = struct {
         }
     }
     
-    pub fn deinit (self: *const @This(), alloc: mem.Allocator) void {
-        log.debug("Deinitialized Connection '{s}'", .{ self.ssid });
+    pub fn deinit (self: *@This(), alloc: mem.Allocator) void {
+        defer log.debug("Deinitialized Connection '{s}'", .{ self.ssid });
         alloc.free(self.ssid);
         if (self._station) |sta|
             nl.parse.freeBytes(alloc, nl._80211.Station, sta);
         nl.parse.freeBytes(alloc, nl._80211.ScanResults, self._scan_result);
         if (self._rsn_bytes.len > 0) alloc.free(self._rsn_bytes);
+        switch (self._state) {
+            .eapol => |*ctx| {
+                if (ctx.handler) |*handler| //
+                    handler.deinit(alloc);
+            },
+            else => {},
+        }
     }
 
     /// Handle this Connection
@@ -530,7 +540,7 @@ pub const Connection = struct {
             self.deinit(core_ctx.alloc);
             conn_if.usage = .available;
             return error.InterfaceInterrupted;
-        }
+        } //
         else {
             self._if_index = conn_if.index;
             log.info("Connecting to '{s}' w/ '{s}'...", .{ self.ssid, conn_if.name });
@@ -783,6 +793,10 @@ pub const Connection = struct {
                                             core_ctx.alloc.free(sae_confirm_resp_data);
                                         }
                                         log.debug("SAE Confirm Response Data: {d}B{f}", .{ sae_confirm_resp_data[0].FRAME.len, HexF{ .bytes = sae_confirm_resp_data[0].FRAME } });
+                                        if (sae_confirm_resp_data[0].FRAME.len < 64) {
+                                            log.warn("Issue handling WPA3 SAE Confirm resonpse data: Response Too Short ({d}B/64B)", .{ sae_confirm_resp_data[0].FRAME.len });
+                                            return error.ConfirmResponseTooShort;
+                                        }
                                         const resp_type: u16 = mem.readInt(u16, sae_confirm_resp_data[0].FRAME[26..28], .little);
                                         if (resp_type != 2) {
                                             log.warn("Issue handling WPA3 SAE Confirm response data: Non-Confirm Response ({d})", .{ resp_type });
@@ -870,8 +884,9 @@ pub const Connection = struct {
                                     if (assoc_resp) |resp_data| {
                                         core_ctx.alloc.free(resp_data);
                                         log.debug("Connection {s} | {s}: Associated ({t})", .{ self.ssid, conn_if.name, self.security });
+                                        self._retries = 0;
                                         self._nl_state = .ready;
-                                        self._state = .{ .eapol = 0 };
+                                        self._state = .{ .eapol = .{} };
                                         continue :state self._state;
                                     }
                                     else |err| {
@@ -889,102 +904,108 @@ pub const Connection = struct {
                     },
                 }
             },
-            .eapol => |*key_idx| {
-                self._thread_states.mutex.lock();
-                defer self._thread_states.mutex.unlock();
-                const eapol_state = self._thread_states.map.getEntry("eapol").?.value_ptr;
-                eapol: switch (eapol_state.*) {
-                    .ready => {
-                        // EAPoL
-                        switch (self.security) {
-                            .wpa2, .wpa3t, .wpa3 => {
-                                log.debug("Connection {s} | {s}: Handling EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
-                                eapol_state.* = .starting;
-                                const eapol_thread = try Thread.spawn(
-                                    .{},
-                                    handle4WHS,
-                                    .{
-                                        self._thread_states,
-                                        &self._eapol_keys,
-                                        conn_if.index,
-                                        self._psk,
-                                        self._rsn_bytes,
-                                        self.security,
-                                    },
-                                );
-                                eapol_thread.detach();
-                                continue :eapol eapol_state.*;
-                            },
-                            .open => {},
-                            else => return error.UnsupportedSecurityType,
+            .eapol => |*eapol_ctx| {
+                // EAPoL Handshake
+                const keys = eapol_ctx.keys orelse switch (self.security) {
+                    .open => {
+                        self._state = .{ .dhcp = .ip };
+                        continue :state self._state;
+                    },
+                    .wpa2, .wpa3t, .wpa3 => {
+                        if (eapol_ctx.handler) |*handler| {
+                            errdefer {
+                                handler.deinit(core_ctx.alloc);
+                                eapol_ctx.handler = null;
+                            }
+                            switch (handler.state) {
+                                .end => {
+                                    eapol_ctx.keys = .{ .ptk = handler.ctx.ptk, .gtk = handler.ctx.gtk };
+                                    continue :state self._state;
+                                },
+                                else => {
+                                    handler.step() catch |err| switch (err) {
+                                        error.ReadFailed,
+                                        //error.UnexpectedFlags,
+                                        => {
+                                            //log.debug("EAPoL Read Failed: {t}", .{ handler.state });
+                                        },
+                                        else => return err,
+                                    };
+                                    return;
+                                },
+                            }
+                        } //
+                        else {
+                            log.debug("Connection {s} | {s}: Handling EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
+                            eapol_ctx.handler = try .init(
+                                core_ctx.alloc,
+                                conn_if.index,
+                                self._psk,
+                                self._rsn_bytes,
+                                self.security,
+                            );
+                            continue :state self._state;
                         }
                     },
-                    .starting => {},
-                    .working => |*work| working: {
-                        if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
-                        eapol_state.* = .ready;
-                        return error.EAPoLThreadTimeout;
+                    else => return error.UnsupportedSecurityType,
+                };
+                // Apply Keys
+                nlState: switch (self._nl_state) {
+                    .ready, .request => {
+                        log.debug("Applying PTK & GTK", .{});
+                        self._nl80211_req_ctx.nextSeqID();
+                        const key,
+                        const bssid,
+                        const seq = keyData: {
+                            if (eapol_ctx.key_idx == 0) break :keyData .{
+                                keys.ptk[32..],
+                                self._scan_result.BSS.?.BSSID,
+                                null,
+                            };
+                            break :keyData .{
+                                keys.gtk[0..],
+                                null,
+                                [_]u8{ 2, 0, 0, 0, 0, 0 },
+                            };
+                        };
+                        try nl._80211.requestAddKey(
+                            core_ctx.alloc,
+                            &self._nl80211_req_ctx,
+                            conn_if.index,
+                            //if (idx == 0) self._scan_result.BSS.?.BSSID else null,
+                            bssid,
+                            .{
+                                .DATA = key.*,
+                                .CIPHER = c(nl._80211.CIPHER_SUITES).CCMP,
+                                //.SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
+                                .SEQ = seq,
+                                //.IDX = idx,
+                                .IDX = eapol_ctx.key_idx,
+                            },
+                        );
+                        self._nl_state = .await_response;
+                        continue :nlState self._nl_state;
                     },
-                    .done => {
-                        nlState: switch (self._nl_state) {
-                            .ready, .request => {
-                                self._nl80211_req_ctx.nextSeqID();
-                                const key,
-                                const bssid,
-                                const seq = keyData: {
-                                    if (key_idx.* == 0) break :keyData .{
-                                        self._eapol_keys.?.ptk[32..],
-                                        self._scan_result.BSS.?.BSSID,
-                                        null,
-                                    };
-                                    break :keyData .{ 
-                                        self._eapol_keys.?.gtk[0..],
-                                        null,
-                                        [_]u8{ 2, 0, 0, 0, 0, 0 },
-                                    };
-                                };
-                                try nl._80211.requestAddKey(
-                                    core_ctx.alloc,
-                                    &self._nl80211_req_ctx,
-                                    conn_if.index,
-                                    //if (idx == 0) self._scan_result.BSS.?.BSSID else null,
-                                    bssid,
-                                    .{
-                                        .DATA = key.*,
-                                        .CIPHER = c(nl._80211.CIPHER_SUITES).CCMP,
-                                        //.SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
-                                        .SEQ = seq,
-                                        //.IDX = idx,
-                                        .IDX = key_idx.*,
-                                    },
-                                );
-                                self._nl_state = .await_response;
-                            },
-                            .await_response => {
-                                if (!self._nl80211_req_ctx.checkResponse()) return;
-                                self._nl_state = .parse;
-                                continue :nlState self._nl_state;
-                            },
-                            .parse => {
-                                const add_key_resp = self._nl80211_req_ctx.getResponse().?;
-                                const add_key_resp_data = try add_key_resp;
-                                defer core_ctx.alloc.free(add_key_resp_data);
-                                self._nl_state = .ready;
-                                if (key_idx.* == 0) {
-                                    key_idx.* = 1;
-                                    continue :nlState self._nl_state;
-                                }
-                                eapol_state.* = .ready;
-                                log.debug("Connection {s} | {s}: Finished EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
-                                self._state = .{ .dhcp = .ip };
-                                continue :state self._state;
-                            },
-
+                    .await_response => {
+                        if (!self._nl80211_req_ctx.checkResponse()) return;
+                        self._nl_state = .parse;
+                        continue :nlState self._nl_state;
+                    },
+                    .parse => {
+                        const add_key_resp = self._nl80211_req_ctx.getResponse().?;
+                        const add_key_resp_data = try add_key_resp;
+                        defer core_ctx.alloc.free(add_key_resp_data);
+                        self._nl_state = .ready;
+                        if (eapol_ctx.key_idx == 0) {
+                            eapol_ctx.key_idx = 1;
+                            continue :nlState self._nl_state;
                         }
+                        log.debug("Connection {s} | {s}: Finished EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
+                        if (eapol_ctx.handler) |*handler| //
+                            handler.deinit(core_ctx.alloc);
+                        self._state = .{ .dhcp = .ip };
+                        continue :state self._state;
                     },
-                    .err => |err| {
-                        return err;
-                    }
                 }
             },
             .dhcp => |*dhcp_setup| {

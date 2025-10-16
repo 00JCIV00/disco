@@ -26,7 +26,7 @@ const MACF = address.MACFormatter;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 const HexF = utils.HexFormatter;
-const SocketWriter = utils.SocketWriter;
+const SockWriter = utils.SocketWriter;
 const ThreadArrayList = utils.ThreadArrayList;
 const ThreadHashMap = utils.ThreadHashMap;
 
@@ -83,7 +83,7 @@ pub const TCPContext = struct {
     pub const Connection = struct {
         sock: posix.socket_t,
         addr: posix.sockaddr.in,
-        writer: SocketWriter,
+        writer: SockWriter,
     };
 };
 
@@ -317,7 +317,11 @@ pub const Writer = struct {
             };
             const conn_addr_in: *posix.sockaddr.in = @ptrCast(@alignCast(&conn_addr));
             const conn_ip = mem.asBytes(&conn_addr_in.addr);
-            var conn_w: SocketWriter = .init(conn_sock, core_ctx.alloc.alloc(u8, 4096) catch @panic("OOM"));
+            var conn_w: SockWriter = .init(
+                conn_sock,
+                core_ctx.alloc.alloc(u8, 4096) catch @panic("OOM"),
+                0,
+            );
             const conn_writer = &conn_w.io_writer;
             self.writeSHB(conn_writer) catch |err| {
                 log.err("Could not write Section Header Block to new TCP Connection at '{f}': {t}", .{ IPF{ .bytes = conn_ip }, err });

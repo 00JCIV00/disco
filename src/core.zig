@@ -20,6 +20,7 @@ const nl = @import("netlink.zig");
 const sys = @import("sys.zig");
 const utils = @import("utils.zig");
 const c = utils.toStruct;
+const PIDF = utils.SliceFormatter(u32, "{d}");
 const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
 pub const captures = @import("core/captures.zig");
@@ -428,9 +429,6 @@ pub const AsyncState = enum {
     await_response,
     parse,
 };
-
-/// PID Formatter
-const PIDF = utils.SliceFormatter(u32, "{d}");
 
 /// Find Conflicting PIDs
 pub fn findConflictPIDs(

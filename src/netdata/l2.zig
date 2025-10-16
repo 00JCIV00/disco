@@ -27,7 +27,7 @@ pub const Eth = struct {
     };
 
     /// Ethernet Footer
-    pub const Footer = packed struct(u32){
+    pub const Footer = extern struct {
         eth_frame_check_seq: u32 = 0,
     };
 };
@@ -41,7 +41,7 @@ pub const EAPOL = struct {
         ALERT = 0x04,
     };
 
-    pub const Header = packed struct {
+    pub const Header = extern struct {
         /// Protocol version, typically 0x01 or 0x02 for WPA2
         protocol_version: u8,
         /// EAPOL Packet Type
@@ -50,7 +50,7 @@ pub const EAPOL = struct {
         packet_length: u16,
     };
 
-    pub const KeyFrame = packed struct {
+    pub const KeyFrame = extern struct {
         /// Key Info Flags (In Big Endian)
         pub const KeyInfo = enum(u16) {
             /// Bit 0-2: Descriptor Version 1 (e.g., TKIP)
@@ -74,28 +74,28 @@ pub const EAPOL = struct {
         };
 
         /// Key descriptor type, usually 0x02 for WPA2
-        descriptor_type: u8, 
+        descriptor_type: u8 align(1),
         /// Key Information flags
-        key_info: u16,
+        key_info: u16 align(1),
         /// Length of the encryption key
-        key_len: u16,
+        key_len: u16 align(1),
         /// Prevents replay attacks
-        replay_counter: u64,
+        replay_counter: u64 align(1),
         /// Random nonce for key exchange
-        //key_nonce: [32]u8,
-        key_nonce: u256,
+        key_nonce: [32]u8 align(1),
+        //key_nonce: u256 align(1),
         /// Initialization vector (often zero in WPA2)
-        //key_iv: [16]u8,
-        key_iv: u128,
+        key_iv: [16]u8 align(1),
+        //key_iv: u128 align(1),
         /// Replay sequence counter
-        key_rsc: u64,
-        /// Reserved, usually unused in WPA2-Personal
-        key_id: u64,
+        key_rsc: u64 align(1),
+        /// Reserved align(1), usually unused in WPA2-Personal
+        key_id: u64 align(1),
         /// Message Integrity Code for frame authenticity
-        //key_mic: [16]u8,
-        key_mic: u128,
+        key_mic: [16]u8 align(1),
+        //key_mic: u128 align(1),
         /// Length of the Key Data field
-        key_data_len: u16,
+        key_data_len: u16 align(1),
     };
 };
 

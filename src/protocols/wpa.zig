@@ -9,6 +9,7 @@ const log = std.log.scoped(.wpa);
 const mem = std.mem;
 const posix = std.posix;
 const testing = std.testing;
+const Io = std.Io;
 
 const CmacAes128 = crypto.auth.cmac.CmacAes128;
 const hkdf = crypto.kdf.hkdf;
@@ -25,6 +26,8 @@ const DecF = utils.SliceFormatter(u8, "{d}");
 const c = utils.toStruct;
 const l2 = netdata.l2;
 const MACF = netdata.address.MACFormatter;
+const SockReader = utils.SocketReader;
+const SockWriter = utils.SocketWriter;
 
 /// Calculate a WEP Key or WPA Pre-Shared Key (PSK) using MD5 or PBKDF2 with HMAC-SHA1.
 pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
@@ -412,454 +415,940 @@ const GTK_KDE = packed struct {
 };
 
 /// 4-Way Handshake State
-const HandshakeState = enum {
-    start,
+const HandshakeState = union(enum) {
     m1,
-    m2,
+    m2: struct {
+        eth_hdr: l2.Eth.Header,
+        eap_hdr: l2.EAPOL.Header,
+        kf_hdr: l2.EAPOL.KeyFrame,
+    },
     m3,
     m4,
+    end,
+    //err: anyerror,
 };
 
-/// Handle a 4-Way Handshake
-pub fn handle4WHS(
-    if_index: i32,
+/// Handler for the EAPoL 4-Way Handshake
+pub const HandshakeHandler = struct {
+    state: HandshakeState,
+    sock: posix.socket_t,
+    reader: SockReader,
+    writer: SockWriter,
+    r_buf: []const u8,
+    w_buf: []const u8,
     pmk: [32]u8,
     m2_data: []const u8,
     security: nl._80211.SecurityType,
-) !nl._80211.EAPoLKeys {
-    var state: HandshakeState = .start;
-    log.debug("Starting 4WHS...", .{});
-    defer {
-        log.debug("{s}", .{
-            switch (state) {
-                .start => "Failed 4WHS before M1.",
-                .m1 => "Failed 4WHS after M1.",
-                .m2 => "Failed 4WHS after M2.",
-                .m3 => "Failed 4WHS after M3.",
-                .m4 => "Finshed 4WHS!",
-            }
-        });
-    }
-    const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE));
-    defer posix.close(hs_sock);
-    const sock_addr: posix.sockaddr.ll = .{
-        .ifindex = if_index,
-        .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE),
-        .hatype = 0,
-        .pkttype = 0,
-        .halen = 6,
-        .addr = @splat(0),
+    snonce: [32]u8,
+    ctx: Context,
+
+    /// EAPoL Data derived during the Handshake
+    const Context = struct {
+        ap_mac: [6]u8,
+        client_mac: [6]u8,
+        send_eth_hdr: l2.Eth.Header,
+        send_eap_hdr: l2.EAPOL.Header,
+        send_kf_hdr: l2.EAPOL.KeyFrame,
+        anonce: [32]u8,
+        replay_counter: u64,
+        ptk: [48]u8,
+        gtk: [16]u8,
     };
-    try posix.setsockopt(
-        hs_sock,
-        posix.SOL.SOCKET,
-        posix.SO.RCVTIMEO,
-        mem.toBytes(posix.timeval{ .sec = 1, .usec = 0 })[0..],
-    );
-    try posix.setsockopt(
-        hs_sock,
-        posix.SOL.SOCKET,
-        posix.SO.RCVBUF,
-        mem.toBytes(@as(usize, 10_000))[0..],
-    );
-    try posix.bind(hs_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
-    // Process 4-Way Handshake
+
     const eth_hdr_len = @sizeOf(l2.Eth.Header);
     const eap_hdr_len = @sizeOf(l2.EAPOL.Header);
     const kf_hdr_len = @bitSizeOf(l2.EAPOL.KeyFrame) / 8;
     const hdrs_len = eth_hdr_len + eap_hdr_len + kf_hdr_len;
     const KeyInfo = l2.EAPOL.KeyFrame.KeyInfo;
-    const desc_info = switch(security) {
-        .wpa2 => c(KeyInfo).Version2,
-        else => 0,
-    };
-    const ptk_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack);
-    const mic_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC);
-    const gtk_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure);
-    const fin_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC | c(KeyInfo).Secure);
-    log.debug(
-        \\
-        \\ETH Len = {d}B
-        \\EAP Len = {d}B
-        \\KF Hdr = {d}B
-        \\Hdrs Len = {d}B
-        \\
-        , .{
-            eth_hdr_len,
-            eap_hdr_len,
-            kf_hdr_len,
-            hdrs_len,
-        }
-    );
-    while (true) {
-        state = .start;
-        const snonce: [32]u8 = snonce: {
-            var bytes: [32]u8 = undefined;
-            crypto.random.bytes(bytes[0..]);
-            break :snonce bytes;
+
+    /// Initialize a new Handshake Handler
+    pub fn init(
+        alloc: mem.Allocator,
+        if_index: i32,
+        pmk: [32]u8,
+        m2_data: []const u8,
+        security: nl._80211.SecurityType,
+    ) !@This() {
+        const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE));
+        errdefer posix.close(hs_sock);
+        const sock_addr: posix.sockaddr.ll = .{
+            .ifindex = if_index,
+            .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE),
+            .hatype = 0,
+            .pkttype = 0,
+            .halen = 6,
+            .addr = @splat(0),
         };
-        var recv_buf: [1600]u8 = undefined;
-        // Message 1
-        const m1_len = try posix.recv(hs_sock, recv_buf[0..], 0);
-        const m1_buf = recv_buf[0..m1_len];
-        var start: usize = 0;
-        var end: usize = eth_hdr_len;
-        log.debug("Start: {d}B, End: {d}B", .{ start, end });
-        const m1_eth_hdr = mem.bytesAsValue(l2.Eth.Header, m1_buf[start..end]);
-        if (mem.bigToNative(u16, m1_eth_hdr.ether_type) != c(l2.Eth.ETH_P).PAE) {
-            log.warn("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m1_eth_hdr.ether_type) });
-            continue;
-        }
-        start = end;
-        end += eap_hdr_len;
-        //log.debug("Start: {d}B, End: {d}B", .{ start, end });
-        const m1_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m1_buf[start..end]);
-        const eap_packet_type = mem.bigToNative(u8, m1_eap_hdr.packet_type);
-        if (eap_packet_type != c(l2.EAPOL.EAP).KEY) {
-            log.warn("EAPOL Type: {t}", .{ @as(l2.EAPOL.EAP, @enumFromInt(eap_packet_type)) });
-            continue;
-        }
-        start = end;
-        end += kf_hdr_len;
-        //log.debug("Start: {d}B, End: {d}B", .{ start, end });
-        //log.debug("KeyFrame Header Len: {d}B", .{ kf_hdr_len });
-        const m1_kf_hdr = mem.bytesAsValue(l2.EAPOL.KeyFrame, m1_buf[start..end]);
+        try posix.setsockopt(
+            hs_sock,
+            posix.SOL.SOCKET,
+            posix.SO.RCVTIMEO,
+            mem.toBytes(posix.timeval{ .sec = 1, .usec = 0 })[0..],
+        );
+        try posix.setsockopt(
+            hs_sock,
+            posix.SOL.SOCKET,
+            posix.SO.RCVBUF,
+            mem.toBytes(@as(usize, 10_000))[0..],
+        );
+        try posix.bind(hs_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
+        const r_buf = try alloc.alloc(u8, 4096);
+        errdefer alloc.free(r_buf);
+        const w_buf = try alloc.alloc(u8, 4096);
+        errdefer alloc.free(w_buf);
+        log.debug("Starting 4WHS...", .{});
         log.debug(
             \\
-            \\-------------------------------------
-            \\M1:
-            \\  - Key Info:  0x{X:0>4}
-            \\  - PTK Flags: 0x{X:0>4}
-            \\  - Replay Counter: {d}
-            \\
-            , .{ 
-                mem.bigToNative(u16, m1_kf_hdr.key_info),
-                mem.bigToNative(u16, ptk_flags),
-                mem.bigToNative(u64, m1_kf_hdr.replay_counter),
-            },
-        );
-        if ( //
-            m1_kf_hdr.key_info & ptk_flags != ptk_flags and ( //
-                (security == .wpa3t or security == .wpa3) and //
-                m1_kf_hdr.key_info != (ptk_flags) //
-            )
-        ) return error.ExpectedPTK;
-        if (m1_kf_hdr.key_info & c(KeyInfo).MIC == c(KeyInfo).MIC) return error.UnexpectedMIC;
-        const ap_mac = m1_eth_hdr.src_mac_addr;
-        const client_mac = m1_eth_hdr.dst_mac_addr;
-        const anonce = mem.toBytes(m1_kf_hdr.key_nonce);
-        const m1_rc = mem.bigToNative(u64, m1_kf_hdr.replay_counter);
-        // Gen PTK, KCK, & KEK
-        const ptk = genPTK(
-            pmk,
-            anonce,
-            snonce,
-            client_mac,
-            ap_mac,
-            security,
-        );
-        const kck = ptk[0..16];
-        const kek = ptk[16..32];
-        state = .m1;
-        // Message 2
-        const m2_eth_hdr: l2.Eth.Header = .{
-            .dst_mac_addr = ap_mac,
-            .src_mac_addr = client_mac,
-            .ether_type = m1_eth_hdr.ether_type,
-        };
-        const m2_eap_hdr: l2.EAPOL.Header = .{
-            .protocol_version = m1_eap_hdr.protocol_version,
-            .packet_type = m1_eap_hdr.packet_type,
-            .packet_length = mem.nativeToBig(u16, kf_hdr_len + @as(u16, @intCast(m2_data.len))),
-        };
-        var m2_kf_hdr = m1_kf_hdr.*;
-        m2_kf_hdr.key_info = mic_flags;
-        m2_kf_hdr.key_len = 0;
-        m2_kf_hdr.key_nonce = @bitCast(snonce);
-        m2_kf_hdr.key_mic = 0;
-        m2_kf_hdr.key_data_len = mem.nativeToBig(u16, @intCast(m2_data.len));
-        // - Gen M2 MIC
-        var m2_mic_buf: [1600]u8 = undefined;
-        start = 0;
-        end = eap_hdr_len;
-        @memcpy(m2_mic_buf[start..end], mem.toBytes(m2_eap_hdr)[0..]);
-        start = end;
-        end += kf_hdr_len;
-        @memcpy(m2_mic_buf[start..end], mem.toBytes(m2_kf_hdr)[0..kf_hdr_len]);
-        start = end;
-        end += m2_data.len;
-        @memcpy(m2_mic_buf[start..end], m2_data);
-        const m2_mic: [16]u8 = switch (security) {
-            .wpa3t, .wpa3 => cmacAes128: {
-                var m2_mic: [16]u8 = undefined;
-                CmacAes128.create(m2_mic[0..], m2_mic_buf[0..end], kck);
-                break :cmacAes128 m2_mic;
-            },
-            else => hmacSha1: {
-                var m2_mic: [20]u8 = undefined;
-                hmac.HmacSha1.create(m2_mic[0..], m2_mic_buf[0..end], kck);
-                break :hmacSha1 m2_mic[0..16].*;
-            },
-        };
-        m2_kf_hdr.key_mic = mem.bytesToValue(u128, m2_mic[0..]);
-        // - Send M2
-        var m2_buf: [1600]u8 = undefined;
-        start = 0;
-        end = eth_hdr_len;
-        @memcpy(m2_buf[start..end], mem.toBytes(m2_eth_hdr)[0..]);
-        start = end;
-        end += eap_hdr_len;
-        @memcpy(m2_buf[start..end], mem.toBytes(m2_eap_hdr)[0..]);
-        start = end;
-        end += kf_hdr_len;
-        @memcpy(m2_buf[start..end], mem.toBytes(m2_kf_hdr)[0..kf_hdr_len]);
-        start = end;
-        end += m2_data.len;
-        @memcpy(m2_buf[start..end], m2_data);
-        _ = try posix.send(hs_sock, m2_buf[0..end], 0);
-        log.debug(
-            \\
-            \\-------------------------------------
-            \\M2:
-            \\- A1: {f}
-            \\- A2: {f}
-            \\- PMK: {f}
-            \\- ANonce: {f}
-            \\- SNonce: {f}
-            \\- PTK: {f}
-            \\  - KCK: {f}
-            \\  - KEK: {f}
-            \\- MIC: {f}
+            \\ETH Len = {d}B
+            \\EAP Len = {d}B
+            \\KF Hdr = {d}B
+            \\Hdrs Len = {d}B
             \\
             , .{
-                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac[0..] else ap_mac[0..] },
-                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac[0..] else ap_mac[0..] },
-                InHexF{ .slice = pmk[0..] },
-                InHexF{ .slice = anonce[0..] },
-                InHexF{ .slice = snonce[0..] },
-                InHexF{ .slice = ptk[0..] },
-                InHexF{ .slice = kck[0..] },
-                InHexF{ .slice = kek[0..] },
-                InHexF{ .slice = m2_mic[0..] },
-            },
-        );
-        state = .m2;
-        // Message 3
-        recv_buf = @splat(0);
-        const m3_len = try posix.recv(hs_sock, recv_buf[0..], 0);
-        const m3_buf = recv_buf[0..m3_len];
-        start = 0;
-        end = eth_hdr_len;
-        const m3_eth_hdr: *const l2.Eth.Header = @alignCast(@ptrCast(m3_buf[start..end]));
-        if (mem.bigToNative(u16, m3_eth_hdr.ether_type) != c(l2.Eth.ETH_P).PAE) {
-            log.warn("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m3_eth_hdr.ether_type) });
-            continue;
-        }
-        //log.debug("Start: {d}B, End: {d}B", .{ start, end });
-        start = end;
-        end += eap_hdr_len;
-        const m3_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m3_buf[start..end]);
-        start = end;
-        end += kf_hdr_len;
-        const m3_kf_hdr = mem.bytesToValue(l2.EAPOL.KeyFrame, m3_buf[start..end]);
-        start = end;
-        end += mem.bigToNative(u16, m3_kf_hdr.key_data_len);
-        const m3_key_data = m3_buf[start..end];
-        log.debug(
-            \\
-            \\-------------------------------------
-            \\M3:
-            \\- EAP Header:
-            \\  - Src:  0x{X:0>2}
-            \\  - Type: 0x{X:0>2}
-            \\  - Len:  {d}B
-            \\- Replay Counter: {d}
-            \\- Key Info:  0x{X:0>4}
-            \\- GTK Flags: 0x{X:0>4}
-            \\- Key Len:   {d}B
-            \\- Key Data:  {f}
-            , .{
-                m3_eap_hdr.protocol_version,
-                m3_eap_hdr.packet_type,
-                mem.bigToNative(u16, m3_eap_hdr.packet_length),
-                mem.bigToNative(u64, m3_kf_hdr.replay_counter),
-                mem.bigToNative(u16, m3_kf_hdr.key_info),
-                mem.bigToNative(u16, gtk_flags),
-                mem.bigToNative(u16, m3_kf_hdr.key_data_len),
-                InHexF{ .slice = m3_key_data[0..] },
-            },
-        );
-        // - Validate M3
-        // -- Unexpected Flags
-        const m3_info = m3_kf_hdr.key_info;
-        if (m3_kf_hdr.key_info & gtk_flags != gtk_flags) {
-            log.err(
-                \\Unexpected Flags:
-                \\- Received: 0x{X:0>4}
-                \\- Expected: 0x{X:0>4}
-                , .{
-                    mem.bigToNative(u16, m3_info) & gtk_flags,
-                    gtk_flags,
-                }
-            );
-            //continue;
-            return error.UnexpectedFlags;
-        }
-        // -- Key Length Mismatch
-        if (mem.bigToNative(u16, m3_kf_hdr.key_len) != 16) {
-            log.err(
-                \\Key Length Mismatch: 
-                \\- Received: {d}B
-                \\- Expected: 16B
-                , .{ mem.bigToNative(u16, m3_kf_hdr.key_len) }
-            );
-            return error.KeyLengthMismatch;
-        }
-        // -- Replay Counter Mismatch
-        if (mem.bigToNative(u64, m3_kf_hdr.replay_counter) != m1_rc + 1) {
-            log.err(
-                \\Replay Counter Mismatch:
-                \\- Received: {d}
-                \\- Expected: {d}
-                , .{
-                    mem.bigToNative(u64, m3_kf_hdr.replay_counter),
-                    m1_rc + 1,
-                },
-            );
-            return error.ReplayCounterMismatch;
-        }
-        // -- M3 MIC Mismatch
-        const m3_mic_actual = m3_kf_hdr.key_mic;
-        var m3_mic_buf = m3_buf[eth_hdr_len..];
-        const mic_offset = eap_hdr_len + kf_hdr_len - 18;
-        @memset(m3_mic_buf[(mic_offset)..(mic_offset + 16)], 0);
-        end -= eth_hdr_len;
-        const m3_mic_valid: [16]u8 = switch (security) {
-            .wpa3t, .wpa3 => cmacAes128: {
-                var m3_mic_valid: [16]u8 = undefined;
-                CmacAes128.create(m3_mic_valid[0..], m3_mic_buf[0..end], kck);
-                break :cmacAes128 m3_mic_valid;
-            },
-            else => hmacSha1: {
-                var m3_mic_valid: [20]u8 = undefined;
-                hmac.HmacSha1.create(m3_mic_valid[0..], m3_mic_buf[0..end], kck);
-                break :hmacSha1 m3_mic_valid[0..16].*;
-            },
-        };
-        if (!mem.eql(u8, mem.toBytes(m3_mic_actual)[0..], m3_mic_valid[0..])) {
-            log.err(
-                \\MIC Mismatch:
-                \\- Received: {f}
-                \\- Expected: {f}
-                , .{
-                    InHexF{ .slice = mem.toBytes(m3_mic_actual)[0..] },
-                    InHexF{ .slice = m3_mic_valid[0..] },
-                },
-            );
-            //continue;
-            return error.Message3MICMismatch;
-        }
-        // - Handle Key Data
-        var m3_uw_buf: [500]u8 = undefined;
-        const m3_uw_data = uwKeyData: {
-            //log.debug(
-            //    \\Encrypted M3 Data:
-            //    \\- Info: 0b{b:0>16}
-            //    \\- Bool: 0b{b:0>16}
-            //    \\- Flag: 0b{b:0>16}
-            //    , .{
-            //        mem.bigToNative(u16, m3_info),
-            //        mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData,
-            //        c(KeyInfo).EncryptedData,
-            //    },
-            //);
-            if (mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData == c(KeyInfo).EncryptedData) {
-                const uw_len = try aesKeyUnwrap(kek, m3_key_data, m3_uw_buf[0..]);
-                break :uwKeyData m3_uw_buf[0..uw_len];
+                eth_hdr_len,
+                eap_hdr_len,
+                kf_hdr_len,
+                hdrs_len,
             }
-            else break :uwKeyData m3_key_data;
-        };
-        //log.debug("Decrypted Key Data:\n{X:0>2}", .{ m3_uw_data });
-        start = m3_uw_data[1] + 2;
-        end = start + (m3_uw_data[start + 1]) + 2;
-        const m3_gtk_kde = mem.bytesAsValue(GTK_KDE, m3_uw_data[start..end]);
-        //log.debug("GTK: {X:0>2}", .{ mem.toBytes(m3_gtk_kde.key)[0..] });
-        const gtk: [16]u8 = mem.toBytes(m3_gtk_kde.key);
-        state = .m3;
-        // Message 4
-        const m4_eth_hdr = m2_eth_hdr;
-        var m4_eap_hdr = m2_eap_hdr;
-        var m4_kf_hdr = m2_kf_hdr;
-        m4_eap_hdr.packet_length = mem.nativeToBig(u16, kf_hdr_len);
-        m4_kf_hdr.replay_counter = m3_kf_hdr.replay_counter;
-        m4_kf_hdr.key_info = fin_flags;
-        m4_kf_hdr.key_mic = 0;
-        m4_kf_hdr.key_nonce = 0;
-        m4_kf_hdr.key_data_len = 0;
-        var m4_mic_buf: [hdrs_len]u8 = @splat(0);
-        start = 0;
-        end = eap_hdr_len;
-        @memcpy(m4_mic_buf[start..end], mem.toBytes(m4_eap_hdr)[0..]);
-        start = end;
-        end += kf_hdr_len;
-        @memcpy(m4_mic_buf[start..end], mem.toBytes(m4_kf_hdr)[0..kf_hdr_len]);
-        //const m4_mic: [16]u8 = hmacSha1: {
-        //    var m4_mic: [20] u8 = undefined;
-        //    hmac.HmacSha1.create(m4_mic[0..], m4_mic_buf[0..end], kck);
-        //    break :hmacSha1 m4_mic[0..16].*;
-        //};
-        const m4_mic: [16]u8 = switch (security) {
-            .wpa3t, .wpa3 => cmacAes128: {
-                var m4_mic: [16]u8 = undefined;
-                CmacAes128.create(m4_mic[0..], m4_mic_buf[0..end], kck);
-                break :cmacAes128 m4_mic;
-            },
-            else => hmacSha1: {
-                var m4_mic: [20]u8 = undefined;
-                hmac.HmacSha1.create(m4_mic[0..], m4_mic_buf[0..end], kck);
-                break :hmacSha1 m4_mic[0..16].*;
-            },
-        };
-        m4_kf_hdr.key_mic = mem.bytesToValue(u128, m4_mic[0..]);
-        // - Send M4
-        var m4_buf: [hdrs_len]u8 = @splat(0);
-        start = 0;
-        end = eth_hdr_len;
-        @memcpy(m4_buf[start..end], mem.toBytes(m4_eth_hdr)[0..]);
-        start = end;
-        end += eap_hdr_len;
-        @memcpy(m4_buf[start..end], mem.toBytes(m4_eap_hdr)[0..]);
-        start = end;
-        end += kf_hdr_len;
-        @memcpy(m4_buf[start..end], mem.toBytes(m4_kf_hdr)[0..kf_hdr_len]);
-        _ = try posix.send(hs_sock, m4_buf[0..], 0);
-        log.debug(
-            \\
-            \\-------------------------------------
-            \\M4:
-            \\- A1: {f}
-            \\- A2: {f}
-            \\- PMK: {f}
-            \\- ANonce: {f}
-            \\- SNonce: {f}
-            \\- PTK: {f}
-            \\  - KCK: {f}
-            \\  - KEK: {f}
-            \\- MIC: {f}
-            \\
-            , .{
-                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac[0..] else ap_mac[0..] },
-                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac[0..] else ap_mac[0..] },
-                InHexF{ .slice = pmk[0..] },
-                InHexF{ .slice = anonce[0..] },
-                InHexF{ .slice = snonce[0..] },
-                InHexF{ .slice = ptk[0..] },
-                InHexF{ .slice = kck[0..] },
-                InHexF{ .slice = kek[0..] },
-                InHexF{ .slice = m4_mic[0..] },
-            },
         );
-        state = .m4;
-        return .{ .ptk = ptk, .gtk = gtk };
+        return .{
+            .state = .m1,
+            .sock = hs_sock,
+            .reader = .init(hs_sock, r_buf, posix.MSG.DONTWAIT),
+            .writer = .init(hs_sock, w_buf, 0),
+            .r_buf = r_buf,
+            .w_buf = w_buf,
+            .pmk = pmk,
+            .m2_data = m2_data,
+            .security = security,
+            .snonce = snonce: {
+                var bytes: [32]u8 = undefined;
+                crypto.random.bytes(bytes[0..]);
+                break :snonce bytes;
+            },
+            .ctx = undefined,
+        };
     }
-}
+
+    /// Deinitialize this Handshake Handler
+    pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+        posix.close(self.sock);
+        alloc.free(self.r_buf);
+        alloc.free(self.w_buf);
+    }
+
+    /// Step through the EAPoL Handshake Process
+    pub fn step(self: *@This()) !void {
+        const desc_info = switch(self.security) {
+            .wpa2 => c(KeyInfo).Version2,
+            else => 0,
+        };
+        const ptk_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack;
+        const mic_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC;
+        const gtk_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure;
+        const fin_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC | c(KeyInfo).Secure;
+        // Process 4-Way Handshake
+        eapol: switch (self.state) {
+            // Message 1
+            .m1 => {
+                var sock_r = &self.reader.io_reader;
+                sock_r.tossBuffered();
+                sock_r.seek = 0;
+                try sock_r.fillMore();
+                //log.debug("M1 Buf: {d}B{f}", .{ sock_r.end, HexF{ .bytes = sock_r.buffered() } });
+                const eth_hdr = try sock_r.takeStruct(l2.Eth.Header, .big);
+                //log.debug("M1 Eth Bytes: {d}B{f}", .{ mem.asBytes(&eth_hdr).len, HexF{ .bytes = mem.asBytes(&eth_hdr) } });
+                if (eth_hdr.ether_type != c(l2.Eth.ETH_P).PAE) {
+                    log.warn("Non-EAPOL: {X}", .{ eth_hdr.ether_type });
+                    return error.NonEAPoL;
+                }
+                const eap_hdr = try sock_r.takeStruct(l2.EAPOL.Header, .big);
+                //log.debug("M1 EAP Bytes: {d}B{f}", .{ mem.asBytes(&eap_hdr).len, HexF{ .bytes = mem.asBytes(&eap_hdr) } });
+                const eap_packet_type = eap_hdr.packet_type;
+                if (eap_packet_type != c(l2.EAPOL.EAP).KEY) {
+                    log.warn("EAPOL Type: {t}", .{ @as(l2.EAPOL.EAP, @enumFromInt(eap_packet_type)) });
+                    return error.NonEAPoLKey;
+                }
+                const kf_hdr = try sock_r.takeStruct(l2.EAPOL.KeyFrame, .big);
+                //log.debug("M1 KF Bytes: {d}B/{d}B{f}", .{ mem.asBytes(&kf_hdr).len, @sizeOf(l2.EAPOL.KeyFrame), HexF{ .bytes = mem.asBytes(&kf_hdr) } });
+                log.debug(
+                    \\
+                    \\-------------------------------------
+                    \\M1:
+                    \\  - Key Info:  0x{X:0>4}
+                    \\  - PTK Flags: 0x{X:0>4}
+                    \\  - Replay Counter: {d}
+                    \\
+                    , .{
+                        kf_hdr.key_info,
+                        ptk_flags,
+                        kf_hdr.replay_counter,
+                    },
+                );
+                if ( //
+                    kf_hdr.key_info & ptk_flags != ptk_flags and ( //
+                        (self.security == .wpa3t or self.security == .wpa3) and //
+                        kf_hdr.key_info != (ptk_flags) //
+                    ) //
+                ) return error.ExpectedPTK;
+                if (kf_hdr.key_info & c(KeyInfo).MIC == c(KeyInfo).MIC) //
+                    return error.UnexpectedMIC;
+                self.ctx.ap_mac = eth_hdr.src_mac_addr;
+                self.ctx.client_mac = eth_hdr.dst_mac_addr;
+                //self.ctx.anonce = mem.toBytes(kf_hdr.key_nonce);
+                self.ctx.anonce = kf_hdr.key_nonce;
+                self.ctx.replay_counter = kf_hdr.replay_counter;
+                // Gen PTK, KCK, & KEK
+                self.ctx.ptk = genPTK(
+                    self.pmk,
+                    self.ctx.anonce,
+                    self.snonce,
+                    self.ctx.client_mac,
+                    self.ctx.ap_mac,
+                    self.security,
+                );
+                self.state = .{
+                    .m2 = .{
+                        .eth_hdr = eth_hdr,
+                        .eap_hdr = eap_hdr,
+                        .kf_hdr = kf_hdr,
+                    }
+                };
+                continue :eapol self.state;
+            },
+            // Message 2
+            .m2 => |m1| {
+                const ptk = self.ctx.ptk;
+                const kck = ptk[0..16];
+                const kek = ptk[16..32];
+                self.ctx.send_eth_hdr = .{
+                    .dst_mac_addr = self.ctx.ap_mac,
+                    .src_mac_addr = self.ctx.client_mac,
+                    .ether_type = m1.eth_hdr.ether_type,
+                };
+                self.ctx.send_eap_hdr = .{
+                    .protocol_version = m1.eap_hdr.protocol_version,
+                    .packet_type = m1.eap_hdr.packet_type,
+                    .packet_length = kf_hdr_len + @as(u16, @truncate(self.m2_data.len)),
+                };
+                self.ctx.send_kf_hdr = m1.kf_hdr;
+                self.ctx.send_kf_hdr.key_info = mic_flags;
+                self.ctx.send_kf_hdr.key_len = 0;
+                self.ctx.send_kf_hdr.key_nonce = self.snonce;
+                self.ctx.send_kf_hdr.key_mic = @splat(0);
+                self.ctx.send_kf_hdr.key_data_len = @truncate(self.m2_data.len);
+                // - Gen M2 MIC
+                var mic_buf: [1600]u8 = undefined;
+                var mic_w: Io.Writer = .fixed(mic_buf[0..]);
+                try mic_w.writeStruct(self.ctx.send_eap_hdr, .big);
+                try mic_w.writeStruct(self.ctx.send_kf_hdr, .big);
+                _ = try mic_w.write(self.m2_data);
+                self.ctx.send_kf_hdr.key_mic = switch (self.security) {
+                    .wpa3t, .wpa3 => cmacAes128: {
+                        var mic: [16]u8 = undefined;
+                        CmacAes128.create(mic[0..], mic_w.buffered(), kck);
+                        break :cmacAes128 mic;
+                    },
+                    else => hmacSha1: {
+                        var mic: [20]u8 = undefined;
+                        hmac.HmacSha1.create(mic[0..], mic_w.buffered(), kck);
+                        break :hmacSha1 mic[0..16].*;
+                    },
+                };
+                //kf_hdr.key_mic = mem.bytesToValue(u128, mic[0..]);
+                //log.debug("M2 KF Bytes: {d}B/{d}B{f}", .{ mem.asBytes(&self.ctx.send_kf_hdr).len, @sizeOf(l2.EAPOL.KeyFrame), HexF{ .bytes = mem.asBytes(&kf_hdr) } });
+                // - Send M2
+                var sock_w = &self.writer.io_writer;
+                try sock_w.flush();
+                try sock_w.writeStruct(self.ctx.send_eth_hdr, .big);
+                try sock_w.writeStruct(self.ctx.send_eap_hdr, .big);
+                try sock_w.writeStruct(self.ctx.send_kf_hdr, .big);
+                _ = try sock_w.write(self.m2_data);
+                log.debug("M2 Buffer: {d}B{f}", .{ sock_w.end, HexF{ .bytes = sock_w.buffered() } });
+                try sock_w.flush();
+                log.debug(
+                    \\
+                    \\-------------------------------------
+                    \\M2:
+                    \\- A1: {f}
+                    \\- A2: {f}
+                    \\- PMK: {f}
+                    \\- ANonce: {f}
+                    \\- SNonce: {f}
+                    \\- PTK: {f}
+                    \\  - KCK: {f}
+                    \\  - KEK: {f}
+                    \\- MIC: {f}
+                    \\
+                    , .{
+                        MACF{ .bytes = if (mem.order(u8, self.ctx.client_mac[0..], self.ctx.ap_mac[0..]) == .lt) self.ctx.client_mac[0..] else self.ctx.ap_mac[0..] },
+                        MACF{ .bytes = if (mem.order(u8, self.ctx.client_mac[0..], self.ctx.ap_mac[0..]) == .gt) self.ctx.client_mac[0..] else self.ctx.ap_mac[0..] },
+                        InHexF{ .slice = self.pmk[0..] },
+                        InHexF{ .slice = self.ctx.anonce[0..] },
+                        InHexF{ .slice = self.snonce[0..] },
+                        InHexF{ .slice = ptk[0..] },
+                        InHexF{ .slice = kck[0..] },
+                        InHexF{ .slice = kek[0..] },
+                        InHexF{ .slice = self.ctx.send_kf_hdr.key_mic[0..] },
+                    },
+                );
+                self.state = .m3;
+                continue :eapol self.state;
+            },
+            // Message 3
+            .m3 => {
+                const ptk = self.ctx.ptk;
+                const kck = ptk[0..16];
+                const kek = ptk[16..32];
+                var sock_r = &self.reader.io_reader;
+                sock_r.tossBuffered();
+                sock_r.seek = 0;
+                sock_r.end = 0;
+                try sock_r.fillMore();
+                //log.debug("M3 Buf: {d}B{f}", .{ sock_r.end, HexF{ .bytes = sock_r.buffered() } });
+                const eth_hdr = try sock_r.takeStruct(l2.Eth.Header, .big);
+                if (eth_hdr.ether_type != c(l2.Eth.ETH_P).PAE) {
+                    log.warn("Non-EAPOL: {X}", .{ eth_hdr.ether_type });
+                    return error.NonEAPoL;
+                }
+                var mic_buf: [1600]u8 = undefined;
+                @memcpy(mic_buf[0..(sock_r.end - sock_r.seek)], sock_r.buffered());
+                const eap_hdr = try sock_r.takeStruct(l2.EAPOL.Header, .big);
+                const kf_hdr = try sock_r.takeStruct(l2.EAPOL.KeyFrame, .big);
+                const key_data = try sock_r.take(kf_hdr.key_data_len);
+                log.debug(
+                    \\
+                    \\-------------------------------------
+                    \\M3:
+                    \\- EAP Header:
+                    \\  - Src:  0x{X:0>2}
+                    \\  - Type: 0x{X:0>2}
+                    \\  - Len:  {d}B
+                    \\- Replay Counter: {d}
+                    \\- Key Info:  0x{X:0>4}
+                    \\- GTK Flags: 0x{X:0>4}
+                    \\- Key Len:   {d}B
+                    \\- Key Data:  {f}
+                    , .{
+                        eap_hdr.protocol_version,
+                        eap_hdr.packet_type,
+                        eap_hdr.packet_length,
+                        kf_hdr.replay_counter,
+                        kf_hdr.key_info,
+                        gtk_flags,
+                        kf_hdr.key_data_len,
+                        InHexF{ .slice = key_data[0..] },
+                    },
+                );
+                // - Validate M3
+                // -- Unexpected Flags
+                const info = kf_hdr.key_info;
+                if (info & gtk_flags != gtk_flags) {
+                    log.err(
+                        \\Unexpected Flags:
+                        \\- Received: 0x{X:0>4}
+                        \\- Expected: 0x{X:0>4}
+                        , .{
+                            info & gtk_flags,
+                            gtk_flags,
+                        },
+                    );
+                    return error.UnexpectedFlags;
+                }
+                // -- Key Length Mismatch
+                if (kf_hdr.key_len != 16) {
+                    log.err(
+                        \\Key Length Mismatch:
+                        \\- Received: {d}B
+                        \\- Expected: 16B
+                        , .{ kf_hdr.key_len },
+                    );
+                    return error.KeyLengthMismatch;
+                }
+                // -- Replay Counter Mismatch
+                if (kf_hdr.replay_counter != self.ctx.replay_counter + 1) {
+                    log.err(
+                        \\Replay Counter Mismatch:
+                        \\- Received: {d}
+                        \\- Expected: {d}
+                        , .{
+                            kf_hdr.replay_counter,
+                            self.ctx.replay_counter + 1,
+                        },
+                    );
+                    return error.ReplayCounterMismatch;
+                }
+                // -- M3 MIC Mismatch
+                const mic = kf_hdr.key_mic;
+                const mic_offset = eap_hdr_len + kf_hdr_len - 18;
+                @memset(mic_buf[(mic_offset)..(mic_offset + 16)], 0);
+                const mic_data_len = eap_hdr_len + kf_hdr_len + kf_hdr.key_data_len;
+                const mic_valid: [16]u8 = switch (self.security) {
+                    .wpa3t, .wpa3 => cmacAes128: {
+                        var mic_valid: [16]u8 = undefined;
+                        CmacAes128.create(mic_valid[0..], mic_buf[0..mic_data_len], kck);
+                        break :cmacAes128 mic_valid;
+                    },
+                    else => hmacSha1: {
+                        var mic_valid: [20]u8 = undefined;
+                        hmac.HmacSha1.create(mic_valid[0..], mic_buf[0..mic_data_len], kck);
+                        break :hmacSha1 mic_valid[0..16].*;
+                    },
+                };
+                if (!mem.eql(u8, mem.toBytes(mic)[0..], mic_valid[0..])) {
+                    log.err(
+                        \\MIC Mismatch:
+                        \\- Received: {f}
+                        \\- Expected: {f}
+                        , .{
+                            InHexF{ .slice = mem.toBytes(mic)[0..] },
+                            InHexF{ .slice = mic_valid[0..] },
+                        },
+                    );
+                    //continue;
+                    return error.Message3MICMismatch;
+                }
+                // - Handle Key Data
+                var uw_buf: [500]u8 = undefined;
+                const uw_data = uwKeyData: {
+                    //log.debug(
+                    //    \\Encrypted M3 Data:
+                    //    \\- Info: 0b{b:0>16}
+                    //    \\- Bool: 0b{b:0>16}
+                    //    \\- Flag: 0b{b:0>16}
+                    //    , .{
+                    //        mem.bigToNative(u16, m3_info),
+                    //        mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData,
+                    //        c(KeyInfo).EncryptedData,
+                    //    },
+                    //);
+                    if (info & c(KeyInfo).EncryptedData == c(KeyInfo).EncryptedData) {
+                        const uw_len = try aesKeyUnwrap(kek, key_data, uw_buf[0..]);
+                        break :uwKeyData uw_buf[0..uw_len];
+                    } //
+                    else break :uwKeyData key_data;
+                };
+                //log.debug("Decrypted Key Data:\n{X:0>2}", .{ m3_uw_data });
+                const kde_start = uw_data[1] + 2;
+                const kde_len = kde_start + (uw_data[kde_start + 1]) + 2;
+                const gtk_kde = mem.bytesAsValue(GTK_KDE, uw_data[kde_start..kde_len]);
+                //log.debug("GTK: {X:0>2}", .{ mem.toBytes(m3_gtk_kde.key)[0..] });
+                self.ctx.replay_counter = kf_hdr.replay_counter;
+                self.ctx.gtk = mem.toBytes(gtk_kde.key);
+                self.state = .m4;
+            },
+            // Message 4
+            .m4 => {
+                const ptk = self.ctx.ptk;
+                const kck = ptk[0..16];
+                const kek = ptk[16..32];
+                self.ctx.send_eap_hdr.packet_length = kf_hdr_len;
+                self.ctx.send_kf_hdr.replay_counter = self.ctx.replay_counter;
+                self.ctx.send_kf_hdr.key_info = fin_flags;
+                self.ctx.send_kf_hdr.key_mic = @splat(0);
+                self.ctx.send_kf_hdr.key_nonce = @splat(0);
+                self.ctx.send_kf_hdr.key_data_len = 0;
+                var mic_buf: [hdrs_len]u8 = @splat(0);
+                var mic_w: Io.Writer = .fixed(mic_buf[0..]);
+                try mic_w.writeStruct(self.ctx.send_eap_hdr, .big);
+                try mic_w.writeStruct(self.ctx.send_kf_hdr, .big);
+                self.ctx.send_kf_hdr.key_mic = switch (self.security) {
+                    .wpa3t, .wpa3 => cmacAes128: {
+                        var m4_mic: [16]u8 = undefined;
+                        CmacAes128.create(m4_mic[0..], mic_w.buffered(), kck);
+                        break :cmacAes128 m4_mic;
+                    },
+                    else => hmacSha1: {
+                        var m4_mic: [20]u8 = undefined;
+                        hmac.HmacSha1.create(m4_mic[0..], mic_w.buffered(), kck);
+                        break :hmacSha1 m4_mic[0..16].*;
+                    },
+                };
+                //kf_hdr.key_mic = mem.bytesToValue(u128, mic[0..]);
+                //log.debug("M4 KF Bytes: {d}B/{d}B{f}", .{ mem.asBytes(&self.ctx.send_kf_hdr).len, @sizeOf(l2.EAPOL.KeyFrame), HexF{ .bytes = mem.asBytes(&self.ctx.send_kf_hdr) } });
+                // - Send M4
+                var send_w = &self.writer.io_writer;
+                try send_w.flush();
+                try send_w.writeStruct(self.ctx.send_eth_hdr, .big);
+                try send_w.writeStruct(self.ctx.send_eap_hdr, .big);
+                try send_w.writeStruct(self.ctx.send_kf_hdr, .big);
+                try send_w.flush();
+                log.debug(
+                    \\
+                    \\-------------------------------------
+                    \\M4:
+                    \\- A1: {f}
+                    \\- A2: {f}
+                    \\- PMK: {f}
+                    \\- ANonce: {f}
+                    \\- SNonce: {f}
+                    \\- PTK: {f}
+                    \\  - KCK: {f}
+                    \\  - KEK: {f}
+                    \\- MIC: {f}
+                    \\
+                    , .{
+                        MACF{ .bytes = if (mem.order(u8, self.ctx.client_mac[0..], self.ctx.ap_mac[0..]) == .lt) self.ctx.client_mac[0..] else self.ctx.ap_mac[0..] },
+                        MACF{ .bytes = if (mem.order(u8, self.ctx.client_mac[0..], self.ctx.ap_mac[0..]) == .gt) self.ctx.client_mac[0..] else self.ctx.ap_mac[0..] },
+                        InHexF{ .slice = self.pmk[0..] },
+                        InHexF{ .slice = self.ctx.anonce[0..] },
+                        InHexF{ .slice = self.snonce[0..] },
+                        InHexF{ .slice = ptk[0..] },
+                        InHexF{ .slice = kck[0..] },
+                        InHexF{ .slice = kek[0..] },
+                        InHexF{ .slice = self.ctx.send_kf_hdr.key_mic[0..] },
+                    },
+                );
+                self.state = .end;
+            },
+            .end => {
+                //return .{ .ptk = ptk, .gtk = gtk };
+                return;
+            },
+        }
+    }
+};
+
+///// Handle a 4-Way Handshake
+//pub fn handle4WHS(
+//    if_index: i32,
+//    pmk: [32]u8,
+//    m2_data: []const u8,
+//    security: nl._80211.SecurityType,
+//) !nl._80211.EAPoLKeys {
+//    var state: HandshakeState = .start;
+//    log.debug("Starting 4WHS...", .{});
+//    defer {
+//        log.debug("{s}", .{
+//            switch (state) {
+//                .start => "Failed 4WHS before M1.",
+//                .m1 => "Failed 4WHS after M1.",
+//                .m2 => "Failed 4WHS after M2.",
+//                .m3 => "Failed 4WHS after M3.",
+//                .m4 => "Finshed 4WHS!",
+//            }
+//        });
+//    }
+//    const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE));
+//    defer posix.close(hs_sock);
+//    const sock_addr: posix.sockaddr.ll = .{
+//        .ifindex = if_index,
+//        .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE),
+//        .hatype = 0,
+//        .pkttype = 0,
+//        .halen = 6,
+//        .addr = @splat(0),
+//    };
+//    try posix.setsockopt(
+//        hs_sock,
+//        posix.SOL.SOCKET,
+//        posix.SO.RCVTIMEO,
+//        mem.toBytes(posix.timeval{ .sec = 1, .usec = 0 })[0..],
+//    );
+//    try posix.setsockopt(
+//        hs_sock,
+//        posix.SOL.SOCKET,
+//        posix.SO.RCVBUF,
+//        mem.toBytes(@as(usize, 10_000))[0..],
+//    );
+//    try posix.bind(hs_sock, @ptrCast(&sock_addr), @sizeOf(posix.sockaddr.ll));
+//    // Process 4-Way Handshake
+//    const eth_hdr_len = @sizeOf(l2.Eth.Header);
+//    const eap_hdr_len = @sizeOf(l2.EAPOL.Header);
+//    const kf_hdr_len = @bitSizeOf(l2.EAPOL.KeyFrame) / 8;
+//    const hdrs_len = eth_hdr_len + eap_hdr_len + kf_hdr_len;
+//    const KeyInfo = l2.EAPOL.KeyFrame.KeyInfo;
+//    const desc_info = switch(security) {
+//        .wpa2 => c(KeyInfo).Version2,
+//        else => 0,
+//    };
+//    const ptk_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack);
+//    const mic_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC);
+//    const gtk_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure);
+//    const fin_flags = mem.nativeToBig(u16, desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC | c(KeyInfo).Secure);
+//    log.debug(
+//        \\
+//        \\ETH Len = {d}B
+//        \\EAP Len = {d}B
+//        \\KF Hdr = {d}B
+//        \\Hdrs Len = {d}B
+//        \\
+//        , .{
+//            eth_hdr_len,
+//            eap_hdr_len,
+//            kf_hdr_len,
+//            hdrs_len,
+//        }
+//    );
+//    while (true) {
+//        state = .start;
+//        const snonce: [32]u8 = snonce: {
+//            var bytes: [32]u8 = undefined;
+//            crypto.random.bytes(bytes[0..]);
+//            break :snonce bytes;
+//        };
+//        var recv_buf: [1600]u8 = undefined;
+//        // Message 1
+//        const m1_len = try posix.recv(hs_sock, recv_buf[0..], 0);
+//        const m1_buf = recv_buf[0..m1_len];
+//        var start: usize = 0;
+//        var end: usize = eth_hdr_len;
+//        log.debug("Start: {d}B, End: {d}B", .{ start, end });
+//        const m1_eth_hdr = mem.bytesAsValue(l2.Eth.Header, m1_buf[start..end]);
+//        if (mem.bigToNative(u16, m1_eth_hdr.ether_type) != c(l2.Eth.ETH_P).PAE) {
+//            log.warn("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m1_eth_hdr.ether_type) });
+//            continue;
+//        }
+//        start = end;
+//        end += eap_hdr_len;
+//        //log.debug("Start: {d}B, End: {d}B", .{ start, end });
+//        const m1_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m1_buf[start..end]);
+//        const eap_packet_type = mem.bigToNative(u8, m1_eap_hdr.packet_type);
+//        if (eap_packet_type != c(l2.EAPOL.EAP).KEY) {
+//            log.warn("EAPOL Type: {t}", .{ @as(l2.EAPOL.EAP, @enumFromInt(eap_packet_type)) });
+//            continue;
+//        }
+//        start = end;
+//        end += kf_hdr_len;
+//        //log.debug("Start: {d}B, End: {d}B", .{ start, end });
+//        //log.debug("KeyFrame Header Len: {d}B", .{ kf_hdr_len });
+//        const m1_kf_hdr = mem.bytesAsValue(l2.EAPOL.KeyFrame, m1_buf[start..end]);
+//        log.debug(
+//            \\
+//            \\-------------------------------------
+//            \\M1:
+//            \\  - Key Info:  0x{X:0>4}
+//            \\  - PTK Flags: 0x{X:0>4}
+//            \\  - Replay Counter: {d}
+//            \\
+//            , .{ 
+//                mem.bigToNative(u16, m1_kf_hdr.key_info),
+//                mem.bigToNative(u16, ptk_flags),
+//                mem.bigToNative(u64, m1_kf_hdr.replay_counter),
+//            },
+//        );
+//        if ( //
+//            m1_kf_hdr.key_info & ptk_flags != ptk_flags and ( //
+//                (security == .wpa3t or security == .wpa3) and //
+//                m1_kf_hdr.key_info != (ptk_flags) //
+//            )
+//        ) return error.ExpectedPTK;
+//        if (m1_kf_hdr.key_info & c(KeyInfo).MIC == c(KeyInfo).MIC) return error.UnexpectedMIC;
+//        const ap_mac = m1_eth_hdr.src_mac_addr;
+//        const client_mac = m1_eth_hdr.dst_mac_addr;
+//        const anonce = mem.toBytes(m1_kf_hdr.key_nonce);
+//        const m1_rc = mem.bigToNative(u64, m1_kf_hdr.replay_counter);
+//        // Gen PTK, KCK, & KEK
+//        const ptk = genPTK(
+//            pmk,
+//            anonce,
+//            snonce,
+//            client_mac,
+//            ap_mac,
+//            security,
+//        );
+//        const kck = ptk[0..16];
+//        const kek = ptk[16..32];
+//        state = .m1;
+//        // Message 2
+//        const m2_eth_hdr: l2.Eth.Header = .{
+//            .dst_mac_addr = ap_mac,
+//            .src_mac_addr = client_mac,
+//            .ether_type = m1_eth_hdr.ether_type,
+//        };
+//        const m2_eap_hdr: l2.EAPOL.Header = .{
+//            .protocol_version = m1_eap_hdr.protocol_version,
+//            .packet_type = m1_eap_hdr.packet_type,
+//            .packet_length = mem.nativeToBig(u16, kf_hdr_len + @as(u16, @intCast(m2_data.len))),
+//        };
+//        var m2_kf_hdr = m1_kf_hdr.*;
+//        m2_kf_hdr.key_info = mic_flags;
+//        m2_kf_hdr.key_len = 0;
+//        m2_kf_hdr.key_nonce = @bitCast(snonce);
+//        m2_kf_hdr.key_mic = 0;
+//        m2_kf_hdr.key_data_len = mem.nativeToBig(u16, @intCast(m2_data.len));
+//        // - Gen M2 MIC
+//        var m2_mic_buf: [1600]u8 = undefined;
+//        start = 0;
+//        end = eap_hdr_len;
+//        @memcpy(m2_mic_buf[start..end], mem.toBytes(m2_eap_hdr)[0..]);
+//        start = end;
+//        end += kf_hdr_len;
+//        @memcpy(m2_mic_buf[start..end], mem.toBytes(m2_kf_hdr)[0..kf_hdr_len]);
+//        start = end;
+//        end += m2_data.len;
+//        @memcpy(m2_mic_buf[start..end], m2_data);
+//        const m2_mic: [16]u8 = switch (security) {
+//            .wpa3t, .wpa3 => cmacAes128: {
+//                var m2_mic: [16]u8 = undefined;
+//                CmacAes128.create(m2_mic[0..], m2_mic_buf[0..end], kck);
+//                break :cmacAes128 m2_mic;
+//            },
+//            else => hmacSha1: {
+//                var m2_mic: [20]u8 = undefined;
+//                hmac.HmacSha1.create(m2_mic[0..], m2_mic_buf[0..end], kck);
+//                break :hmacSha1 m2_mic[0..16].*;
+//            },
+//        };
+//        m2_kf_hdr.key_mic = mem.bytesToValue(u128, m2_mic[0..]);
+//        // - Send M2
+//        var m2_buf: [1600]u8 = undefined;
+//        start = 0;
+//        end = eth_hdr_len;
+//        @memcpy(m2_buf[start..end], mem.toBytes(m2_eth_hdr)[0..]);
+//        start = end;
+//        end += eap_hdr_len;
+//        @memcpy(m2_buf[start..end], mem.toBytes(m2_eap_hdr)[0..]);
+//        start = end;
+//        end += kf_hdr_len;
+//        @memcpy(m2_buf[start..end], mem.toBytes(m2_kf_hdr)[0..kf_hdr_len]);
+//        start = end;
+//        end += m2_data.len;
+//        @memcpy(m2_buf[start..end], m2_data);
+//        _ = try posix.send(hs_sock, m2_buf[0..end], 0);
+//        log.debug(
+//            \\
+//            \\-------------------------------------
+//            \\M2:
+//            \\- A1: {f}
+//            \\- A2: {f}
+//            \\- PMK: {f}
+//            \\- ANonce: {f}
+//            \\- SNonce: {f}
+//            \\- PTK: {f}
+//            \\  - KCK: {f}
+//            \\  - KEK: {f}
+//            \\- MIC: {f}
+//            \\
+//            , .{
+//                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac[0..] else ap_mac[0..] },
+//                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac[0..] else ap_mac[0..] },
+//                InHexF{ .slice = pmk[0..] },
+//                InHexF{ .slice = anonce[0..] },
+//                InHexF{ .slice = snonce[0..] },
+//                InHexF{ .slice = ptk[0..] },
+//                InHexF{ .slice = kck[0..] },
+//                InHexF{ .slice = kek[0..] },
+//                InHexF{ .slice = m2_mic[0..] },
+//            },
+//        );
+//        state = .m2;
+//        // Message 3
+//        recv_buf = @splat(0);
+//        const m3_len = try posix.recv(hs_sock, recv_buf[0..], 0);
+//        const m3_buf = recv_buf[0..m3_len];
+//        start = 0;
+//        end = eth_hdr_len;
+//        const m3_eth_hdr: *const l2.Eth.Header = @alignCast(@ptrCast(m3_buf[start..end]));
+//        if (mem.bigToNative(u16, m3_eth_hdr.ether_type) != c(l2.Eth.ETH_P).PAE) {
+//            log.warn("Non-EAPOL: {X}", .{ mem.bigToNative(u16, m3_eth_hdr.ether_type) });
+//            continue;
+//        }
+//        //log.debug("Start: {d}B, End: {d}B", .{ start, end });
+//        start = end;
+//        end += eap_hdr_len;
+//        const m3_eap_hdr = mem.bytesAsValue(l2.EAPOL.Header, m3_buf[start..end]);
+//        start = end;
+//        end += kf_hdr_len;
+//        const m3_kf_hdr = mem.bytesToValue(l2.EAPOL.KeyFrame, m3_buf[start..end]);
+//        start = end;
+//        end += mem.bigToNative(u16, m3_kf_hdr.key_data_len);
+//        const m3_key_data = m3_buf[start..end];
+//        log.debug(
+//            \\
+//            \\-------------------------------------
+//            \\M3:
+//            \\- EAP Header:
+//            \\  - Src:  0x{X:0>2}
+//            \\  - Type: 0x{X:0>2}
+//            \\  - Len:  {d}B
+//            \\- Replay Counter: {d}
+//            \\- Key Info:  0x{X:0>4}
+//            \\- GTK Flags: 0x{X:0>4}
+//            \\- Key Len:   {d}B
+//            \\- Key Data:  {f}
+//            , .{
+//                m3_eap_hdr.protocol_version,
+//                m3_eap_hdr.packet_type,
+//                mem.bigToNative(u16, m3_eap_hdr.packet_length),
+//                mem.bigToNative(u64, m3_kf_hdr.replay_counter),
+//                mem.bigToNative(u16, m3_kf_hdr.key_info),
+//                mem.bigToNative(u16, gtk_flags),
+//                mem.bigToNative(u16, m3_kf_hdr.key_data_len),
+//                InHexF{ .slice = m3_key_data[0..] },
+//            },
+//        );
+//        // - Validate M3
+//        // -- Unexpected Flags
+//        const m3_info = m3_kf_hdr.key_info;
+//        if (m3_kf_hdr.key_info & gtk_flags != gtk_flags) {
+//            log.err(
+//                \\Unexpected Flags:
+//                \\- Received: 0x{X:0>4}
+//                \\- Expected: 0x{X:0>4}
+//                , .{
+//                    mem.bigToNative(u16, m3_info) & gtk_flags,
+//                    gtk_flags,
+//                }
+//            );
+//            //continue;
+//            return error.UnexpectedFlags;
+//        }
+//        // -- Key Length Mismatch
+//        if (mem.bigToNative(u16, m3_kf_hdr.key_len) != 16) {
+//            log.err(
+//                \\Key Length Mismatch: 
+//                \\- Received: {d}B
+//                \\- Expected: 16B
+//                , .{ mem.bigToNative(u16, m3_kf_hdr.key_len) }
+//            );
+//            return error.KeyLengthMismatch;
+//        }
+//        // -- Replay Counter Mismatch
+//        if (mem.bigToNative(u64, m3_kf_hdr.replay_counter) != m1_rc + 1) {
+//            log.err(
+//                \\Replay Counter Mismatch:
+//                \\- Received: {d}
+//                \\- Expected: {d}
+//                , .{
+//                    mem.bigToNative(u64, m3_kf_hdr.replay_counter),
+//                    m1_rc + 1,
+//                },
+//            );
+//            return error.ReplayCounterMismatch;
+//        }
+//        // -- M3 MIC Mismatch
+//        const m3_mic_actual = m3_kf_hdr.key_mic;
+//        var m3_mic_buf = m3_buf[eth_hdr_len..];
+//        const mic_offset = eap_hdr_len + kf_hdr_len - 18;
+//        @memset(m3_mic_buf[(mic_offset)..(mic_offset + 16)], 0);
+//        end -= eth_hdr_len;
+//        const m3_mic_valid: [16]u8 = switch (security) {
+//            .wpa3t, .wpa3 => cmacAes128: {
+//                var m3_mic_valid: [16]u8 = undefined;
+//                CmacAes128.create(m3_mic_valid[0..], m3_mic_buf[0..end], kck);
+//                break :cmacAes128 m3_mic_valid;
+//            },
+//            else => hmacSha1: {
+//                var m3_mic_valid: [20]u8 = undefined;
+//                hmac.HmacSha1.create(m3_mic_valid[0..], m3_mic_buf[0..end], kck);
+//                break :hmacSha1 m3_mic_valid[0..16].*;
+//            },
+//        };
+//        if (!mem.eql(u8, mem.toBytes(m3_mic_actual)[0..], m3_mic_valid[0..])) {
+//            log.err(
+//                \\MIC Mismatch:
+//                \\- Received: {f}
+//                \\- Expected: {f}
+//                , .{
+//                    InHexF{ .slice = mem.toBytes(m3_mic_actual)[0..] },
+//                    InHexF{ .slice = m3_mic_valid[0..] },
+//                },
+//            );
+//            //continue;
+//            return error.Message3MICMismatch;
+//        }
+//        // - Handle Key Data
+//        var m3_uw_buf: [500]u8 = undefined;
+//        const m3_uw_data = uwKeyData: {
+//            //log.debug(
+//            //    \\Encrypted M3 Data:
+//            //    \\- Info: 0b{b:0>16}
+//            //    \\- Bool: 0b{b:0>16}
+//            //    \\- Flag: 0b{b:0>16}
+//            //    , .{
+//            //        mem.bigToNative(u16, m3_info),
+//            //        mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData,
+//            //        c(KeyInfo).EncryptedData,
+//            //    },
+//            //);
+//            if (mem.bigToNative(u16, m3_info) & c(KeyInfo).EncryptedData == c(KeyInfo).EncryptedData) {
+//                const uw_len = try aesKeyUnwrap(kek, m3_key_data, m3_uw_buf[0..]);
+//                break :uwKeyData m3_uw_buf[0..uw_len];
+//            }
+//            else break :uwKeyData m3_key_data;
+//        };
+//        //log.debug("Decrypted Key Data:\n{X:0>2}", .{ m3_uw_data });
+//        start = m3_uw_data[1] + 2;
+//        end = start + (m3_uw_data[start + 1]) + 2;
+//        const m3_gtk_kde = mem.bytesAsValue(GTK_KDE, m3_uw_data[start..end]);
+//        //log.debug("GTK: {X:0>2}", .{ mem.toBytes(m3_gtk_kde.key)[0..] });
+//        const gtk: [16]u8 = mem.toBytes(m3_gtk_kde.key);
+//        state = .m3;
+//        // Message 4
+//        const m4_eth_hdr = m2_eth_hdr;
+//        var m4_eap_hdr = m2_eap_hdr;
+//        var m4_kf_hdr = m2_kf_hdr;
+//        m4_eap_hdr.packet_length = mem.nativeToBig(u16, kf_hdr_len);
+//        m4_kf_hdr.replay_counter = m3_kf_hdr.replay_counter;
+//        m4_kf_hdr.key_info = fin_flags;
+//        m4_kf_hdr.key_mic = 0;
+//        m4_kf_hdr.key_nonce = 0;
+//        m4_kf_hdr.key_data_len = 0;
+//        var m4_mic_buf: [hdrs_len]u8 = @splat(0);
+//        start = 0;
+//        end = eap_hdr_len;
+//        @memcpy(m4_mic_buf[start..end], mem.toBytes(m4_eap_hdr)[0..]);
+//        start = end;
+//        end += kf_hdr_len;
+//        @memcpy(m4_mic_buf[start..end], mem.toBytes(m4_kf_hdr)[0..kf_hdr_len]);
+//        //const m4_mic: [16]u8 = hmacSha1: {
+//        //    var m4_mic: [20] u8 = undefined;
+//        //    hmac.HmacSha1.create(m4_mic[0..], m4_mic_buf[0..end], kck);
+//        //    break :hmacSha1 m4_mic[0..16].*;
+//        //};
+//        const m4_mic: [16]u8 = switch (security) {
+//            .wpa3t, .wpa3 => cmacAes128: {
+//                var m4_mic: [16]u8 = undefined;
+//                CmacAes128.create(m4_mic[0..], m4_mic_buf[0..end], kck);
+//                break :cmacAes128 m4_mic;
+//            },
+//            else => hmacSha1: {
+//                var m4_mic: [20]u8 = undefined;
+//                hmac.HmacSha1.create(m4_mic[0..], m4_mic_buf[0..end], kck);
+//                break :hmacSha1 m4_mic[0..16].*;
+//            },
+//        };
+//        m4_kf_hdr.key_mic = mem.bytesToValue(u128, m4_mic[0..]);
+//        // - Send M4
+//        var m4_buf: [hdrs_len]u8 = @splat(0);
+//        start = 0;
+//        end = eth_hdr_len;
+//        @memcpy(m4_buf[start..end], mem.toBytes(m4_eth_hdr)[0..]);
+//        start = end;
+//        end += eap_hdr_len;
+//        @memcpy(m4_buf[start..end], mem.toBytes(m4_eap_hdr)[0..]);
+//        start = end;
+//        end += kf_hdr_len;
+//        @memcpy(m4_buf[start..end], mem.toBytes(m4_kf_hdr)[0..kf_hdr_len]);
+//        _ = try posix.send(hs_sock, m4_buf[0..], 0);
+//        log.debug(
+//            \\
+//            \\-------------------------------------
+//            \\M4:
+//            \\- A1: {f}
+//            \\- A2: {f}
+//            \\- PMK: {f}
+//            \\- ANonce: {f}
+//            \\- SNonce: {f}
+//            \\- PTK: {f}
+//            \\  - KCK: {f}
+//            \\  - KEK: {f}
+//            \\- MIC: {f}
+//            \\
+//            , .{
+//                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .lt) client_mac[0..] else ap_mac[0..] },
+//                MACF{ .bytes = if (mem.order(u8, client_mac[0..], ap_mac[0..]) == .gt) client_mac[0..] else ap_mac[0..] },
+//                InHexF{ .slice = pmk[0..] },
+//                InHexF{ .slice = anonce[0..] },
+//                InHexF{ .slice = snonce[0..] },
+//                InHexF{ .slice = ptk[0..] },
+//                InHexF{ .slice = kck[0..] },
+//                InHexF{ .slice = kek[0..] },
+//                InHexF{ .slice = m4_mic[0..] },
+//            },
+//        );
+//        state = .m4;
+//        return .{ .ptk = ptk, .gtk = gtk };
+//    }
+//}

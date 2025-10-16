@@ -1,7 +1,9 @@
 //! Utility functions for DisCo
 
+const ct_builtin = @import("builtin");
 const std = @import("std");
 const atomic = std.atomic;
+const builtin = std.builtin;
 const enums = std.enums;
 const fifo = std.fifo;
 const fmt = std.fmt;
@@ -243,9 +245,11 @@ pub const SocketWriter = struct {
     sock: posix.socket_t,
     /// `Io.Writer` Interface
     io_writer: Io.Writer,
+    /// Write Flags
+    flags: u32,
 
     /// Initialize a new POSIX Socket Writer
-    pub fn init(sock: posix.socket_t, buf: []u8) @This() {
+    pub fn init(sock: posix.socket_t, buf: []u8, flags: u32) @This() {
         return .{
             .sock = sock,
             .io_writer = .{
@@ -254,6 +258,7 @@ pub const SocketWriter = struct {
                 },
                 .buffer = buf,
             },
+            .flags = flags,
         };
     }
 
@@ -261,12 +266,112 @@ pub const SocketWriter = struct {
     fn ioDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
         const writer: *@This() = @fieldParentPtr("io_writer", self);
         var n: usize = 0;
+        //std.log.debug("Socket Writer: writing {d}B from buffer & {d} data slices", .{ self.end, data.len });
         //defer std.log.debug("Socket Writer: wrote {d}B", .{ n });
-        if (self.buffered().len > 0) //
-            n += posix.write(writer.sock, self.buffered()) catch return error.WriteFailed;
-        for (data) |bytes| //
-            n += posix.write(writer.sock, bytes) catch return error.WriteFailed;
+        if (self.end > 0) //
+            n += posix.send(writer.sock, self.buffered(), writer.flags) catch return error.WriteFailed;
+        for (data) |bytes| {
+            if (bytes.len == 0) break;
+            n += posix.send(writer.sock, bytes, writer.flags) catch return error.WriteFailed;
+        }
         self.end = 0;
         return n;
     }
 };
+
+/// POSIX Socket Reader
+pub const SocketReader = struct {
+    /// POSIX Socket
+    sock: posix.socket_t,
+    /// `Io.Reader` Interface
+    io_reader: Io.Reader,
+    /// Read Flags
+    flags: u32 = 0,
+
+
+    /// Initialize a new POSIX Socket Reader
+    pub fn init(sock: posix.socket_t, buf: []u8, flags: u32) @This() {
+        return .{
+            .sock = sock,
+            .io_reader = .{
+                .vtable = &.{
+                    .stream = ioStream,
+                },
+                .buffer = buf,
+                .seek = 0,
+                .end = 0,
+            },
+            .flags = flags,
+        };
+    }
+
+    /// Satisfy the `Io.Reader` Interface.
+    pub fn ioStream(self: *Io.Reader, _: *Io.Writer, _: Io.Limit) Io.Reader.StreamError!usize {
+        const reader: *@This() = @fieldParentPtr("io_reader", self);
+        const n = posix.recv(reader.sock, self.buffer, reader.flags) catch return error.ReadFailed;
+        self.end = n;
+        return n;
+    }
+};
+
+/// Config for conversions between Packed & Extern Structs
+pub const PackedExternConfig = struct {
+    /// Fields that are stored as an Integer in Packed Structs and an Array in Extern Structs.
+    array_fields: []const []const u8 = &.{},
+    /// Endianness of the underlying Struct data.
+    endian: builtin.Endian = ct_builtin.cpu.arch.endian(),
+};
+/// Convert the provided Packed Struct Type (`T`) to an Extern Struct Type.
+pub fn ExternT(T: type, comptime config: PackedExternConfig) type {
+    const packed_info = info: switch (@typeInfo(T)) {
+        .@"struct" => |struct_info| switch (struct_info.layout) {
+            .@"extern" => return T,
+            .@"packed" => break :info struct_info,
+            .auto => @compileError("The provided Struct (`T`) must have a well-defined layout."),
+        },
+        else => @compileError("The provided Type (`T`) must be a Struct with a well-defined layout.")
+    };
+    var extern_info = @typeInfo(struct {}).@"struct";
+    extern_info.layout = .@"extern";
+    extern_info.backing_integer = null;
+    extern_info.decls = &.{};
+    for (packed_info.fields) |field| {
+        var ex_field = field;
+        const field_info = @typeInfo(field.type);
+        switch (field_info) {
+            .@"struct" => ex_field.type = ExternT(field.type),
+            .int => |int_info| {
+                for (config.array_fields) |ar_fn| {
+                    if (!mem.eql(u8, ar_fn, field.name)) continue;
+                    ex_field.type = [@divFloor(int_info.bits, 8)]u8;
+                    if (field.defaultValue()) |def_val| //
+                        ex_field.default_value_ptr = &mem.toBytes(def_val);
+                }
+            },
+            else => {},
+        }
+        extern_info.fields = extern_info.fields ++ [_]builtin.Type.StructField{ ex_field };
+    }
+    return @Type(.{ .@"struct" = extern_info });
+}
+/// Convert an `instance` of the provided Packed Struct Type (`T`) to its corresponding Extern Struct Type.
+pub fn toExtern(T: type, instance: T, comptime config: PackedExternConfig) ExternT(T, config) {
+    var ex_instance: ExternT(T, config) = undefined;
+    for (meta.fields(T)) |field| {
+        const in_field = @field(instance, field.name);
+        @field(ex_instance, field.name) = switch (@typeInfo(field.type)) {
+            .@"struct" => toExtern(field.type, in_field, config),
+            .int => intField: {
+                for (config.array_fields) |ar_fn| {
+                    if (!mem.eql(u8, ar_fn, field.name)) continue;
+                    break :intField mem.toBytes(in_field);
+                }
+                break :intField in_field;
+            },
+            else => in_field,
+        };
+    }
+    if (config.endian != ct_builtin.cpu.arch.endian()) //
+        mem.byteSwapAllFields(ExternT(T, config), ex_instance);
+    return ex_instance;
+}
