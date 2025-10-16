@@ -43,7 +43,7 @@ pub const GlobalConfig = struct {
     /// The Max Age, in milliseconds, of a Network that's allowed for Connection attempts.
     max_network_age: usize = 60_000,
     /// The Max Age, in milliseconds, of an inactive Connection before it's dropped.
-    max_inactive_age: usize = 30_000,
+    max_inactive_age: usize = 900_000,
     /// The Max # of Retries that will be attempted on error before a Connection is dropped.
     max_retries: u8 = 3,
     /// DHCP Config.
@@ -318,7 +318,7 @@ pub const Connection = struct {
     add_gw: bool = false,
     max_retries: u8,
     max_inactive_age: usize,
-    thread_timeout: usize = 30_000,
+    handler_timeout: usize = 3_000,
     // Derived
     _if_index: ?i32 = null,
     _psk: [32]u8 = @splat(0),
@@ -940,6 +940,7 @@ pub const Connection = struct {
                             eapol_ctx.handler = try .init(
                                 core_ctx.alloc,
                                 conn_if.index,
+                                self.handler_timeout,
                                 self._psk,
                                 self._rsn_bytes,
                                 self.security,
@@ -1062,7 +1063,7 @@ pub const Connection = struct {
                             },
                             .starting => {},
                             .working => |*work| working: {
-                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
+                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.handler_timeout) break :working;
                                 dhcp_state.* = .ready;
                                 log.warn("Connection {s} | {s} DHCP Timed Out.", .{ self.ssid, conn_if.name });
                                 return error.DHCPThreadTimeout;
@@ -1213,7 +1214,7 @@ pub const Connection = struct {
                             },
                             .starting => {},
                             .working => |*work| working: {
-                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
+                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.handler_timeout) break :working;
                                 dns_state.* = .ready;
                                 return error.DNSThreadTimeout;
                             },
@@ -1279,12 +1280,15 @@ pub const Connection = struct {
                                 };
                                 defer core_ctx.alloc.free(station_data);
                                 //log.debug("Station Data Raw: {d}B", .{ station_data.len });
-                                if (self._station) |sta|
+                                if (self._station) |sta| {
                                     nl.parse.freeBytes(core_ctx.alloc, nl._80211.Station, sta);
+                                    self._station = null;
+                                }
                                 const stations = try nl._80211.handleStationBuf(core_ctx.alloc, station_data);
                                 defer {
                                     if (stations.len > 1) {
-                                        for (stations[1..]) |sta| nl.parse.freeBytes(core_ctx.alloc, nl._80211.Station, sta);
+                                        for (stations[1..]) |sta| //
+                                            nl.parse.freeBytes(core_ctx.alloc, nl._80211.Station, sta);
                                     }
                                     core_ctx.alloc.free(stations);
                                 }
@@ -1361,7 +1365,7 @@ pub const Connection = struct {
                             },
                             .starting => {},
                             .working => |*work| working: {
-                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.thread_timeout) break :working;
+                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.handler_timeout) break :working;
                                 rel_dhcp_state.* = .{ .err = error.DHCPThreadTimeout };
                                 continue :dhcpState rel_dhcp_state.*;
                             },

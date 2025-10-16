@@ -9,6 +9,7 @@ const log = std.log.scoped(.wpa);
 const mem = std.mem;
 const posix = std.posix;
 const testing = std.testing;
+const time = std.time;
 const Io = std.Io;
 
 const CmacAes128 = crypto.auth.cmac.CmacAes128;
@@ -436,6 +437,8 @@ pub const HandshakeHandler = struct {
     writer: SockWriter,
     r_buf: []const u8,
     w_buf: []const u8,
+    timer: time.Timer,
+    timeout: u64,
     pmk: [32]u8,
     m2_data: []const u8,
     security: nl._80211.SecurityType,
@@ -465,6 +468,7 @@ pub const HandshakeHandler = struct {
     pub fn init(
         alloc: mem.Allocator,
         if_index: i32,
+        timeout: u64,
         pmk: [32]u8,
         m2_data: []const u8,
         security: nl._80211.SecurityType,
@@ -518,6 +522,8 @@ pub const HandshakeHandler = struct {
             .writer = .init(hs_sock, w_buf, 0),
             .r_buf = r_buf,
             .w_buf = w_buf,
+            .timer = try .start(),
+            .timeout = timeout,
             .pmk = pmk,
             .m2_data = m2_data,
             .security = security,
@@ -537,8 +543,10 @@ pub const HandshakeHandler = struct {
         alloc.free(self.w_buf);
     }
 
-    /// Step through the EAPoL Handshake Process
+    /// Step through the EAPoL Handshake Proces[0..]s
     pub fn step(self: *@This()) !void {
+        if (self.timer.lap() >= self.timeout * time.ns_per_ms) //
+            return error.Timeout;
         const desc_info = switch(self.security) {
             .wpa2 => c(KeyInfo).Version2,
             else => 0,
@@ -664,7 +672,7 @@ pub const HandshakeHandler = struct {
                 try sock_w.writeStruct(self.ctx.send_eap_hdr, .big);
                 try sock_w.writeStruct(self.ctx.send_kf_hdr, .big);
                 _ = try sock_w.write(self.m2_data);
-                log.debug("M2 Buffer: {d}B{f}", .{ sock_w.end, HexF{ .bytes = sock_w.buffered() } });
+                //log.debug("M2 Buffer: {d}B{f}", .{ sock_w.end, HexF{ .bytes = sock_w.buffered() } });
                 try sock_w.flush();
                 log.debug(
                     \\
