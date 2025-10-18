@@ -11,48 +11,48 @@ const c = utils.toStruct;
 pub const IP = struct {
     /// Net IP Header
     pub const NetHeader = extern struct {
-        ver_len: u8,
-        service_type: u8,
-        total_len: u16,
-        id: u16,
-        flag_frag: u16,
-        ttl: u8,
-        protocol: u8,
-        checksum: u16,
-        src: u32,
-        dst: u32,
+        ver_len: u8 align(1),
+        service_type: u8 align(1),
+        total_len: u16 align(1),
+        id: u16 align(1),
+        flag_frag: u16 align(1),
+        ttl: u8 align(1),
+        protocol: u8 align(1),
+        checksum: u16 align(1),
+        src: [4]u8 align(1),
+        dst: [4]u8 align(1),
 
         pub fn fromHeader(hdr: Header) @This() {
             return .{
                 .ver_len = @as(u8, @intCast(hdr.version)) << 4 | @as(u8, @intCast(hdr.ip_header_len)),
                 .service_type = @bitCast(hdr.service_type),
-                .total_len = mem.nativeToBig(u16, hdr.total_len),
-                .id = mem.nativeToBig(u16, hdr.id),
-                .flag_frag = mem.nativeToBig(u16, @as(u16, @as(u3, @bitCast(hdr.flags))) << 13 | @as(u16, @as(u13, @bitCast(hdr.frag_offset)))),
+                .total_len = hdr.total_len,
+                .id = hdr.id,
+                .flag_frag = @as(u16, @as(u3, @bitCast(hdr.flags))) << 13 | @as(u16, @as(u13, @bitCast(hdr.frag_offset))),
                 .ttl = hdr.time_to_live,
                 .protocol = hdr.protocol,
                 .checksum = hdr.header_checksum,
-                .src = hdr.src_ip_addr,
-                .dst = hdr.dst_ip_addr,
+                .src = mem.toBytes(hdr.src_ip_addr),
+                .dst = mem.toBytes(hdr.dst_ip_addr),
             };
         }
 
-        pub fn toHeader(self: *const @This()) Header {
-            return .{
-                .version = @intCast(self.ver_len >> 4),
-                .ip_header_len = @truncate(self.ver_len),
-                .service_type = @bitCast(self.service_type),
-                .total_len = mem.bigToNative(u16, self.total_len),
-                .id = mem.bigToNative(u16, self.id),
-                .flags = @bitCast(@as(u3, @truncate(mem.bigToNative(u16, self.flag_frag) >> 13))),
-                .frag_offset = @bitCast(@as(u13, @truncate(mem.bigToNative(u16, self.flag_frag)))),
-                .time_to_live = self.ttl,
-                .protocol = self.protocol,
-                .header_checksum = mem.bigToNative(u16, self.checksum),
-                .src_ip_addr = self.src,
-                .dst_ip_addr = self.dst,
-            };
-        }
+        //pub fn toHeader(self: *const @This()) Header {
+        //    return .{
+        //        .version = @intCast(self.ver_len >> 4),
+        //        .ip_header_len = @truncate(self.ver_len),
+        //        .service_type = @bitCast(self.service_type),
+        //        .total_len = self.total_len,
+        //        .id = self.id,
+        //        .flags = @bitCast(@as(u3, @truncate(self.flag_frag)) >> 13),
+        //        .frag_offset = @bitCast(@as(u13, @truncate(self.flag_frag))),
+        //        .time_to_live = self.ttl,
+        //        .protocol = self.protocol,
+        //        .header_checksum = self.checksum,
+        //        .src_ip_addr = mem.bytesToValue(u32, self.src[0..]),
+        //        .dst_ip_addr = mem.bytesToValue(u32, self.dst[0..]),
+        //    };
+        //}
     };
 
     /// IP Header
@@ -123,8 +123,8 @@ pub const IP = struct {
     /// Segment Pseudo Header
     /// Does NOT include the Segment Length, which is handled at the Segment level (Layer 4).
     pub const SegmentPseudoHeader = extern struct {
-        src_ip_addr: u32 = 0,
-        dst_ip_addr: u32 = 0,
+        src_ip_addr: [4]u8 = @splat(0),
+        dst_ip_addr: [4]u8 = @splat(0),
         __zeroes: u8 = 0,
         protocol: u8 = c(Header.Protocols).UDP,
         len: u16 = 0,

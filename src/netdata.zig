@@ -1,6 +1,8 @@
 //! Network Data Types & Functions for DisCo.
 
+const ct_builtin = @import("builtin");
 const std = @import("std");
+const builtin = std.builtin;
 const mem = std.mem;
 const meta = std.meta;
 
@@ -30,14 +32,15 @@ pub fn calcCRC(payload: []u8) !u32 {
 }
 
 /// Calculate the Checksum from the given bytes for IP-like Headers. TODO - Handle bit carryovers
-pub fn calcChecksum(bytes: []u8) u16 {
+pub fn calcChecksum(bytes: []u8, endian: builtin.Endian) u16 {
     const buf_end = if (bytes.len % 2 == 0) bytes.len else bytes.len - 1;
     const words = mem.bytesAsSlice(u16, bytes[0..buf_end]);
     var sum: u32 = 0;
     for (words) |word| sum += word;
     if (buf_end < bytes.len) sum += @intCast(bytes[bytes.len - 1]);
     while ((sum >> 16) > 0) sum = (sum & 0xFFFF) + (sum >> 16);
-    //return mem.nativeToBig(u16, @as(u16, @truncate(~sum)));
+    if (endian != ct_builtin.cpu.arch.endian()) //
+        return mem.nativeTo(u16, @as(u16, @truncate(~sum)), endian);
     return @as(u16, @truncate(~sum));
 }
 

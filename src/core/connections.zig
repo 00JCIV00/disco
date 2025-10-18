@@ -360,7 +360,11 @@ pub const Connection = struct {
             keys: ?nl._80211.EAPoLKeys = null,
         },
         /// Requesting Routing Info via DHCP
-        dhcp: enum { wait, ip, gw, dns },
+        dhcp: struct {
+            dora_handler: ?dhcp.Handler = null,
+            state: enum { dora, ip, gw, dns },
+            info: ?dhcp.Info = null,
+        },
         /// Connected to the Network
         conn: enum { init, running },
         /// Disconnected from the Network
@@ -908,7 +912,7 @@ pub const Connection = struct {
                 // EAPoL Handshake
                 const keys = eapol_ctx.keys orelse switch (self.security) {
                     .open => {
-                        self._state = .{ .dhcp = .ip };
+                        self._state = .{ .dhcp = .{ .state = .dora } };
                         continue :state self._state;
                     },
                     .wpa2, .wpa3t, .wpa3 => {
@@ -1004,123 +1008,110 @@ pub const Connection = struct {
                         log.debug("Connection {s} | {s}: Finished EAPoL ({t})", .{ self.ssid, conn_if.name, self.security });
                         if (eapol_ctx.handler) |*handler| //
                             handler.deinit(core_ctx.alloc);
-                        self._state = .{ .dhcp = .ip };
+                        self._state = .{ .dhcp = .{ .state = .dora } };
                         continue :state self._state;
                     },
                 }
             },
-            .dhcp => |*dhcp_setup| {
+            .dhcp => |*dhcp_ctx| {
                 // DHCP
-                dhcpSetup: switch (dhcp_setup.*) {
-                    .wait => wait: {
-                        var if_iter = core_ctx.if_ctx.interfaces.map.iterator();
-                        while (if_iter.next()) |other_if_entry| {
-                            if (mem.eql(u8, other_if_entry.key_ptr[0..], conn_if.og_mac[0..])) continue;
-                            const other_if = other_if_entry.value_ptr;
-                            switch (other_if.usage) {
-                                .connect => |o_conn| {
-                                    switch (o_conn._state) {
-                                        .dhcp => |o_dhcp| {
-                                            if (o_dhcp != .wait) break :wait;
-                                        },
-                                        else => {},
-                                    }
-                                },
-                                else => {},
-                            }
+                dhcpSetup: switch (dhcp_ctx.state) {
+                    .dora => {
+                        if (dhcp_ctx.info) |info| {
+                            dhcp_ctx.info = info;
+                            dhcp_ctx.dora_handler.?.deinit(core_ctx.alloc);
+                            dhcp_ctx.dora_handler = null;
+                            dhcp_ctx.state = .ip;
+                            continue :dhcpSetup dhcp_ctx.state;
                         }
-                        dhcp_setup.* = .ip;
-                        continue :dhcpSetup dhcp_setup.*;
+                        if (dhcp_ctx.dora_handler) |*handler| {
+                            errdefer {
+                                handler.deinit(core_ctx.alloc);
+                                dhcp_ctx.dora_handler = null;
+                            }
+                            switch (handler.state) {
+                                .end => |info| {
+                                    dhcp_ctx.info = info;
+                                    self._dhcp_info = info;
+                                    continue :dhcpSetup dhcp_ctx.state;
+                                },
+                                else => {
+                                    handler.step() catch |err| switch (err) {
+                                        error.ReadFailed => {},
+                                        else => return err,
+                                    };
+                                    return;
+                                },
+                            }
+                        } //
+                        else {
+                            var dhcp_conf = self.dhcp_conf orelse {
+                                self._state = .{ .conn = .init };
+                                continue :state self._state;
+                            };
+                            if (core_ctx.config.profile.mask) |pro_mask| //
+                                dhcp_conf.hostname = pro_mask.hostname;
+                            log.debug("Connection {s} | {s}: Handling DHCP", .{ self.ssid, conn_if.name });
+                            dhcp_ctx.dora_handler = try .init(
+                                core_ctx.alloc,
+                                conn_if.name,
+                                conn_if.index,
+                                conn_if.mac,
+                                self.handler_timeout,
+                                dhcp_conf,
+                            );
+                            continue :dhcpSetup dhcp_ctx.state;
+                        }
                     },
                     .ip => {
-                        self._thread_states.mutex.lock();
-                        defer self._thread_states.mutex.unlock();
-                        const dhcp_state = self._thread_states.map.getEntry("dhcp").?.value_ptr;
-                        dhcp: switch (dhcp_state.*) {
-                            .ready => {
-                                var dhcp_conf = self.dhcp_conf orelse {
-                                    self._state = .{ .conn = .init };
-                                    continue :state self._state;
-                                };
-                                log.debug("Connection {s} | {s}: Handling DHCP ({t})", .{ self.ssid, conn_if.name, self.security });
-                                if (core_ctx.config.profile.mask) |pro_mask| //
-                                    dhcp_conf.hostname = pro_mask.hostname;
-                                dhcp_state.* = .starting;
-                                const dhcp_thread = try Thread.spawn(
-                                    .{},
-                                    handleDHCP,
-                                    .{
-                                        self._thread_states,
-                                        &self._dhcp_info,
-                                        conn_if.name,
-                                        conn_if.index,
-                                        conn_if.mac,
-                                        dhcp_conf,
-                                    },
+                        const dhcp_cidr = address.cidrFromSubnet(dhcp_ctx.info.?.subnet_mask);
+                        nlState: switch (self._nl_state) {
+                            .ready, .request => {
+                                try nl.route.requestAddIP(
+                                    core_ctx.alloc,
+                                    &self._rtnetlink_req_ctx,
+                                    conn_if.index,
+                                    dhcp_ctx.info.?.assigned_ip,
+                                    dhcp_cidr,
                                 );
-                                dhcp_thread.detach();
-                                continue :dhcp dhcp_state.*;
+                                self._nl_state = .await_response;
+                                continue :nlState self._nl_state;
                             },
-                            .starting => {},
-                            .working => |*work| working: {
-                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.handler_timeout) break :working;
-                                dhcp_state.* = .ready;
-                                log.warn("Connection {s} | {s} DHCP Timed Out.", .{ self.ssid, conn_if.name });
-                                return error.DHCPThreadTimeout;
+                            .await_response => {
+                                if (!self._rtnetlink_req_ctx.checkResponse()) return;
+                                self._nl_state = .parse;
+                                continue :nlState self._nl_state;
                             },
-                            .done => {
-                                const dhcp_cidr = address.cidrFromSubnet(self._dhcp_info.?.subnet_mask);
-                                nlState: switch (self._nl_state) {
-                                    .ready, .request => {
-                                        try nl.route.requestAddIP(
-                                            core_ctx.alloc,
-                                            &self._rtnetlink_req_ctx,
-                                            conn_if.index,
-                                            self._dhcp_info.?.assigned_ip,
-                                            dhcp_cidr,
-                                        );
-                                        self._nl_state = .await_response;
-                                        continue :nlState self._nl_state;
-                                    },
-                                    .await_response => {
-                                        if (!self._rtnetlink_req_ctx.checkResponse()) return;
-                                        self._nl_state = .parse;
-                                        continue :nlState self._nl_state;
-                                    },
-                                    .parse => {
-                                        defer self._nl_state = .ready;
-                                        const add_ip_resp = self._rtnetlink_req_ctx.getResponse().?;
-                                        const add_ip_data = add_ip_resp catch |err| {
-                                            log.warn("Couldn't add IP '{f}/{d}' to Interface '({d}) {s}'", .{
-                                                IPF{ .bytes = self._dhcp_info.?.assigned_ip[0..] },
-                                                dhcp_cidr,
-                                                conn_if.index,
-                                                conn_if.name,
-                                            });
-                                            return err;
-                                        };
-                                        defer core_ctx.alloc.free(add_ip_data);
-                                        log.info("Added IP '{f}/{d}' to ({d}) {s}", .{
-                                            IPF{ .bytes = self._dhcp_info.?.assigned_ip[0..] },
-                                            dhcp_cidr,
-                                            conn_if.index,
-                                            conn_if.name,
-                                        });
-                                        dhcp_state.* = .ready;
-                                        if (self.add_gw) {
-                                            self._state.dhcp = .gw;
-                                            continue :dhcpSetup self._state.dhcp;
-                                        }
-                                        self._state = .{ .conn = .init };
-                                        continue :state self._state;
-                                    },
+                            .parse => {
+                                defer self._nl_state = .ready;
+                                const add_ip_resp = self._rtnetlink_req_ctx.getResponse().?;
+                                const add_ip_data = add_ip_resp catch |err| {
+                                    log.warn("Couldn't add IP '{f}/{d}' to Interface '({d}) {s}'", .{
+                                        IPF{ .bytes = dhcp_ctx.info.?.assigned_ip[0..] },
+                                        dhcp_cidr,
+                                        conn_if.index,
+                                        conn_if.name,
+                                    });
+                                    return err;
+                                };
+                                defer core_ctx.alloc.free(add_ip_data);
+                                log.info("Added IP '{f}/{d}' to ({d}) {s}", .{
+                                    IPF{ .bytes = dhcp_ctx.info.?.assigned_ip[0..] },
+                                    dhcp_cidr,
+                                    conn_if.index,
+                                    conn_if.name,
+                                });
+                                if (self.add_gw) {
+                                    dhcp_ctx.state = .gw;
+                                    continue :dhcpSetup dhcp_ctx.state;
                                 }
+                                self._state = .{ .conn = .init };
+                                continue :state self._state;
                             },
-                            .err => |err| return err,
                         }
                     },
                     .gw => {
-                        const dhcp_cidr = address.cidrFromSubnet(self._dhcp_info.?.subnet_mask);
+                        const dhcp_cidr = address.cidrFromSubnet(dhcp_ctx.info.?.subnet_mask);
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
                                 try nl.route.requestAddRoute(
@@ -1131,7 +1122,7 @@ pub const Connection = struct {
                                     .{
                                         //.cidr = address.IPv4.default.cidr,
                                         .cidr = dhcp_cidr,
-                                        .gateway = self._dhcp_info.?.router,
+                                        .gateway = dhcp_ctx.info.?.router,
                                     },
                                 );
                                 self._nl_state = .await_response;
@@ -1147,7 +1138,7 @@ pub const Connection = struct {
                                 const add_gw_resp = self._rtnetlink_req_ctx.getResponse().?;
                                 const add_gw_data = add_gw_resp catch |err| {
                                     log.warn("Couldn't add Default Gateway '{f}/{d}' to Interface '({d}) {s}':\nError: {s}", .{
-                                        IPF{ .bytes = self._dhcp_info.?.router[0..] },
+                                        IPF{ .bytes = dhcp_ctx.info.?.router[0..] },
                                         dhcp_cidr,
                                         conn_if.index,
                                         conn_if.name,
@@ -1155,7 +1146,7 @@ pub const Connection = struct {
                                         else @errorName(err),
                                     });
                                     if (err == error.EXIST) {
-                                        dhcp_setup.* = .ip;
+                                        dhcp_ctx.state = .ip;
                                         self._state = .{ .conn = .init };
                                         continue :state self._state;
                                     }
@@ -1163,18 +1154,18 @@ pub const Connection = struct {
                                 };
                                 defer core_ctx.alloc.free(add_gw_data);
                                 log.info("Added Default Gateway '{f}/{d}' to ({d}) {s}", .{
-                                    IPF{ .bytes = self._dhcp_info.?.router[0..] },
+                                    IPF{ .bytes = dhcp_ctx.info.?.router[0..] },
                                     dhcp_cidr,
                                     conn_if.index,
                                     conn_if.name,
                                 });
-                                dhcp_setup.* = .dns;
-                                continue :dhcpSetup dhcp_setup.*;
+                                dhcp_ctx.state = .dns;
+                                continue :dhcpSetup dhcp_ctx.state;
                             },
                         }
                     },
                     .dns => {
-                        if (self._dhcp_info.?.dns_ips.len == 0) {
+                        if (dhcp_ctx.info.?.dns_ips.len == 0) {
                             self._state = .{ .conn = .init };
                             continue :state self._state;
                         }
@@ -1192,7 +1183,7 @@ pub const Connection = struct {
                                     //log.debug("DNS IPs: {s}", .{ if (dhcp_info.dns_ips[0]) |_| "" else "none" });
                                     var total_dns: usize = 0;
                                     defer log.debug("- Total DNS: {d}", .{ total_dns });
-                                    dnsLoop: for (self._dhcp_info.?.dns_ips, 0..) |dns_ip, idx| {
+                                    dnsLoop: for (dhcp_ctx.info.?.dns_ips, 0..) |dns_ip, idx| {
                                         const next_dns = dns_ip orelse break :dnsIPs dns_ips_buf[0..total_dns];
                                         for (dns_ips_buf[0..idx]) |prev_dns| {
                                             if (mem.eql(u8, prev_dns[0..], next_dns[0..])) continue :dnsLoop;
@@ -1220,7 +1211,7 @@ pub const Connection = struct {
                             },
                             .done => {
                                 log.info("Added DNS '{f}' to ({d}) {s}", .{
-                                    IPF{ .bytes = self._dhcp_info.?.dns_ips[0].?[0..] },
+                                    IPF{ .bytes = dhcp_ctx.info.?.dns_ips[0].?[0..] },
                                     conn_if.index,
                                     conn_if.name,
                                 });

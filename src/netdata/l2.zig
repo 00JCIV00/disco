@@ -21,9 +21,9 @@ pub const Eth = struct {
 
     /// Ethernet Header
     pub const Header = extern struct {
-        dst_mac_addr: [6]u8,
-        src_mac_addr: [6]u8,
-        ether_type: u16,
+        dst_mac_addr: [6]u8 align(1),
+        src_mac_addr: [6]u8 align(1),
+        ether_type: u16 align(1),
     };
 
     /// Ethernet Footer
