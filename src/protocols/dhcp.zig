@@ -267,7 +267,16 @@ pub const Handler = struct {
 
     /// Step through the DORA Process
     pub fn step(self: *@This()) !void {
-        if (self.timer.lap() >= self.timeout * time.ns_per_ms) //
+        //log.debug(
+        //    \\DORA Timeout Status:
+        //    \\- Timer:   {d}
+        //    \\- Timeout: {d}
+        //    , .{
+        //        self.timer.read(),
+        //        self.timeout * time.ns_per_ms,
+        //    },
+        //);
+        if (self.timer.read() >= self.timeout * time.ns_per_ms) //
             return error.Timeout;
         state: switch (self.state) {
             // DISCOVER

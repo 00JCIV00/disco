@@ -545,16 +545,25 @@ pub const HandshakeHandler = struct {
 
     /// Step through the EAPoL Handshake Proces[0..]s
     pub fn step(self: *@This()) !void {
-        if (self.timer.lap() >= self.timeout * time.ns_per_ms) //
+        //log.debug(
+        //    \\EAPoL Timeout Status:
+        //    \\- Timer:   {d}
+        //    \\- Timeout: {d}
+        //    , .{
+        //        self.timer.read(),
+        //        self.timeout * time.ns_per_ms,
+        //    },
+        //);
+        if (self.timer.read() >= self.timeout * time.ns_per_ms) //
             return error.Timeout;
         const desc_info = switch(self.security) {
             .wpa2 => c(KeyInfo).Version2,
             else => 0,
         };
-        const ptk_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack;
-        const mic_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC;
-        const gtk_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure;
-        const fin_flags =  desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC | c(KeyInfo).Secure;
+        const ptk_flags = desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Ack;
+        const mic_flags = desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC;
+        const gtk_flags = desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).Install | c(KeyInfo).Ack | c(KeyInfo).MIC | c(KeyInfo).Secure;
+        const fin_flags = desc_info | c(KeyInfo).KeyTypePairwise | c(KeyInfo).MIC | c(KeyInfo).Secure;
         // Process 4-Way Handshake
         eapol: switch (self.state) {
             // Message 1

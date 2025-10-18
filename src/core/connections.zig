@@ -509,6 +509,10 @@ pub const Connection = struct {
                 if (ctx.handler) |*handler| //
                     handler.deinit(alloc);
             },
+            .dhcp => |*ctx| {
+                if (ctx.dora_handler) |*handler| //
+                    handler.deinit(alloc);
+            },
             else => {},
         }
     }
@@ -1017,8 +1021,7 @@ pub const Connection = struct {
                 // DHCP
                 dhcpSetup: switch (dhcp_ctx.state) {
                     .dora => {
-                        if (dhcp_ctx.info) |info| {
-                            dhcp_ctx.info = info;
+                        if (dhcp_ctx.info) |_| {
                             dhcp_ctx.dora_handler.?.deinit(core_ctx.alloc);
                             dhcp_ctx.dora_handler = null;
                             dhcp_ctx.state = .ip;
