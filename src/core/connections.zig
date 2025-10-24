@@ -51,6 +51,8 @@ pub const GlobalConfig = struct {
     dhcp: ?proto.dhcp.LeaseConfig = null,
     /// Add a Default Route Gateway & DNS.
     add_gw: bool = false,
+    /// Metric for Default Gateways
+    gw_metric: ?u32 = null,
     /// The Delay, in milliseconds, between specifc socket operations.
     /// If this is left `null` a dynamic delay will be calculated based on RSSI.
     op_delay: ?usize = null,
@@ -73,6 +75,8 @@ pub const Config = struct {
     dhcp: ?proto.dhcp.LeaseConfig = null,
     /// Add a Default Route Gateway & DNS.
     add_gw: ?bool = null,
+    /// Metric for the Default Gateway
+    gw_metric: ?u32 = null,
 };
 
 /// Status of a Connection
@@ -317,6 +321,7 @@ pub const Connection = struct {
     auth: nl._80211.AuthType,
     dhcp_conf: ?proto.dhcp.LeaseConfig = null,
     add_gw: bool = false,
+    gw_metric: ?u32 = null,
     max_retries: u8,
     max_inactive_age: usize,
     handler_timeout: usize = 3_000,
@@ -465,6 +470,7 @@ pub const Connection = struct {
             .auth = auth,
             .dhcp_conf = candidate.config.dhcp orelse core_ctx.config.global_connect_config.dhcp,
             .add_gw = candidate.config.add_gw orelse core_ctx.config.global_connect_config.add_gw,
+            .gw_metric = candidate.config.gw_metric orelse core_ctx.config.global_connect_config.gw_metric,
             .max_retries = core_ctx.config.global_connect_config.max_retries,
             .max_inactive_age = core_ctx.config.global_connect_config.max_inactive_age,
             ._psk = psk,
@@ -1137,6 +1143,7 @@ pub const Connection = struct {
                                         .cidr = address.IPv4.default.cidr,
                                         //.cidr = dhcp_cidr,
                                         .gateway = dhcp_ctx.info.?.router,
+                                        .metric = self.gw_metric,
                                     },
                                 );
                                 self._nl_state = .await_response;

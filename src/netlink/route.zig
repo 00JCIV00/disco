@@ -1281,6 +1281,7 @@ pub fn deleteIP(
 pub const RouteConfig = struct {
     cidr: u8 = 24,
     gateway: ?[4]u8 = null,
+    metric: ?u32 = null,
 };
 
 /// Request to Add the Route Destination (`dest`) to the provided Interface's (`if_index`) routing table
@@ -1298,11 +1299,18 @@ pub fn requestAddRoute(
         .hdr = .{ .type = c(RTA).DST },
         .data = &dest,
     });
-    // Add gateway if provided
-    if (config.gateway) |gw| {
+    // Add Gateway if provided
+    if (config.gateway) |*gw| {
         try attrs.append(alloc, .{
             .hdr = .{ .type = c(RTA).GATEWAY },
-            .data = &gw,
+            .data = gw,
+        });
+    }
+    // Add Metric if provided
+    if (config.metric) |*metric| {
+        try attrs.append(alloc, .{
+            .hdr = .{ .type = c(RTA).PRIORITY },
+            .data = mem.asBytes(metric)
         });
     }
     // Add output interface
