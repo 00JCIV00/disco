@@ -680,7 +680,7 @@ pub const HandshakeHandler = struct {
                 try sock_w.writeStruct(self.ctx.send_eth_hdr, .big);
                 try sock_w.writeStruct(self.ctx.send_eap_hdr, .big);
                 try sock_w.writeStruct(self.ctx.send_kf_hdr, .big);
-                _ = try sock_w.write(self.m2_data);
+                try sock_w.writeAll(self.m2_data);
                 //log.debug("M2 Buffer: {d}B{f}", .{ sock_w.end, HexF{ .bytes = sock_w.buffered() } });
                 try sock_w.flush();
                 log.debug(

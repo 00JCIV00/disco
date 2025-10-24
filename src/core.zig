@@ -14,6 +14,7 @@ const ArrayList = std.ArrayList;
 const Io = std.Io;
 const Thread = std.Thread;
 
+const dbus = @import("dbus.zig");
 const netdata = @import("netdata.zig");
 const oui = netdata.oui;
 const nl = @import("netlink.zig");
@@ -80,6 +81,10 @@ pub const Core = struct {
     interval: usize = 100 * time.ns_per_ms,
     /// Active Status of the overall program.
     active: atomic.Value(bool) = .init(false),
+    /// Forced Close
+    forced_close: bool = false,
+    /// Original Hostname
+    og_hostname: []const u8,
     /// Netlink Event Loop
     nl_event_loop: nl.io.Loop,
     /// Netlink 802.11 Handler
@@ -98,10 +103,8 @@ pub const Core = struct {
     serve_ctx: serve.Context,
     /// Capture Writer
     cap_writer: captures.Writer,
-    /// Original Hostname
-    og_hostname: []const u8,
-    /// Forced Close
-    forced_close: bool = false,
+    /// D-Bus Connection
+    dbus_conn: dbus.Connection,
 
 
     /// Initialize the Core Context.
@@ -137,6 +140,7 @@ pub const Core = struct {
             .conn_ctx = undefined,
             .serve_ctx = undefined,
             .cap_writer = undefined,
+            .dbus_conn = try .init(alloc),
         };
         errdefer self.nl_event_loop.deinit(alloc);
         try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
@@ -374,6 +378,8 @@ pub const Core = struct {
         self.alloc.destroy(self.rtnetlink_handler);
         //self.nl_event_loop.stop(self.alloc);
         log.info("- Deinitialized Netlink Event Loop.", .{});
+        self.dbus_conn.deinit(self.alloc);
+        log.info("- Deinitialized D-Bus Connection.", .{});
         log.info("- Deinitialized All Contexts.", .{});
         log.info("Cleaned up DisCo Core.", .{});
     }

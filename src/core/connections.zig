@@ -34,6 +34,7 @@ const wpa = proto.wpa;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 const HexF = utils.HexFormatter;
+const SlicesF = utils.SliceFormatter;
 const ThreadArrayList = utils.ThreadArrayList;
 const ThreadHashMap = utils.ThreadHashMap;
 
@@ -361,9 +362,14 @@ pub const Connection = struct {
         },
         /// Requesting Routing Info via DHCP
         dhcp: struct {
-            dora_handler: ?dhcp.Handler = null,
+            handler: ?dhcp.Handler = null,
             state: enum { dora, ip, gw, dns },
             info: ?dhcp.Info = null,
+        },
+        /// Updating DNS Settings
+        dns: struct {
+            handler: ?dns.Handler = null,
+            servers: []const [4]u8 = &.{},
         },
         /// Connected to the Network
         conn: enum { init, running },
@@ -497,9 +503,8 @@ pub const Connection = struct {
         }
     }
     
+    /// Deinitialize this Connection
     pub fn deinit (self: *@This(), alloc: mem.Allocator) void {
-        defer log.debug("Deinitialized Connection '{s}'", .{ self.ssid });
-        alloc.free(self.ssid);
         if (self._station) |sta|
             nl.parse.freeBytes(alloc, nl._80211.Station, sta);
         nl.parse.freeBytes(alloc, nl._80211.ScanResults, self._scan_result);
@@ -510,11 +515,17 @@ pub const Connection = struct {
                     handler.deinit(alloc);
             },
             .dhcp => |*ctx| {
-                if (ctx.dora_handler) |*handler| //
+                if (ctx.handler) |*handler| //
+                    handler.deinit(alloc);
+            },
+            .dns => |*ctx| {
+                if (ctx.handler) |*handler| //
                     handler.deinit(alloc);
             },
             else => {},
         }
+        log.debug("Deinitialized Connection '{s}'", .{ self.ssid });
+        alloc.free(self.ssid);
     }
 
     /// Handle this Connection
@@ -1022,15 +1033,15 @@ pub const Connection = struct {
                 dhcpSetup: switch (dhcp_ctx.state) {
                     .dora => {
                         if (dhcp_ctx.info) |_| {
-                            dhcp_ctx.dora_handler.?.deinit(core_ctx.alloc);
-                            dhcp_ctx.dora_handler = null;
+                            dhcp_ctx.handler.?.deinit(core_ctx.alloc);
+                            dhcp_ctx.handler = null;
                             dhcp_ctx.state = .ip;
                             continue :dhcpSetup dhcp_ctx.state;
                         }
-                        if (dhcp_ctx.dora_handler) |*handler| {
+                        if (dhcp_ctx.handler) |*handler| {
                             errdefer {
                                 handler.deinit(core_ctx.alloc);
-                                dhcp_ctx.dora_handler = null;
+                                dhcp_ctx.handler = null;
                             }
                             switch (handler.state) {
                                 .end => |info| {
@@ -1055,7 +1066,7 @@ pub const Connection = struct {
                             if (core_ctx.config.profile.mask) |pro_mask| //
                                 dhcp_conf.hostname = pro_mask.hostname;
                             log.debug("Connection {s} | {s}: Handling DHCP", .{ self.ssid, conn_if.name });
-                            dhcp_ctx.dora_handler = try .init(
+                            dhcp_ctx.handler = try .init(
                                 core_ctx.alloc,
                                 conn_if.name,
                                 conn_if.index,
@@ -1123,8 +1134,8 @@ pub const Connection = struct {
                                     conn_if.index,
                                     address.IPv4.default.addr,
                                     .{
-                                        //.cidr = address.IPv4.default.cidr,
-                                        .cidr = dhcp_cidr,
+                                        .cidr = address.IPv4.default.cidr,
+                                        //.cidr = dhcp_cidr,
                                         .gateway = dhcp_ctx.info.?.router,
                                     },
                                 );
@@ -1172,61 +1183,65 @@ pub const Connection = struct {
                             self._state = .{ .conn = .init };
                             continue :state self._state;
                         }
-                        self._thread_states.mutex.lock();
-                        defer self._thread_states.mutex.unlock();
-                        const dns_state = self._thread_states.map.getEntry("dns").?.value_ptr;
-                        errdefer {
-                            dns_state.* = .ready;
-                            self._state = .{ .conn = .init };
+                        var dns_ips_list: ArrayList([4]u8) = .empty;
+                        //log.debug("DNS IPs: {s}", .{ if (dhcp_info.dns_ips[0]) |_| "" else "none" });
+                        dnsLoop: for (dhcp_ctx.info.?.dns_ips) |dns_ip| {
+                            const next_dns = dns_ip orelse break :dnsLoop;
+                            for (dns_ips_list.items) |prev_dns| {
+                                if (mem.eql(u8, prev_dns[0..], next_dns[0..])) continue :dnsLoop;
+                            }
+                            //log.debug("- {f}", .{ IPF{ .bytes = next_dns[0..] } });
+                            try dns_ips_list.append(core_ctx.alloc, next_dns);
                         }
-                        dns: switch (dns_state.*) {
-                            .ready => {
-                                var dns_ips_buf: [4][4]u8 = undefined;
-                                const dns_ips: []const [4]u8 = dnsIPs: {
-                                    //log.debug("DNS IPs: {s}", .{ if (dhcp_info.dns_ips[0]) |_| "" else "none" });
-                                    var total_dns: usize = 0;
-                                    defer log.debug("- Total DNS: {d}", .{ total_dns });
-                                    dnsLoop: for (dhcp_ctx.info.?.dns_ips, 0..) |dns_ip, idx| {
-                                        const next_dns = dns_ip orelse break :dnsIPs dns_ips_buf[0..total_dns];
-                                        for (dns_ips_buf[0..idx]) |prev_dns| {
-                                            if (mem.eql(u8, prev_dns[0..], next_dns[0..])) continue :dnsLoop;
-                                        }
-                                        //log.debug("- {f}", .{ IPF{ .bytes = next_dns[0..] } });
-                                        dns_ips_buf[idx] = next_dns;
-                                        total_dns += 1;
-                                    }
-                                    break :dnsIPs &.{};
-                                };
-                                dns_state.* = .starting;
-                                const dns_thread = try Thread.spawn(
-                                    .{},
-                                    handleDNS,
-                                    .{ self._thread_states, dns.DNSConfig{ .if_index = conn_if.index, .servers = dns_ips[0..1] } },
-                                );
-                                dns_thread.detach();
-                                continue :dns dns_state.*;
-                            },
-                            .starting => {},
-                            .working => |*work| working: {
-                                if (@divFloor(work.timer.read(), time.ns_per_ms) < self.handler_timeout) break :working;
-                                dns_state.* = .ready;
-                                return error.DNSThreadTimeout;
-                            },
-                            .done => {
-                                log.info("Added DNS '{f}' to ({d}) {s}", .{
-                                    IPF{ .bytes = dhcp_ctx.info.?.dns_ips[0].?[0..] },
-                                    conn_if.index,
-                                    conn_if.name,
-                                });
-                                dns_state.* = .ready;
-                                self._state = .{ .conn = .init };
-                            },
-                            .err => |err| {
-                                log.err("Could not set DNS: {t}", .{ err });
-                                return err;
-                            },
-                        }
+                        self._state = .{ .dns = .{ .servers = try dns_ips_list.toOwnedSlice(core_ctx.alloc) } };
                     },
+                }
+            },
+            .dns => |*dns_ctx| {
+                defer if (self._state != .dns) {
+                    core_ctx.alloc.free(dns_ctx.servers);
+                    if (dns_ctx.handler) |*handler| //
+                        handler.deinit(core_ctx.alloc);
+                };
+                if (dns_ctx.servers.len == 0) {
+                    self._state = .{ .conn = .init };
+                    continue :state self._state;
+                }
+                if (dns_ctx.handler) |*handler| {
+                    errdefer {
+                        core_ctx.alloc.free(dns_ctx.servers);
+                        handler.deinit(core_ctx.alloc);
+                        dns_ctx.handler = null;
+                    }
+                    switch (handler.state) {
+                        .done => {
+                            log.debug("Added DNS Server(s): {f}", .{ SlicesF([4]u8, "{s}"){ .slice = dns_ctx.servers } });
+                            self._state = .{ .conn = .init };
+                            continue :state self._state;
+                        },
+                        else => {
+                            handler.step() catch |err| switch (err) {
+                                error.ReadFailed,
+                                => {
+                                    //log.debug("EAPoL Read Failed: {t}", .{ handler.state });
+                                },
+                                else => return err,
+                            };
+                            return;
+                        },
+                    }
+                } //
+                else {
+                    log.debug("Connection {s} | {s}: Handling DNS", .{ self.ssid, conn_if.name });
+                    dns_ctx.handler = try .init(
+                        core_ctx.alloc,
+                        &core_ctx.dbus_conn,
+                        .{
+                            .if_index = conn_if.index,
+                            .servers = dns_ctx.servers,
+                        },
+                    );
+                    continue :state self._state;
                 }
             },
             .conn => |*conn| {
@@ -1600,7 +1615,7 @@ pub const Connection = struct {
     }
 
     /// Handle DNS
-    fn handleDNS(states: *ThreadHashMap([]const u8, ThreadState), dns_config: dns.DNSConfig) void {
+    fn handleDNS(states: *ThreadHashMap([]const u8, ThreadState), dns_config: dns.Config) void {
         states.mutex.lock();
         var state = states.map.getEntry("dns").?.value_ptr;
         state.* = .{

@@ -93,10 +93,7 @@ fn sendDHCPMsg(
     try sock_w.flush();
 }
 
-pub fn recvDHCPMsg(
-    sock_r: *Io.Reader,
-    client_mac: [6]u8,
-) !void {
+pub fn recvDHCPMsg(sock_r: *Io.Reader, client_mac: [6]u8) !void {
     sock_r.tossBuffered();
     sock_r.seek = 0;
     sock_r.end = 0;
@@ -157,8 +154,6 @@ pub const Handler = struct {
     sock: posix.socket_t,
     reader: SockReader,
     writer: SockWriter,
-    r_buf: []const u8,
-    w_buf: []const u8,
     mac_addr: [6]u8,
     config: LeaseConfig = .{},
     transaction_id: u32,
@@ -244,8 +239,6 @@ pub const Handler = struct {
             .sock = sock,
             .reader = .init(sock, r_buf, posix.MSG.DONTWAIT),
             .writer = .init(sock, w_buf, 0),
-            .r_buf = r_buf,
-            .w_buf = w_buf,
             .timer = try .start(),
             .timeout = timeout,
             .mac_addr = mac_addr,
@@ -261,8 +254,8 @@ pub const Handler = struct {
     /// Deinitialize this DORA Handler
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         posix.close(self.sock);
-        alloc.free(self.r_buf);
-        alloc.free(self.w_buf);
+        alloc.free(self.reader.io_reader.buffer);
+        alloc.free(self.writer.io_writer.buffer);
     }
 
     /// Step through the DORA Process
@@ -294,11 +287,11 @@ pub const Handler = struct {
                 try sock_w.writeByte(c(l5.DHCP.MessageType).DISCOVER);
                 // - Add Parameter Request List
                 try sock_w.writeStruct(params_req_hdr, .big);
-                _ = try sock_w.write(params_reqs_list);
+                try sock_w.writeAll(params_reqs_list);
                 // - Add Client ID option
                 try sock_w.writeStruct(client_id, .big);
                 try sock_w.writeByte(1);
-                _ = try sock_w.write(self.mac_addr[0..]);
+                try sock_w.writeAll(self.mac_addr[0..]);
                 // - Add Max Message Size option
                 try sock_w.writeStruct(max_msg_size, .big);
                 try sock_w.writeInt(u16, 1500, .big);
@@ -309,7 +302,7 @@ pub const Handler = struct {
                         .len = 4,
                     };
                     try sock_w.writeStruct(req_ip_addr, .big);
-                    _ = try sock_w.write(ip[0..]);
+                    try sock_w.writeAll(ip[0..]);
                 }
                 // - End Option
                 try sock_w.writeByte(c(l5.DHCP.OptionCode).END);
@@ -481,11 +474,11 @@ pub const Handler = struct {
                 try sock_w.writeByte(c(l5.DHCP.MessageType).REQUEST);
                 // - Add Parameter Request List
                 try sock_w.writeStruct(params_req_hdr, .big);
-                _ = try sock_w.write(params_reqs_list);
+                try sock_w.writeAll(params_reqs_list);
                 // - Add Client ID option
                 try sock_w.writeStruct(client_id, .big);
                 try sock_w.writeByte(1);
-                _ = try sock_w.write(self.mac_addr[0..]);
+                try sock_w.writeAll(self.mac_addr[0..]);
                 // - Add Max Message Size option
                 try sock_w.writeStruct(max_msg_size, .big);
                 try sock_w.writeInt(u16, 1500, .big);
@@ -495,14 +488,14 @@ pub const Handler = struct {
                     .len = 4,
                 };
                 try sock_w.writeStruct(req_ip_hdr, .big);
-                _ = try sock_w.write(self.ctx.offered_ip[0..]);
+                try sock_w.writeAll(self.ctx.offered_ip[0..]);
                 // - Add Server ID option
                 const server_id_hdr: l5.BOOTP.OptionHeader = .{
                     .code = c(l5.DHCP.OptionCode).SERVER_ID,
                     .len = 4,
                 };
                 try sock_w.writeStruct(server_id_hdr, .big);
-                _ = try sock_w.write(self.ctx.offer_server_id[0..]);
+                try sock_w.writeAll(self.ctx.offer_server_id[0..]);
                 // - Custom Lease Time Options
                 if (self.config.lease_time) |lease_time| {
                     const lease_time_hdr: l5.BOOTP.OptionHeader = .{
@@ -537,7 +530,7 @@ pub const Handler = struct {
                         .len = @truncate(hostname.len),
                     };
                     try sock_w.writeStruct(hostname_hdr, .big);
-                    _ = try sock_w.write(hostname);
+                    try sock_w.writeAll(hostname);
                 }
                 // - End Option
                 try sock_w.writeByte(c(l5.DHCP.OptionCode).END);
