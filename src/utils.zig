@@ -375,3 +375,15 @@ pub fn toExtern(T: type, instance: T, comptime config: PackedExternConfig) Exter
         mem.byteSwapAllFields(ExternT(T, config), ex_instance);
     return ex_instance;
 }
+
+/// Pad Config
+pub const PadConfig = struct {
+    alignment: u8 = 4,
+    pad_byte: u8 = 0,
+};
+
+/// Write Padding to the provied `Io.Writer` (`writer`) with the `PadConfig` (`config`).
+pub fn writePad(writer: *Io.Writer, config: PadConfig) Io.Writer.Error!void {
+    while (writer.end % config.alignment != 0) //
+        try writer.writeByte(config.pad_byte);
+}
