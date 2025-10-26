@@ -328,7 +328,13 @@ pub const Interface = struct {
                 },
                 .dns => resetDNS: {
                     if (!has_ip) break :resetDNS;
-                    dns.updateDNS(.{ .if_index = self.index, .servers = &.{}, .set_route = false }) catch |err| {
+                    dns.updateDNS(.{ 
+                        .if_index = self.index,
+                        .servers = &.{},
+                        .set_route = false,
+                        .allow_mdns = .inherit,
+                        .allow_llmnr = .inherit,
+                    }) catch |err| {
                         log.err("-- Could not reset DNS: {t}", .{ err });
                         break :resetDNS;
                     };
