@@ -1,6 +1,7 @@
 //! D-Bus Structs & Functions f/ DisCo
 
 const std = @import("std");
+const atomic = std.atomic;
 const fmt = std.fmt;
 const fs = std.fs;
 const log = std.log.scoped(.dbus);
@@ -39,6 +40,7 @@ pub const Connection = struct {
     reader: net.Stream.Reader,
     writer: net.Stream.Writer,
     uuid: []const u8,
+    serial: atomic.Value(u32) = .init(1),
 
     /// Initialize a Connection to System D-Bus.
     pub fn init(alloc: mem.Allocator) !@This() {
@@ -60,6 +62,7 @@ pub const Connection = struct {
         // Perform SASL authentication
         try self.authenticate();
         self.uuid = try self.hello(alloc);
+        log.debug("D-Bus Connected. UUID: {s}", .{ self.uuid });
         return self;
     }
 
@@ -183,15 +186,14 @@ pub const Connection = struct {
         // Body Length
         try sock_w.writeInt(u32, @truncate(data.len), .little);
         // Serial Number
-        try sock_w.writeInt(u32, 1, .little);
+        try sock_w.writeInt(u32, self.getSerial(), .little);
         const array_size_offset = sock_w.end;
         sock_w.end += 4;
         const array_start = sock_w.end;
         // Write each Header Field
         for (header_fields) |field| {
             // Alignment
-            while (sock_w.end % 8 != 0) //
-                try sock_w.writeByte(0);
+            try utils.writePad(sock_w, .{ .alignment = 8 });
             try sock_w.writeByte(field.code);
             // Variant Signature
             try sock_w.writeByte(@intCast(field.variant_type.len));
@@ -215,8 +217,7 @@ pub const Connection = struct {
         try sock_w.writeInt(u32, @intCast(array_size), .little);
         sock_w.end = cur_end;
         // Alignment
-        while (sock_w.end % 8 != 0) //
-            try sock_w.writeByte(0);
+        try utils.writePad(sock_w, .{ .alignment = 8 });
         // Add Data
         try sock_w.writeAll(data[0..]);
         // Send Message
@@ -226,19 +227,27 @@ pub const Connection = struct {
         //    \\---
         //    \\{f}
         //    \\
-        //    , .{ 
-        //        offset,
+        //    , .{
+        //        sock_w.end,
         //        array_size,
         //        data.len,
-        //        msg_buf[0..offset],
-        //        HexF{ .bytes = msg_buf[0..offset] } 
+        //        sock_w.buffered(),
+        //        HexF{ .bytes = sock_w.buffered() },
         //    },
         //);
         try sock_w.flush();
     }
+
+    fn getSerial(self: *@This()) u32 {
+        var serial = self.serial.load(.acquire);
+        serial +%= 1;
+        if (serial == 0) serial = 1;
+        self.serial.store(serial, .monotonic);
+        return serial;
+    }
 };
 
-/// Verify a DBus Response.
+/// Verify a D-Bus Response.
 pub fn verifyResponse(response: []const u8) !void {
     if (response.len < 16) //
         return error.InvalidResponse;
