@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const ascii = std.ascii;
 const atomic = std.atomic;
 const crypto = std.crypto;
 const debug = std.debug;
@@ -20,7 +21,9 @@ const Io = std.Io;
 const Thread = std.Thread;
 
 const cova = @import("cova");
-const cli = @import("cli.zig");
+const ui = @import("ui.zig");
+const cli = ui.cli;
+const zeit = @import("zeit");
 
 const config_fields = @embedFile("config_fields");
 
@@ -40,8 +43,48 @@ const oui = netdata.oui;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const masks_map = core.profiles.Mask.map;
+const ansi = utils.ansi;
 const c = utils.toStruct;
 const SlicesF = utils.SliceFormatter([]const u8, "{s}");
+
+// Logging
+var log_writer: ?*Io.Writer = null;
+pub const std_options: std.Options = .{
+    .logFn = logFn,
+};
+
+pub fn logFn(
+    comptime level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const writer = log_writer orelse return;
+    const now: zeit.Instant = zeit.instant(.{}) catch @panic("Missing Time Source!");
+    const level_color: []const u8 = switch (level) {
+        .debug => ansi.fg.blue,
+        .info => ansi.fg.green,
+        .warn => ansi.fg.yellow,
+        .err => ansi.fg.red,
+    };
+    var up_buf: [6]u8 = undefined;
+    const level_upper: []const u8 = ascii.upperString(up_buf[0..], @tagName(level));
+    writer.writeAll(ansi.fmt.bold) catch return;
+    now.time().strftime(writer, "%H:%M:%S") catch return;
+    writer.print(
+        " {s}{s}{s}{s} ({s}): ",
+        .{
+            level_color,
+            level_upper,
+            ansi.reset,
+            ansi.fmt.bold,
+            @tagName(scope),
+        },
+    ) catch return;
+    writer.writeAll(ansi.reset) catch return;
+    writer.print(format, args) catch return;
+    writer.writeByte('\n') catch return;
+}
 
 // Cleaning Hang Protection
 var cleaning: bool = false;
@@ -77,6 +120,7 @@ pub fn main() !void {
     var stdout_writer = stdout_file.writer(stdout_buf[0..]);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
+    log_writer = stdout;
 
     var gpa: heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }) = .init;
     defer if (builtin.mode == .Debug and gpa.detectLeaks()) //
