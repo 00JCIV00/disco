@@ -19,7 +19,9 @@ const netdata = @import("netdata.zig");
 const oui = netdata.oui;
 const nl = @import("netlink.zig");
 const sys = @import("sys.zig");
+const ui = @import("ui.zig");
 const utils = @import("utils.zig");
+const ansi = utils.ansi;
 const c = utils.toStruct;
 const PIDF = utils.SliceFormatter(u32, "{d}");
 const SlicesF = utils.SliceFormatter([]const u8, "{s}");
@@ -56,6 +58,8 @@ pub const Core = struct {
         global_connect_config: connections.GlobalConfig = .{},
         /// Connection Configs
         connect_configs: []const connections.Config = &.{},
+        /// Log Config
+        log_config: ?ui.log.FileConfig = .{},
         /// PCAP Config
         pcap_config: captures.Config = .{},
         /// Serve Config
@@ -109,7 +113,7 @@ pub const Core = struct {
 
     /// Initialize the Core Context.
     pub fn init(alloc: mem.Allocator, config: Config) !@This() {
-        log.info("Initializing DisCo Core...", .{});
+        log.info("{s}{s}Initializing DisCo Core...{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         //var arena = heap.ArenaAllocator.init(alloc);
         //errdefer arena.deinit();
         // Get Original Hostname
@@ -168,7 +172,7 @@ pub const Core = struct {
             self.serve_ctx.conf.* = serve_conf;
             log.info("- Initialized File Serve Data.", .{});
         }
-        log.info("Initialized DisCo Core.", .{});
+        log.info("{s}{s}Initialized DisCo Core.{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         //Thread.sleep(5 * time.ns_per_s);
         return self;
     }
@@ -177,10 +181,10 @@ pub const Core = struct {
     /// This is the main loop for how DisCo is typically run.
     pub fn start(self: *@This()) !void {
         if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
-        log.info("Core Locked!", .{});
-        log.info("Starting DisCo Core...", .{});
+        log.debug("Core Locked!", .{});
+        log.info("{s}{s}Starting DisCo Core...{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         defer {
-            log.info("Core Unlocked!", .{});
+            log.debug("Core Unlocked!", .{});
             self._mutex.unlock();
         }
         // Find Conflicting PIDs
@@ -197,9 +201,9 @@ pub const Core = struct {
             try stdout.print(
                 \\
                 \\Conflict PIDs found! You may want to kill those processes or ensure you've deconflicted WiFi Interfaces.
-                \\Press ENTER to acknowledge and continue.
+                \\Press {s}{s}ENTER{s} to acknowledge and continue.
                 \\
-                , .{}
+                , .{ ansi.fmt.bold, ansi.fg.blue, ansi.reset }
             );
             var stdin_file = fs.File.stdin();
             var stdin_buf: [16]u8 = undefined;
@@ -262,7 +266,7 @@ pub const Core = struct {
         // PCAP Handling
         self.cap_writer = try .init(self);
         // Core Loop
-        log.info("Started DisCo Core.", .{});
+        log.info("{s}{s}Started DisCo Core.{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         while (self.active.load(.acquire)) {
             //log.debug("Core Update", .{});
             defer Thread.sleep(10 * time.ns_per_ms);
@@ -325,7 +329,7 @@ pub const Core = struct {
     /// TODO: archive session data
     pub fn stop(self: *@This()) void {
         var stop_timer = time.Timer.start() catch null;
-        log.info("Stopping DisCo Core...", .{});
+        log.info("{s}{s}Stopping DisCo Core...{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         self.active.store(false, .seq_cst);
         self._mutex.lock();
         defer self._mutex.unlock();
@@ -336,7 +340,7 @@ pub const Core = struct {
         log.info("- Stopped all Core Threads.", .{});
         // TODO Archive Session Data
         self.cleanUp();
-        log.info("Stopped DisCo Core.", .{});
+        log.info("{s}{s}Stopped DisCo Core.{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         if (stop_timer) |*st| //
             log.debug("Stop Time: {d}ms", .{ @divTrunc(st.read(), time.ns_per_ms) });
     }

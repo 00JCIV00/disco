@@ -1,6 +1,5 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const ascii = std.ascii;
 const atomic = std.atomic;
 const crypto = std.crypto;
 const debug = std.debug;
@@ -23,9 +22,8 @@ const Thread = std.Thread;
 const cova = @import("cova");
 const ui = @import("ui.zig");
 const cli = ui.cli;
-const zeit = @import("zeit");
-
 const config_fields = @embedFile("config_fields");
+const zeit = @import("zeit");
 
 const art = @import("art.zig");
 const core = @import("core.zig");
@@ -48,43 +46,9 @@ const c = utils.toStruct;
 const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
 // Logging
-var log_writer: ?*Io.Writer = null;
 pub const std_options: std.Options = .{
-    .logFn = logFn,
+    .logFn = ui.log.logFn,
 };
-
-pub fn logFn(
-    comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    const writer = log_writer orelse return;
-    const now: zeit.Instant = zeit.instant(.{}) catch @panic("Missing Time Source!");
-    const level_color: []const u8 = switch (level) {
-        .debug => ansi.fg.blue,
-        .info => ansi.fg.green,
-        .warn => ansi.fg.yellow,
-        .err => ansi.fg.red,
-    };
-    var up_buf: [6]u8 = undefined;
-    const level_upper: []const u8 = ascii.upperString(up_buf[0..], @tagName(level));
-    writer.writeAll(ansi.fmt.bold) catch return;
-    now.time().strftime(writer, "%H:%M:%S") catch return;
-    writer.print(
-        " {s}{s}{s}{s} ({s}): ",
-        .{
-            level_color,
-            level_upper,
-            ansi.reset,
-            ansi.fmt.bold,
-            @tagName(scope),
-        },
-    ) catch return;
-    writer.writeAll(ansi.reset) catch return;
-    writer.print(format, args) catch return;
-    writer.writeByte('\n') catch return;
-}
 
 // Cleaning Hang Protection
 var cleaning: bool = false;
@@ -115,13 +79,20 @@ pub fn main() !void {
         },
         null,
     );
-    var stdout_file: fs.File =  .stdout();
+    // Stdout
+    var stdout_file: fs.File = .stdout();
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = stdout_file.writer(stdout_buf[0..]);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
-    log_writer = stdout;
-
+    const stdout_log_ctx: ui.log.Context = .{
+        .writer = stdout,
+        //.ansi = false,
+        //.level = .info,
+        //.time_fmt = "%T",
+    };
+    ui.log.contexts = &.{ stdout_log_ctx };
+    // Allocator
     var gpa: heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }) = .init;
     defer if (builtin.mode == .Debug and gpa.detectLeaks()) //
         log.err("Memory leak detected!", .{});
@@ -135,11 +106,9 @@ pub fn main() !void {
         .ReleaseFast => heap.smp_allocator,
         else => gpa.allocator(),
     };
-
     // Get NL80211 Control Info
     try nl._80211.initCtrlInfo(alloc);
     defer nl._80211.deinitCtrlInfo(alloc);
-
     // Parse Args
     //var main_cmd = try cli.setup_cmd.init(gpa_alloc, .{});
     var main_cmd = try cli.setup_cmd.init(alloc, .{});
@@ -404,7 +373,7 @@ pub fn main() !void {
     if (main_cmd.checkFlag("no_conflict_pids")) //
         log.info("Skipping Conflict PIDs check.", .{});
     // Initialize Core Context
-    const core_config: core.Core.Config = config: {
+    var core_config: core.Core.Config = config: {
         var config: core.Core.Config = importConf: {
             var config: core.Core.Config = .{
                 .avail_if_names = if_names,
@@ -538,8 +507,66 @@ pub fn main() !void {
         if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
         break :config config;
     };
-    var core_ctx: core.Core = try .init(alloc, core_config);
+    var log_dir: ?fs.Dir,
+    var log_file: ?fs.File = //
+    logCtx: {
+        if (core_config.log_config) |*log_config| {
+            const cwd = fs.cwd();
+            var log_dir: fs.Dir = logDir: {
+                if (main_opts.get("log_dir")) |log_dir_opt|
+                    break :logDir try log_dir_opt.val.getAs(fs.Dir);
+                break :logDir cwd.openDir(log_config.dir, .{}) catch |err| switch (err) {
+                    error.FileNotFound => {
+                        log.warn("Unable to find '{s}'. Writing to the Current Directory instead.", .{ log_config.dir });
+                        log_config.dir = ".";
+                        break :logDir cwd;
+                    },
+                    else => return err,
+                };
+            };
+            var fn_w: Io.Writer.Allocating = .init(cova_alloc);
+            var fn_writer = &fn_w.writer;
+            errdefer fn_w.deinit();
+            const basename = baseName: {
+                const cur_ts = zeit.instant(.{}) catch @panic("Time Source Issue!");
+                try cur_ts.time().strftime(fn_writer, "%Y%m%dT%H%M%S");
+                break :baseName fn_w.toOwnedSlice() catch @panic("OOM");
+            };
+            try fn_writer.print("{s}{s}{s}", .{
+                log_config.prefix,
+                basename,
+                log_config.suffix,
+            });
+            const filename = try fn_w.toOwnedSlice();
+            errdefer cova_alloc.free(filename);
+            break :logCtx .{ log_dir, try log_dir.createFile(filename, .{ .read = true }) };
+        }
+        break :logCtx .{ null, null };
+    };
+    var log_file_buf: [4096]u8 = undefined;
+    const log_file_w = logFileWriter: {
+        if (log_file) |*log_f| {
+            var log_file_w = alloc.create(fs.File.Writer) catch @panic("OOM");
+            log_file_w.* = log_f.writer(log_file_buf[0..]);
+            const log_ctx: ui.log.Context = .{
+                .writer = &log_file_w.interface,
+                .ansi = false,
+                .level = .debug,
+                .time_fmt = "%Y%m%dT%H%M%S%f",
+            };
+            ui.log.contexts = &.{ stdout_log_ctx, log_ctx };
+            break :logFileWriter log_file_w;
+        }
+        break :logFileWriter null;
+    };
+    defer if (log_dir) |*log_d|
+        log_d.close();
+    defer if (log_file) |*log_f|
+        log_f.close();
+    defer if (log_file_w) |lfw|
+        alloc.destroy(lfw);
     // Start Core Context
+    var core_ctx: core.Core = try .init(alloc, core_config);
     const run_core: bool = runCore: {
         break :runCore //
             main_cmd.sub_cmd == null or //

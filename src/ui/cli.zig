@@ -16,13 +16,13 @@ const testing = std.testing;
 const time = std.time;
 
 const cova = @import("cova");
-const core = @import("core.zig");
+const core = @import("../core.zig");
 const serve = core.serve;
-const nl = @import("netlink.zig");
-const netdata = @import("netdata.zig");
+const nl = @import("../netlink.zig");
+const netdata = @import("../netdata.zig");
 const address = netdata.address;
 const oui = netdata.oui;
-const proto = @import("protocols.zig");
+const proto = @import("../protocols.zig");
 const wpa = proto.wpa;
 
 /// The Cova Command Type for DisCo.
@@ -267,17 +267,17 @@ pub const setup_cmd: CommandT = .{
             .alias_long_names = &.{ "mask-ua" },
             .val = .ofType([]const u8, .{}),
         },
-        // TODO Implement these Base Options
         .{
-            .name = "log_path",
-            .description = "Save the JSON output to the specified Log Path.",
+            .name = "log_dir",
+            .description = "Save the Log to the specified Directory.",
             .short_name = 'l',
-            .long_name = "log-path",
-            .val = .ofType(fs.File, .{
-                .name = "log_path",
-                .description = "Path to the save JSON Log File.",
+            .long_name = "log-dir",
+            .val = .ofType(fs.Dir, .{
+                .name = "log_dir",
+                .description = "Directory to the save Log File in.",
             }),
         },
+        // TODO Implement these Base Options
         .{
             .name = "no_tui",
             .description = "Run DisCo without a TUI.",
