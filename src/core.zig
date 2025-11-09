@@ -14,6 +14,8 @@ const ArrayList = std.ArrayList;
 const Io = std.Io;
 const Thread = std.Thread;
 
+const zeit = @import("zeit");
+
 const dbus = @import("dbus.zig");
 const netdata = @import("netdata.zig");
 const oui = netdata.oui;
@@ -81,6 +83,8 @@ pub const Core = struct {
     /// Config
     config: Config,
     run_condition: ?RunCondition = null,
+    /// Time Zone
+    timezone: zeit.TimeZone = zeit.utc,
     /// Interval for Thread Checks.
     interval: usize = 100 * time.ns_per_ms,
     /// Active Status of the overall program.
@@ -112,7 +116,7 @@ pub const Core = struct {
 
 
     /// Initialize the Core Context.
-    pub fn init(alloc: mem.Allocator, config: Config) !@This() {
+    pub fn init(alloc: mem.Allocator, timezone: zeit.TimeZone, config: Config) !@This() {
         log.info("{s}{s}Initializing DisCo Core...{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         //var arena = heap.ArenaAllocator.init(alloc);
         //errdefer arena.deinit();
@@ -134,6 +138,7 @@ pub const Core = struct {
             .alloc = alloc,
             //.arena = arena,
             .config = config,
+            .timezone = timezone,
             .nl_event_loop = try .init(.{}),
             .nl80211_handler = nl80211_handler,
             .rtnetlink_handler = rtnetlink_handler,

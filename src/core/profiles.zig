@@ -43,6 +43,8 @@ pub const Profile = struct {
     },
     /// Require Conflict PIDs Acknowledgement on Startup.
     require_conflicts_ack: bool = true,
+    /// Time Zone
+    timezone: enum { local, utc } = .local,
 };
 
 /// Masking Information to obfuscate the Host System.

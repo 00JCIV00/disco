@@ -142,7 +142,7 @@ pub const Writer = struct {
                 errdefer fn_w.deinit();
                 //try fn_writer.print("{s}/{s}", .{ config.dir, config.prefix });
                 const basename = baseName: {
-                    const cur_ts = zeit.instant(.{}) catch @panic("Time Source Issue!");
+                    const cur_ts = zeit.instant(.{ .timezone = &core_ctx.timezone }) catch @panic("Time Source Issue!");
                     try cur_ts.time().strftime(fn_writer, "%Y%m%dT%H%M%S");
                     break :baseName fn_w.toOwnedSlice() catch @panic("OOM");
                 };
@@ -214,7 +214,7 @@ pub const Writer = struct {
             var file_w = pcap_file.writerStreaming(&.{});
             try self.writeSHB(&file_w.interface);
             try self.writeIDBs(&file_w.interface);
-            log.debug("Started PCAP file: {s} ({d}B)", .{ f_ctx.filename, (try pcap_file.stat()).size });
+            log.debug("Started PCAP file: {s}", .{ f_ctx.filename });
         }
         return self;
     }

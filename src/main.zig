@@ -285,11 +285,9 @@ pub fn main() !void {
         return;
     }
 
-    // Set up Core Data
-    const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUnitialized;
+    const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUninitialized;
     const main_opts = try main_cmd.getOpts(.{});
-    var core_if_indexes: ArrayList(i32) = .{};
-    defer core_if_indexes.deinit(alloc);
+    // Set up Core Data
     var core_scan_confs: ArrayList(core.Core.Config.ScanConfig) = .{};
     defer core_scan_confs.deinit(alloc);
     const if_names: []const []const u8 = ifOpt: {
@@ -372,7 +370,7 @@ pub fn main() !void {
     };
     if (main_cmd.checkFlag("no_conflict_pids")) //
         log.info("Skipping Conflict PIDs check.", .{});
-    // Initialize Core Context
+    // Parse DisCo Config
     var core_config: core.Core.Config = config: {
         var config: core.Core.Config = importConf: {
             var config: core.Core.Config = .{
@@ -507,6 +505,29 @@ pub fn main() !void {
         if (core_conn_confs.len > 0) config.connect_configs = core_conn_confs;
         break :config config;
     };
+    // Time Zone
+    const timezone = switch (core_config.profile.timezone) {
+        .utc => zeit.utc,
+        .local => local: {
+            const tz = zeit.local(alloc, null) catch |err| {
+                log.err("Could not set the Time Zone to Local Time: {t}", .{ err });
+                break :local zeit.utc;
+            };
+            break :local tz;
+        },
+    };
+    defer timezone.deinit();
+    log.info("{s}{s}{s}Time Zone{s}: {s}{t}{s}", .{ 
+        ansi.bg.blue,
+        ansi.fg.black,
+        ansi.fmt.underline,
+        ansi.fmt.reset,
+        ansi.fmt.bold,
+        core_config.profile.timezone,
+        ansi.reset
+    });
+    ui.log.timezone = &timezone;
+    // Log File Setup
     var log_dir: ?fs.Dir,
     var log_file: ?fs.File = //
     logCtx: {
@@ -528,7 +549,7 @@ pub fn main() !void {
             var fn_writer = &fn_w.writer;
             errdefer fn_w.deinit();
             const basename = baseName: {
-                const cur_ts = zeit.instant(.{}) catch @panic("Time Source Issue!");
+                const cur_ts = zeit.instant(.{ .timezone = &timezone }) catch @panic("Time Source Issue!");
                 try cur_ts.time().strftime(fn_writer, "%Y%m%dT%H%M%S");
                 break :baseName fn_w.toOwnedSlice() catch @panic("OOM");
             };
@@ -551,7 +572,7 @@ pub fn main() !void {
             const log_ctx: ui.log.Context = .{
                 .writer = &log_file_w.interface,
                 .ansi = false,
-                .level = .debug,
+                .min_level = .debug,
                 .time_fmt = "%Y%m%dT%H%M%S%f",
             };
             ui.log.contexts = &.{ stdout_log_ctx, log_ctx };
@@ -565,8 +586,8 @@ pub fn main() !void {
         log_f.close();
     defer if (log_file_w) |lfw|
         alloc.destroy(lfw);
-    // Start Core Context
-    var core_ctx: core.Core = try .init(alloc, core_config);
+    // Initialize & Start Core Context
+    var core_ctx: core.Core = try .init(alloc, timezone, core_config);
     const run_core: bool = runCore: {
         break :runCore //
             main_cmd.sub_cmd == null or //
