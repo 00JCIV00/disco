@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ascii = std.ascii;
+const s_fmt = std.fmt;
 const mem = std.mem;
 const Io = std.Io;
 const Thread = std.Thread;
@@ -41,6 +42,7 @@ pub const fg = struct {
     pub const magenta = "\x1b[35m";
     pub const cyan = "\x1b[36m";
     pub const white = "\x1b[37m";
+    pub const gray = "\x1b[38;5;244m";
     pub const bright_black = "\x1b[90m";
     pub const bright_red = "\x1b[91m";
     pub const bright_green = "\x1b[92m";
@@ -51,6 +53,10 @@ pub const fg = struct {
     pub const bright_white = "\x1b[97m";
 
     pub const reset = "\x1b[39m";
+
+    pub fn rgb(config: RGBConfig) RGB {
+        return .init(true, config);
+    }
 };
 
 // Background Colors
@@ -73,6 +79,45 @@ pub const bg = struct {
     pub const bright_white = "\x1b[107m";
 
     pub const reset = "\x1b[49m";
+
+    pub fn rgb(config: RGBConfig) RGB {
+        return .init(false, config);
+    }
+};
+
+pub const RGBConfig = struct {
+    r: u8 = 0,
+    g: u8 = 0,
+    b: u8 = 0,
+};
+
+/// A Custom RGB Escape Code
+pub const RGB = struct {
+    buf: [20]u8,
+    len: u8,
+
+    pub fn init(fg_color: bool, config: RGBConfig) @This() {
+        var buf: [20]u8 = undefined;
+        const prefix: u8 = if (fg_color) 38 else 48;
+        const rgb_fmt = s_fmt.bufPrint(
+            buf[0..],
+            "\x1b[{d};2;{d};{d};{d}m",
+            .{
+                prefix,
+                config.r,
+                config.g,
+                config.b,
+            },
+        ) catch "";
+        return .{
+            .buf = buf,
+            .len = @truncate(rgb_fmt.len),
+        };
+    }
+
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        try writer.writeAll(self.buf[0..self.len]);
+    }
 };
 
 /// Filter out any ANSI Escape Codes being written to the `to_writer`.
