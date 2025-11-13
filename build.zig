@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{
         .default_target = .{
             .cpu_model = //
-                if (optimize == .Debug)  .determined_by_arch_os //
+                if (optimize == .Debug) .determined_by_arch_os //
                 else .baseline,
         },
     });
@@ -17,8 +17,8 @@ pub fn build(b: *std.Build) void {
     const cova_dep = b.dependency("cova", .{ .target = target, .optimize = optimize });
     const cova_mod = cova_dep.module("cova");
     // Vaxis
-    //const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
-    //const vaxis_mod = vaxis_dep.module("vaxis");
+    const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
+    const vaxis_mod = vaxis_dep.module("vaxis");
     // Zeit
     const zeit_dep = b.dependency("zeit", .{ .target = target, .optimize = optimize });
     const zeit_mod = zeit_dep.module("zeit");
@@ -40,7 +40,7 @@ pub fn build(b: *std.Build) void {
             if (optimize == .Debug) target //
             else target,
         .optimize = optimize,
-        .sanitize_thread = if (optimize == .Debug) true else null,
+        //.sanitize_thread = if (optimize == .Debug) true else null,
     });
     const exe = b.addExecutable(.{
         .name = exe_name,
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     exe.root_module.addImport("cova", cova_mod);
-    //exe.root_module.addImport("vaxis", vaxis_mod);
+    exe.root_module.addImport("vaxis", vaxis_mod);
     exe.root_module.addImport("zeit", zeit_mod);
     exe.root_module.addImport("oui_table", oui_lookup_mod);
     exe.root_module.addImport("config_fields", config_fields_mod);

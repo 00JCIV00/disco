@@ -5,16 +5,21 @@
 
     .dependencies = .{
         .cova = .{
-            .url = "https://github.com/00JCIV00/cova/archive/08d92ce77cb8f1c9ce8d4fb2798ad0489494b593.tar.gz",
-            .hash = "cova-0.10.1-_OE4RyqmBABQOQeyO6ESq5oBc1TOBWrEbXj2Z3FL6dwX",
+            .url = "git+https://github.com/00jciv00/cova?ref=main#e94950c689df3e106f9ec01a9189b331db817951",
+            .hash = "cova-0.10.1-_OE4RzmxBACxZO4HRtLdri8i4Gh7w3s23qIqfDxjCvvg",
         },
-        //.vaxis = .{
-        //    .url = "https://github.com/00JCIV00/libvaxis/archive/main.tar.gz",
-        //    .hash = "1220b9cf102d73e0dbf7de594dcd7847fec09732fd4470736d060c40531b799ea643",
-        //},
         .zeit = .{
             .url = "https://github.com/rockorager/zeit/archive/ade14edb2025f5e4a57b683f81c915f70a904e88.tar.gz",
             .hash = "zeit-0.6.0-5I6bk7V8AgAY0-hM-vUYtKZUFYhXct-VRkqISNNTfEfb",
+        },
+        //.vaxis = .{
+        //    //.url = "https://github.com/rockorager/libvaxis/archive/4f6c1fc75c1e406e8db19fec4f447f3a183663f0.tar.gz",
+        //    //.hash = "vaxis-0.5.1-BWNV_OAsCQA13jnKNnBh97YjTP4K4YwAT-pkH-RaHlMI",
+        //    .path = "../others/libvaxis",
+        //},
+        .vaxis = .{
+            .url = "git+https://github.com/00jciv00/libvaxis?ref=main#eca5005080eb547556ef7093584080824f63bcfe",
+            .hash = "vaxis-0.5.1-BWNV_PEuCQAqGH6VDQACRzVHwCIIEcT5EXxofgKD9wkb",
         },
     },
 
