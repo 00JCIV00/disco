@@ -69,6 +69,7 @@ pub const bg = struct {
     pub const magenta = "\x1b[45m";
     pub const cyan = "\x1b[46m";
     pub const white = "\x1b[47m";
+    pub const gray = "\x1b[48;5;244m";
     pub const bright_black = "\x1b[100m";
     pub const bright_red = "\x1b[101m";
     pub const bright_green = "\x1b[102m";
@@ -89,6 +90,14 @@ pub const RGBConfig = struct {
     r: u8 = 0,
     g: u8 = 0,
     b: u8 = 0,
+
+    pub fn from(array: [3]u8) @This() {
+        return .{
+            .r = array[0],
+            .g = array[1],
+            .b = array[2],
+        };
+    }
 };
 
 /// A Custom RGB Escape Code

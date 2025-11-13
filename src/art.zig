@@ -1,5 +1,8 @@
 //! ASCII Art for DisCo
 
+pub const disco_blue: [3]u8 = [_]u8{ 0x0, 0x89, 0xE0 };
+pub const disco_dark: [3]u8 = @splat(0x21);
+
 pub const logo = 
 //    \\░░░░░░  ░░ ░░░░░░░  ░░░░░░  ░░░░░░  
 //    \\▒▒   ▒▒ ▒▒ ▒▒      ▒▒      ▒▒    ▒▒ 

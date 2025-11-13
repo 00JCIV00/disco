@@ -23,6 +23,8 @@ const cova = @import("cova");
 const ui = @import("ui.zig");
 const cli = ui.cli;
 const config_fields = @embedFile("config_fields");
+const vaxis = @import("vaxis");
+const vxfw = vaxis.vxfw;
 const zeit = @import("zeit");
 
 const art = @import("art.zig");
@@ -85,13 +87,25 @@ pub fn main() !void {
     var stdout_writer = stdout_file.writer(stdout_buf[0..]);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
-    const stdout_log_ctx: ui.log.Context = .{
+    var stdout_log_ctx: ui.log.Context = .{
         .writer = stdout,
-        //.ansi = false,
+        .ansi = stdout_file.supportsAnsiEscapeCodes(),
         //.level = .info,
         //.time_fmt = "%T",
     };
-    ui.log.contexts = &.{ stdout_log_ctx };
+    ui.log.contexts[0] = &stdout_log_ctx;
+    try stdout.print("\n{s}{s}{f}{f}Dis{f}{f}Co{s} {s}🪩🪩🪩{s}\n\n", .{
+        ansi.fmt.bold,
+        ansi.fmt.italic,
+        ansi.fg.rgb(.from(art.disco_blue)),
+        ansi.bg.rgb(.from(art.disco_dark)),
+        ansi.fg.rgb(.from(art.disco_dark)),
+        ansi.bg.rgb(.from(art.disco_blue)),
+        ansi.reset,
+        ansi.fmt.blink,
+        ansi.reset,
+    });
+    try stdout.flush();
     // Allocator
     var gpa: heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }) = .init;
     defer if (builtin.mode == .Debug and gpa.detectLeaks()) //
@@ -529,8 +543,9 @@ pub fn main() !void {
     ui.log.timezone = &timezone;
     // Log File Setup
     var log_dir: ?fs.Dir,
-    var log_file: ?fs.File = //
-    logCtx: {
+    var log_file: ?fs.File,
+    const log_cfg: ?*ui.log.FileConfig = //
+    logConfig: {
         if (core_config.log_config) |*log_config| {
             const cwd = fs.cwd();
             var log_dir: fs.Dir = logDir: {
@@ -560,26 +575,31 @@ pub fn main() !void {
             });
             const filename = try fn_w.toOwnedSlice();
             errdefer cova_alloc.free(filename);
-            break :logCtx .{ log_dir, try log_dir.createFile(filename, .{ .read = true }) };
+            break :logConfig .{ log_dir, try log_dir.createFile(filename, .{ .read = true }), log_config };
         }
-        break :logCtx .{ null, null };
+        break :logConfig .{ null, null, null };
     };
     var log_file_buf: [4096]u8 = undefined;
-    const log_file_w = logFileWriter: {
+    const log_file_w: ?*fs.File.Writer,
+    var log_ctx: ?ui.log.Context //
+    = logFileWriter: {
         if (log_file) |*log_f| {
             var log_file_w = alloc.create(fs.File.Writer) catch @panic("OOM");
             log_file_w.* = log_f.writer(log_file_buf[0..]);
-            const log_ctx: ui.log.Context = .{
+            var log_ctx: ui.log.Context = .{
                 .writer = &log_file_w.interface,
                 .ansi = false,
                 .min_level = .debug,
                 .time_fmt = "%Y%m%dT%H%M%S%f",
             };
-            ui.log.contexts = &.{ stdout_log_ctx, log_ctx };
-            break :logFileWriter log_file_w;
+            if (log_cfg) |cfg|
+                cfg.fillContext(&log_ctx);
+            break :logFileWriter .{ log_file_w, log_ctx };
         }
-        break :logFileWriter null;
+        break :logFileWriter .{ null, null };
     };
+    if (log_ctx) |*ctx|
+        ui.log.contexts[1] = ctx;
     defer if (log_dir) |*log_d|
         log_d.close();
     defer if (log_file) |*log_f|
@@ -595,15 +615,53 @@ pub fn main() !void {
     };
     if (run_core) {
         checkRoot(stdout);
+        log.debug("Running Disco...", .{});
         const core_thread = try Thread.spawn(.{}, core.Core.start, .{ &core_ctx });
         core_thread.detach();
         while (!(&core_ctx).active.load(.acquire)) //
             Thread.sleep(10 * time.ns_per_ms);
-        var stdin_file: fs.File = .stdin();
-        var stdin_buf: [16]u8 = undefined;
-        var stdin_reader = stdin_file.reader(stdin_buf[0..]);
-        const stdin = &stdin_reader.interface;
-        _ = try stdin.discardDelimiterExclusive('\n');
+        // UI Mode
+        const ui_mode: ui.Mode = uiMode: {
+            const ui_mode_opt = main_opts.get("ui").?;
+            break :uiMode try ui_mode_opt.val.getAs(ui.Mode);
+        };
+        log.info("{s}{s}{s}UI Mode{s}: {s}{t}{s}", .{ 
+            ansi.bg.blue,
+            ansi.fg.black,
+            ansi.fmt.underline,
+            ansi.fmt.reset,
+            ansi.fmt.bold,
+            ui_mode,
+            ansi.reset
+        });
+        var tui_ctx: ?ui.tui.Context = switch (ui_mode) {
+            .repl => repl: {
+                break :repl .{
+                    .app = try .init(alloc),
+                    .main = .{ .repl = try .init(alloc) },
+                };
+            },
+            else => null,
+        };
+        if (tui_ctx) |*tc| {
+            try stdout.print("\n{s}{s}{s:~^50}{s}\n\n", .{
+                ansi.fmt.bold,
+                ansi.fg.gray,
+                "[TUI Logging]",
+                ansi.reset,
+            });
+            errdefer core_ctx.stop();
+            defer tc.deinit(alloc);
+            try tc.app.run(tc.main.widget(), .{});
+        } //
+        else {
+            try stdout.print("\nPress {s}{s}[ENTER]{s} to stop.\n\n", .{ ansi.fmt.bold, ansi.fg.blue, ansi.reset });
+            var stdin_file: fs.File = .stdin();
+            var stdin_buf: [16]u8 = undefined;
+            var stdin_reader = stdin_file.reader(stdin_buf[0..]);
+            const stdin = &stdin_reader.interface;
+            _ = try stdin.discardDelimiterExclusive('\n');
+        }
         core_ctx.stop();
         return;
         //posix.exit(0);

@@ -24,6 +24,7 @@ const address = netdata.address;
 const oui = netdata.oui;
 const proto = @import("../protocols.zig");
 const wpa = proto.wpa;
+const ui = @import("../ui.zig");
 
 /// The Cova Command Type for DisCo.
 pub const CommandT = cova.Command.Custom(.{
@@ -50,6 +51,7 @@ pub const CommandT = cova.Command.Custom(.{
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
             nl._80211.SecurityType,
+            ui.Mode,
         },
         .child_type_parse_fns = &.{
             .{
@@ -104,6 +106,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
             .{ .ChildT = nl._80211.SecurityType, .alias = "security_protocol" },
+            .{ .ChildT = ui.Mode, .alias = "ui_mode" },
         },
     }
 });
@@ -277,13 +280,18 @@ pub const setup_cmd: CommandT = .{
                 .description = "Directory to the save Log File in.",
             }),
         },
-        // TODO Implement these Base Options
         .{
-            .name = "no_tui",
-            .description = "Run DisCo without a TUI.",
-            .short_name = 'n',
-            .long_name = "no-tui",
+            .name = "ui",
+            .description = "Choose the UI Mode for DisCo (cli, repl, or tui).",
+            .short_name = 'U',
+            .long_name = "ui",
+            .val = .ofType(ui.Mode, .{
+                .name = "ui_mode",
+                .description = "The UI Mode for DisCo.",
+                .default_val = .cli,
+            }),
         },
+        // TODO Implement these Base Options
         .{
             .name = "no_mouse",
             .description = "Disable mouse events for the TUI.",

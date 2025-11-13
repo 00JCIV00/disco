@@ -82,7 +82,10 @@ pub const Core = struct {
     //arena: heap.ArenaAllocator,
     /// Config
     config: Config,
+    /// Run Condition
     run_condition: ?RunCondition = null,
+    /// TUI Context
+    tui_ctx: ?ui.tui.Context = null,
     /// Time Zone
     timezone: zeit.TimeZone = zeit.utc,
     /// Interval for Thread Checks.
@@ -205,10 +208,17 @@ pub const Core = struct {
             const stdout = &stdout_writer.interface;
             try stdout.print(
                 \\
-                \\Conflict PIDs found! You may want to kill those processes or ensure you've deconflicted WiFi Interfaces.
-                \\Press {s}{s}ENTER{s} to acknowledge and continue.
+                \\{s}{s}Conflict PIDs found! You may want to kill those processes or ensure you've deconflicted WiFi Interfaces.{s}
+                \\Press {s}{s}[ENTER]{s} to acknowledge and continue.
                 \\
-                , .{ ansi.fmt.bold, ansi.fg.blue, ansi.reset }
+                , .{
+                    ansi.fmt.italic,
+                    ansi.fg.yellow,
+                    ansi.reset,
+                    ansi.fmt.bold,
+                    ansi.fg.blue,
+                    ansi.reset,
+                },
             );
             var stdin_file = fs.File.stdin();
             var stdin_buf: [16]u8 = undefined;
