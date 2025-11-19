@@ -7,6 +7,7 @@ const fmt = std.fmt;
 const log = std.log;
 const mem = std.mem;
 const Io = std.Io;
+const Thread = std.Thread;
 
 const zeit = @import("zeit");
 
@@ -76,6 +77,8 @@ pub const FileConfig = struct {
 pub const Context = struct {
     /// Underlying Writer for Log Data
     writer: *Io.Writer,
+    /// Mutex for this Context
+    mutex: Thread.Mutex = .{},
     /// Use ANSI Escape Codes for Text Formatting & Coloring
     ansi: bool = true,
     /// Include Timestamps
@@ -110,6 +113,8 @@ pub const Context = struct {
     ) void {
         if (@intFromEnum(self.min_level) < @intFromEnum(level))
             return;
+        self.mutex.lock();
+        defer self.mutex.unlock();
         // Custom Functions
         const scope_name = @tagName(scope);
         if (self.start_fn) |startFn|
@@ -138,11 +143,12 @@ pub const Context = struct {
             const tz = timezone orelse &zeit.utc;
             const now: zeit.Instant = zeit.instant(.{ .timezone = tz }) catch @panic("Missing Time Source!");
             now.time().strftime(writer, self.time_fmt) catch return;
+            writer.writeByte(' ') catch return;
         }
         if (self.meta_prefix) {
             if (self.meta_align) {
                 writer.print(
-                    " {s}{s: <5}{s}{s} {s: <14} ",
+                    "{s}{s: <5}{s}{s} {s: <14} ",
                     .{
                         level_color,
                         level_upper,
@@ -154,7 +160,7 @@ pub const Context = struct {
             } //
             else {
                 writer.print(
-                    " {s}{s}{s}{s} {s} ",
+                    "{s}{s}{s}{s} {s} ",
                     .{
                         level_color,
                         level_upper,
@@ -173,6 +179,13 @@ pub const Context = struct {
             writer.writeAll(ansi.reset) catch return;
         writer.writeByte('\n') catch return;
         writer.flush() catch return;
+    }
+
+    /// Prints to the underlying Writer utilizing the Log Contexts Mutex
+    pub fn print(self: *@This(), comptime print_fmt: []const u8, args: anytype) Io.Writer.Error!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.writer.print(print_fmt, args);
     }
 };
 

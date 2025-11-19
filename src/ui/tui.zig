@@ -18,18 +18,38 @@ const ansi = utils.ansi;
 
 /// TUI Context
 pub const Context = struct {
-    app: vxfw.App,
+    /// The `vxfw.App` for the TUI.
+    app: *vxfw.App,
+    /// The MainWidget for the DisCo TUI.
     main: MainWidget,
+
+    pub fn init(alloc: mem.Allocator, mode: ui.Mode) !@This() {
+        return .{
+            .app = try .init(alloc),
+            .main = try .init(alloc, mode),
+        };
+    }
 
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         self.app.deinit();
         self.main.deinit(alloc);
+    }
+
+    pub fn run(self: *@This(), opts: vxfw.App.Options) !void {
+        try self.app.run(self.main.widget(), opts);
     }
 };
 
 /// Main Widget
 pub const MainWidget = union(enum) {
     repl: *ui.repl.Shell,
+
+    pub fn init(alloc: mem.Allocator, mode: ui.Mode) mem.Allocator.Error!@This() {
+        return switch (mode) {
+            .repl => .{ .repl = try ui.repl.Shell.init(alloc) },
+            else => @panic("Non-TUI Mode"),
+        };
+    }
 
     pub fn deinit(self: @This(), alloc: mem.Allocator) void {
         switch (self) {

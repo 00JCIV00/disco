@@ -107,6 +107,8 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
             .{ .ChildT = nl._80211.SecurityType, .alias = "security_protocol" },
             .{ .ChildT = ui.Mode, .alias = "ui_mode" },
+            .{ .ChildT = ui.repl.Display.Message.Filter, .alias = "message_filter" },
+            .{ .ChildT = ui.repl.Display.Message.Tag, .alias = "message_tag" },
         },
     }
 });

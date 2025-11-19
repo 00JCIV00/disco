@@ -9,7 +9,7 @@ pub const repl = @import("ui/repl.zig");
 pub const tui = @import("ui/tui.zig");
 
 pub const Mode = enum {
-    /// Basic, headeless of DisCo that runs based on CLI Input & Configs.
+    /// Basic, headeless mode for DisCo that runs based on CLI Input & Configs.
     /// This mode has no user interaction while running.
     cli,
     /// Read, Evaluate, Print Loop (REPL) Shell for DisCo.
