@@ -87,6 +87,7 @@ pub const RequestContext = struct {
     /// Netlink Socket Data
     pub const NetlinkSocketData = union(enum) {
         /// The Netlink Handler info that will be used to handle this Request
+        /// Use this if you're working with the Netlink Event Loop
         handler: struct {
             /// Netlink Request Handler
             handler: *Handler,
@@ -199,7 +200,8 @@ pub fn request(
         }
     }
     if (req_buf.items.len < msg_len) {
-        for (req_buf.items.len..msg_len) |_| req_buf.appendAssumeCapacity(0);
+        for (req_buf.items.len..msg_len) |_| //
+            req_buf.appendAssumeCapacity(0);
     }
     if (ctx.handler) |handler| try handler.trackRequest(ctx.*);
     _ = try posix.send(

@@ -241,7 +241,7 @@ pub const Context = struct {
                         while (if_iter.next()) |check_if_entry| {
                             const check_if = check_if_entry.value_ptr;
                             switch (check_if.usage) {
-                                .unavailable, .err => continue,
+                                .inactive, .err => continue,
                                 else => usable_ifs += 1,
                             }
                         }
@@ -290,7 +290,7 @@ pub const Context = struct {
                 break :resultsReady false;
             };
             scanIf: switch (scan_if.usage) {
-                .available => {
+                .active => {
                     scan_if.usage = .{
                         .scan = .{
                             .netlink = .{
@@ -325,7 +325,7 @@ pub const Context = struct {
                                         .results => {
                                             if (nl_ctx.timer.read() > 10 * time.ns_per_s) {
                                                 log.warn("Scan timed out on Interface '{s}'.", .{ scan_if.name });
-                                                scan_if.usage = .available;
+                                                scan_if.usage = .active;
                                                 continue;
                                             }
                                             if (!scan_results_ready) continue;
@@ -357,13 +357,13 @@ pub const Context = struct {
                                                 else |err| {
                                                     log.warn("Could not trigger scan w/ Interface '{s}': {t}", .{ scan_if.name, err });
                                                     scan_if.addPenalty();
-                                                    scan_if.usage = .available;
+                                                    scan_if.usage = .active;
                                                 }
                                             }
                                         },
                                         .results => results: {
                                             defer resUpd: {
-                                                scan_if.usage = .available;
+                                                scan_if.usage = .active;
                                                 const condition: *core.Core.RunCondition = &(core_ctx.run_condition orelse break: resUpd);
                                                 switch (condition.*) {
                                                     .network_scan => |*scan_cond| scan_cond._cur_passes += 1,

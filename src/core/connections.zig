@@ -188,7 +188,7 @@ pub const Context = struct {
                     else => {},
                 }
             }
-            if (conn_if.usage != .available) continue;
+            if (conn_if.usage != .active) continue;
             for (statuses) |status| {
                 if (!mem.eql(u8, candidate.bssid[0..], status.bssid[0..])) continue;
                 if (status.ended) |_| continue :connLoop;
@@ -550,7 +550,7 @@ pub const Connection = struct {
             if (conn_if.index == idx) break :idxCheck;
             log.warn("The Interface '{s}' was interrupted during the Connection to '{s}'.", .{ conn_if.name, self.ssid });
             self.deinit(core_ctx.alloc);
-            conn_if.usage = .available;
+            conn_if.usage = .active;
             return error.InterfaceInterrupted;
         } //
         else {
@@ -1442,7 +1442,7 @@ pub const Connection = struct {
                             break;
                         }
                         self.deinit(core_ctx.alloc);
-                        conn_if.usage = .available;
+                        conn_if.usage = .active;
                     }
                 }
             },

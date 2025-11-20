@@ -3011,9 +3011,9 @@ pub fn requestTriggerScan(
 pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfig) !void {
     var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
     try requestTriggerScan(
-        alloc, 
-        &req_ctx, 
-        if_index, 
+        alloc,
+        &req_ctx,
+        if_index,
         config,
     );
     defer posix.close(req_ctx.sock);

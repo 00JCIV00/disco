@@ -390,7 +390,7 @@ pub const setup_cmd: CommandT = .{
                 },
                 .{
                     .name = "conflict_pids",
-                    .description = "List available Profile Masks.",
+                    .description = "List Conflicting Processes.",
                     .long_name = "conflict-pids",
                     .alias_long_names = &.{ "pids", "conflicts", "procs", "processes" },
                 },
@@ -415,12 +415,12 @@ pub const setup_cmd: CommandT = .{
                     .parse_fn = struct {
                         pub fn parseList(arg: []const u8, alloc: mem.Allocator) ![]const u8 {
                             const lower = try ascii.allocLowerString(alloc, arg);
-                            inline for (&.{ 
-                                "masks", 
-                                "pids", 
-                                "conflict-pids", 
-                                "conflicts", 
-                                "procs", 
+                            inline for (&.{
+                                "masks",
+                                "pids",
+                                "conflict-pids",
+                                "conflicts",
+                                "procs",
                                 "processes",
                                 "config",
                                 "fields",

@@ -351,7 +351,7 @@ pub const Writer = struct {
             const if_mac = sock_if_entry.key_ptr.*;
             const sock_if = sock_if_entry.value_ptr;
             switch (sock_if.usage) {
-                .unavailable,
+                .inactive,
                 .err,
                 => continue,
                 else => {},

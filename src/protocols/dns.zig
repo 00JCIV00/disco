@@ -352,24 +352,24 @@ pub fn updateDNS(config: Config) !void {
     //try setDefaultRouteDNS(config.if_index orelse return, config.set_route);
 }
 
-/// Updates DNS Settings using `resolv.conf`.
-pub fn updateDNSResConf(config: Config) !void {
-    const cwd = fs.cwd();
-    var res_conf_file = try cwd.openFile("/etc/resolv.conf", .{ .mode = .read_write });
-    var res_conf_buf: [16_000]u8 = undefined;
-    const start = try res_conf_file.readAll(res_conf_buf[0..]);
-    _ = start;
-    const res_conf_writer = res_conf_file.writer();
-    try res_conf_writer.print("\n# DisCo Adds:", .{});
-    for (config.servers) |server| {
-        //log.debug("- Adding DNS: {s}", .{ IPF{ .bytes = server[0..] } });
-        try res_conf_writer.print(
-            "\nnameserver '{s}'",
-            IPF{ .bytes = server[0..] },
-        );
-    }
-    try res_conf_writer.print("\n# End DisCo Adds\n", .{});
-}
+///// Updates DNS Settings using `resolv.conf`.
+//pub fn updateDNSResConf(config: Config) !void {
+//    const cwd = fs.cwd();
+//    var res_conf_file = try cwd.openFile("/etc/resolv.conf", .{ .mode = .read_write });
+//    var res_conf_buf: [16_000]u8 = undefined;
+//    const start = try res_conf_file.readAll(res_conf_buf[0..]);
+//    _ = start;
+//    const res_conf_writer = res_conf_file.writer();
+//    try res_conf_writer.print("\n# DisCo Adds:", .{});
+//    for (config.servers) |server| {
+//        //log.debug("- Adding DNS: {s}", .{ IPF{ .bytes = server[0..] } });
+//        try res_conf_writer.print(
+//            "\nnameserver '{s}'",
+//            IPF{ .bytes = server[0..] },
+//        );
+//    }
+//    try res_conf_writer.print("\n# End DisCo Adds\n", .{});
+//}
 
 /// Updates DNS settings using systemd-resolved via DBus.
 pub fn updateDNSDBus(dbus_conn: *dbus.Connection, config: Config) !void {
@@ -423,83 +423,83 @@ fn buildSetDNSData(buf: []u8, config: Config) ![]const u8 {
     return buf[0..offset];
 }
 
-/// Set or Unset the provided Interface (`if_index`) as the Default Route for DNS Queries.
-pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
-    // Connect to system DBus
-    var uuid_buf: [286]u8 = undefined;
-    const dbus_ctx = try dbus.connectSysBus(uuid_buf[0..]);
-    // Array of header fields
-    const header_fields = [_]dbus.HeaderField{
-        // PATH
-        .{
-            .code = 1,
-            .variant_type = "o",
-            .value = "/org/freedesktop/resolve1",
-        },
-        // INTERFACE
-        .{
-            .code = 2,
-            .variant_type = "s",
-            .value = "org.freedesktop.resolve1.Manager",
-        },
-        // MEMBER
-        .{
-            .code = 3,
-            .variant_type = "s",
-            .value = "SetLinkDefaultRoute",
-        },
-        // DESTINATION
-        .{
-            .code = 6,
-            .variant_type = "s",
-            .value = "org.freedesktop.resolve1",
-        },
-        // SENDER
-        .{
-            .code = 7,
-            .variant_type = "s",
-            .value = dbus_ctx.uuid,
-        },
-        // SIGNATURE
-        .{
-            .code = 8,
-            .variant_type = "g",
-            .value = "ib",
-        },
-    };
-    defer dbus_ctx.sock.close();
-    // Construct the DBus Route message to update DNS settings
-    //log.debug("Building DBus DNS Route Message.", .{});
-    var dns_msg: [8]u8 = @splat(0);
-    mem.writeInt(
-        i32,
-        dns_msg[0..4],
-        if_index,
-        .little
-    );
-    mem.writeInt(
-        i32,
-        dns_msg[4..8],
-        if (set) 1 else 0,
-        .little
-    );
-    //log.debug("DBus DNS Route Message:\n{s}\n---\n{s}", .{ dns_msg, HexF{ .bytes = dns_msg } });
-    // Send the message
-    //log.debug("Sending DBus DNS Message.", .{});
-    var msg_buf: [4096]u8 = undefined;
-    //try sock.writeAll(dns_msg);
-    try dbus.sendMsg(
-        msg_buf[0..],
-        dbus_ctx.sock,
-        header_fields[0..],
-        dns_msg[0..],
-    );
-    // Read and Verify response
-    var response_buf: [4096]u8 = undefined;
-    //log.debug("Reading DBus DNS Response.", .{});
-    //const read = try posix.read(sock, response_buf[0..]);
-    const read = try dbus_ctx.sock.read(response_buf[0..]);
-    if (read == 0) return error.MessageError;
-    //log.debug("Verifying DBus DNS Response.", .{});
-    //try dbus.verifyResponse(response_buf[0..read]);
-}
+///// Set or Unset the provided Interface (`if_index`) as the Default Route for DNS Queries.
+//pub fn setDefaultRouteDNS(if_index: i32, set: bool) !void {
+//    // Connect to system DBus
+//    var uuid_buf: [286]u8 = undefined;
+//    const dbus_ctx = try dbus.connectSysBus(uuid_buf[0..]);
+//    // Array of header fields
+//    const header_fields = [_]dbus.HeaderField{
+//        // PATH
+//        .{
+//            .code = 1,
+//            .variant_type = "o",
+//            .value = "/org/freedesktop/resolve1",
+//        },
+//        // INTERFACE
+//        .{
+//            .code = 2,
+//            .variant_type = "s",
+//            .value = "org.freedesktop.resolve1.Manager",
+//        },
+//        // MEMBER
+//        .{
+//            .code = 3,
+//            .variant_type = "s",
+//            .value = "SetLinkDefaultRoute",
+//        },
+//        // DESTINATION
+//        .{
+//            .code = 6,
+//            .variant_type = "s",
+//            .value = "org.freedesktop.resolve1",
+//        },
+//        // SENDER
+//        .{
+//            .code = 7,
+//            .variant_type = "s",
+//            .value = dbus_ctx.uuid,
+//        },
+//        // SIGNATURE
+//        .{
+//            .code = 8,
+//            .variant_type = "g",
+//            .value = "ib",
+//        },
+//    };
+//    defer dbus_ctx.sock.close();
+//    // Construct the DBus Route message to update DNS settings
+//    //log.debug("Building DBus DNS Route Message.", .{});
+//    var dns_msg: [8]u8 = @splat(0);
+//    mem.writeInt(
+//        i32,
+//        dns_msg[0..4],
+//        if_index,
+//        .little
+//    );
+//    mem.writeInt(
+//        i32,
+//        dns_msg[4..8],
+//        if (set) 1 else 0,
+//        .little
+//    );
+//    //log.debug("DBus DNS Route Message:\n{s}\n---\n{s}", .{ dns_msg, HexF{ .bytes = dns_msg } });
+//    // Send the message
+//    //log.debug("Sending DBus DNS Message.", .{});
+//    var msg_buf: [4096]u8 = undefined;
+//    //try sock.writeAll(dns_msg);
+//    try dbus.sendMsg(
+//        msg_buf[0..],
+//        dbus_ctx.sock,
+//        header_fields[0..],
+//        dns_msg[0..],
+//    );
+//    // Read and Verify response
+//    var response_buf: [4096]u8 = undefined;
+//    //log.debug("Reading DBus DNS Response.", .{});
+//    //const read = try posix.read(sock, response_buf[0..]);
+//    const read = try dbus_ctx.sock.read(response_buf[0..]);
+//    if (read == 0) return error.MessageError;
+//    //log.debug("Verifying DBus DNS Response.", .{});
+//    //try dbus.verifyResponse(response_buf[0..read]);
+//}
