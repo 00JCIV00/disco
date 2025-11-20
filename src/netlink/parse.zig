@@ -10,6 +10,7 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const ArrayList = std.ArrayList;
+const StringHashMap = std.StringHashMapUnmanaged;
 
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
@@ -516,14 +517,23 @@ pub fn baseFromBytes(
         //log.debug(" - Start: {d}B, End: {d}B", .{ start, end + diff });
         start = end;
         end += diff;
-        var parsed_fields: std.StringHashMapUnmanaged(void) = .{};
-        defer parsed_fields.deinit(alloc);
+        validateIndexes(bytes.len, start, end) catch break;
+        var parsed_fields: StringHashMap(void) = .empty;
+        defer {
+            var key_iter = parsed_fields.keyIterator();
+            while (key_iter.next()) |key|
+                alloc.free(key.*);
+            parsed_fields.deinit(alloc);
+        }
         inline for (meta.fields(T)) |field| cont: {
             //if (!mem.eql(u8, field.name, @tagName(tag)) or diff == 0) break :cont;
-            if (!mem.eql(u8, field.name, @tagName(tag))) break :cont;
-            if (parsed_fields.get(field.name)) |_| break :cont;
-            // TODO: Figure out the potential segfault here
-            try parsed_fields.put(alloc, field.name, {});
+            if (!mem.eql(u8, field.name, @tagName(tag)))
+                break :cont;
+            if (parsed_fields.get(field.name)) |_|
+                break :cont;
+            // TODO: Figure out the potential segfault here. Does allocating the field name solve it?
+            const field_name = try alloc.dupe(u8, field.name);
+            try parsed_fields.put(alloc, field_name, {});
             const field_info = @typeInfo(field.type);
             defer if (field_info != .optional) {
                 field_count += 1;
@@ -536,7 +546,8 @@ pub fn baseFromBytes(
                 else => in_field.* = try primFromBytes(field.type, bytes[start..end]),
             }
         }
-        if (HdrT.nl_align) end = mem.alignForward(usize, end, 4);
+        if (HdrT.nl_align) 
+            end = mem.alignForward(usize, end, 4);
         start = end;
         end += hdr_len;
     }
@@ -802,6 +813,16 @@ fn primToBytes(alloc: mem.Allocator, T: type, instance: T) ![]const u8 {
             return error.UnsupportedType;
         }
     }
+}
+
+/// Validate Indexes
+pub fn validateIndexes(
+    slice_len: usize,
+    start: usize,
+    end: usize,
+) error{ InvalidIndexes }!void {
+    if (start >= slice_len or end > slice_len)
+        return error.InvalidIndexes;
 }
 
 /// Clone an `instance` of Netlink Type (`T`) using the provided Allocator (`alloc`).
