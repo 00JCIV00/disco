@@ -102,6 +102,8 @@ pub const Core = struct {
     nl80211_handler: *nl.io.Handler,
     /// Netlink Route Handler
     rtnetlink_handler: *nl.io.Handler,
+    /// Requests Aggregator
+    req_aggregator: requests.Aggregator,
     /// Socket Event Loop
     sock_event_loop: sockets.Loop,
     /// Interface Context
@@ -145,6 +147,7 @@ pub const Core = struct {
             .nl_event_loop = try .init(.{}),
             .nl80211_handler = nl80211_handler,
             .rtnetlink_handler = rtnetlink_handler,
+            .req_aggregator = .{},
             .sock_event_loop = try .init(),
             .og_hostname = og_hostname,
             .if_ctx = undefined,
@@ -296,6 +299,8 @@ pub const Core = struct {
             try self.network_ctx.update(self);
             // Capture Writing
             try self.cap_writer.update(self);
+            // Request Processing
+            try self.req_aggregator.process();
         }
         //self._thread_pool.waitAndWork(&self._wait_group);
         self._thread_pool.deinit();
@@ -392,6 +397,8 @@ pub const Core = struct {
         self.sock_event_loop.deinit(self.alloc);
         log.info("- Deinitialized Socket Event Loop.", .{});
         //self.arena.deinit();
+        self.req_aggregator.deinit(self.alloc);
+        log.info("- Deinitialized Request Aggregation.", .{});
         self.nl_event_loop.deinit(self.alloc);
         self.alloc.destroy(self.nl80211_handler);
         self.alloc.destroy(self.rtnetlink_handler);
@@ -436,7 +443,7 @@ pub const Core = struct {
         defer if_iter.unlock();
         while (if_iter.next()) |print_if_entry| {
             const print_if = print_if_entry.value_ptr;
-            if (config.if_info == .available and print_if.usage != .available) continue;
+            if (config.if_info == .available and print_if.usage != .active) continue;
             try writer.print(
                 \\{f}
                 \\-----------

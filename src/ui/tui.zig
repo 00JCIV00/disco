@@ -11,6 +11,7 @@ const cova = @import("cova");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
+const core = @import("../core.zig");
 const ui = @import("../ui.zig");
 const utils = @import("../utils.zig");
 const ansi = utils.ansi;
@@ -23,10 +24,10 @@ pub const Context = struct {
     /// The MainWidget for the DisCo TUI.
     main: MainWidget,
 
-    pub fn init(alloc: mem.Allocator, mode: ui.Mode) !@This() {
+    pub fn init(alloc: mem.Allocator, mode: ui.Mode, core_ctx: *core.Core) !@This() {
         return .{
             .app = try .init(alloc),
-            .main = try .init(alloc, mode),
+            .main = try .init(alloc, mode, core_ctx),
         };
     }
 
@@ -44,9 +45,9 @@ pub const Context = struct {
 pub const MainWidget = union(enum) {
     repl: *ui.repl.Shell,
 
-    pub fn init(alloc: mem.Allocator, mode: ui.Mode) mem.Allocator.Error!@This() {
+    pub fn init(alloc: mem.Allocator, mode: ui.Mode, core_ctx: *core.Core) mem.Allocator.Error!@This() {
         return switch (mode) {
-            .repl => .{ .repl = try ui.repl.Shell.init(alloc) },
+            .repl => .{ .repl = try ui.repl.Shell.init(alloc, core_ctx) },
             else => @panic("Non-TUI Mode"),
         };
     }

@@ -653,21 +653,16 @@ pub fn main() !void {
         });
         switch (ui_mode) {
             .repl, .tui => {
-                //const app: *vxfw.App = try .init(alloc);
-                //var tui_ctx: ui.tui.Context = .{
-                //    .app = app,
-                //    .main = try .init(alloc, ui_mode),
-                //};
                 errdefer core_ctx.stop();
-                var tui_ctx: ui.tui.Context = try .init(alloc, ui_mode);
-                defer tui_ctx.deinit(alloc);
+                core_ctx.tui_ctx = try .init(alloc, ui_mode, &core_ctx);
+                defer core_ctx.tui_ctx.?.deinit(alloc);
                 try stdout_log_ctx.print("\n{s}{s}{s:~^50}{s}\n\n", .{
                     ansi.fmt.bold,
                     ansi.fg.gray,
                     "[TUI Logging]",
                     ansi.reset,
                 });
-                try tui_ctx.run(.{});
+                try core_ctx.tui_ctx.?.run(.{});
             },
             else => {
                 try stdout_log_ctx.print("\nPress {s}{s}[ENTER]{s} to stop.\n\n", .{ ansi.fmt.bold, ansi.fg.blue, ansi.reset });
@@ -698,7 +693,7 @@ pub fn main() !void {
         }
         while (if_iter.next()) |set_if_entry| {
             const set_if = set_if_entry.value_ptr;
-            if (set_if.usage == .unavailable) continue;
+            if (set_if.usage == .inactive) continue;
             const set_if_opts = try set_cmd.getOpts(.{});
             if (set_if_opts.get("mac")) |mac_opt| setMAC: {
                 try stdout_log_ctx.print("Setting the MAC for {s}...\n", .{ set_if.name });
@@ -870,7 +865,7 @@ pub fn main() !void {
         }
         while (if_iter.next()) |add_if_entry| {
             const add_if = add_if_entry.value_ptr;
-            if (add_if.usage == .unavailable) continue;
+            if (add_if.usage == .inactive) continue;
             const add_opts = try add_cmd.getOpts(.{});
             if (add_opts.get("ip")) |ip_opt| setIP: {
                 const ip = try ip_opt.val.getAs(address.IPv4);
@@ -933,7 +928,7 @@ pub fn main() !void {
         }
         while (if_iter.next()) |del_if_entry| {
             const del_if = del_if_entry.value_ptr;
-            if (del_if.usage == .unavailable) continue;
+            if (del_if.usage == .inactive) continue;
             const del_opts = try del_cmd.getOpts(.{});
             if (del_opts.get("ip")) |ip_opt| setIP: {
                 const ip = try ip_opt.val.getAs(address.IPv4);

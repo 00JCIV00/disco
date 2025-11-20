@@ -29,6 +29,7 @@ const protocols = @import("../protocols.zig");
 const dns = protocols.dns;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
+const CSlice = utils.CSlice;
 const ThreadHashMap = utils.ThreadHashMap;
 
 
@@ -41,7 +42,7 @@ pub const Interface = struct {
     min_penalty: usize = 100,
     max_penalty: usize = 6_000,
     raw_sock: ?posix.socket_t = null,
-    usage: UsageState = .unavailable,
+    usage: UsageState = .inactive,
     last_upd: zeit.Instant,
     // Details
     index: i32,
@@ -59,16 +60,16 @@ pub const Interface = struct {
     ch_width: ?nl._80211.CHANNEL_WIDTH = null,
     ssid: ?[]const u8 = null,
     supported_freqs: []const u32 = &.{},
-    // Netlink 
+    // Netlink
     wiphy: nl._80211.Wiphy,
     mod_queue: []ModifyContext = &.{},
 
     /// DisCo Usage State of an Interface
     pub const UsageState = union(enum) {
         err: anyerror,
-        unavailable,
+        inactive,
         //modify: ArrayList(*ModifyContext),
-        available,
+        active,
         scan: core.networks.NetworkScanContext,
         connect: core.connections.Connection,
         remove,
@@ -76,7 +77,6 @@ pub const Interface = struct {
 
     /// Modify Field
     pub const ModifyField = union(enum) {
-        //name: []const u8,
         mac: [6]u8,
         state: u32,
         add_ip: struct { addr: [4]u8, cidr: u8 },
@@ -110,14 +110,86 @@ pub const Interface = struct {
         }
     };
 
+    /// Simple Interface
+    pub const Simple = struct {
+        usage: @typeInfo(UsageState).@"union".tag_type.?,
+        index: i32,
+        name: []const u8,
+        phy_index: u32,
+        phy_name: []const u8,
+        og_mac: [6]u8,
+        mac: [6]u8,
+        state: u32,
+        mtu: usize,
+        ips: []const [4]u8,
+        cidrs: []const u8,
+        mode: u32,
+        channel: ?u32 = null,
+        ch_width: ?nl._80211.CHANNEL_WIDTH = null,
+        ssid: []const u8,
+        supported_freqs: []const u32,
+
+        pub fn from(alloc: mem.Allocator, from_if: Interface) @This() {
+            return .{
+                .usage = meta.activeTag(from_if.usage),
+                .index = from_if.index,
+                .name = alloc.dupe(u8, from_if.name) catch @panic("OOM"),
+                .phy_index = from_if.phy_index,
+                .phy_name = alloc.dupe(u8, from_if.phy_name) catch @panic("OOM"),
+                .og_mac = from_if.og_mac,
+                .mac = from_if.mac,
+                .state = from_if.state,
+                .mtu = from_if.mtu,
+                .ips = ips: {
+                    var ip_list: ArrayList([4]u8) = .empty;
+                    errdefer ip_list.deinit(alloc);
+                    var idx: u8 = 0;
+                    while (idx < from_if.ips.len) : (idx += 1)
+                        ip_list.append(alloc, from_if.ips[idx] orelse break) catch @panic("OOM");
+                    break :ips ip_list.toOwnedSlice(alloc) catch @panic("OOM");
+                },
+                .cidrs = cidrs: {
+                    var cidr_list: ArrayList(u8) = .empty;
+                    errdefer cidr_list.deinit(alloc);
+                    var idx: u8 = 0;
+                    while (idx < from_if.cidrs.len) : (idx += 1)
+                        cidr_list.append(alloc, from_if.cidrs[idx] orelse break) catch @panic("OOM");
+                    break :cidrs cidr_list.toOwnedSlice(alloc) catch @panic("OOM");
+                },
+                .mode = from_if.mode,
+                .channel = from_if.channel orelse 0,
+                // TODO: Properly handle Channel Widths
+                .ch_width = from_if.ch_width orelse nl._80211.CHANNEL_WIDTH.@"20",
+                .ssid = ssid: {
+                    if (from_if.ssid) |ssid| {
+                        if (ssid.len > 0) //
+                            break :ssid alloc.dupe(u8, ssid) catch @panic("OOM");
+                        break :ssid alloc.dupe(u8, "[HIDDEN_SSID (disco)]") catch @panic("OOM");
+                    }
+                    break :ssid "";
+                },
+                .supported_freqs = alloc.dupe(u32, from_if.supported_freqs) catch @panic("OOM"),
+            };
+        }
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            alloc.free(self.name);
+            alloc.free(self.phy_name);
+            alloc.free(self.ips);
+            alloc.free(self.cidrs);
+            alloc.free(self.ssid);
+            alloc.free(self.supported_freqs);
+        }
+
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            try formatGen(@This(), self, writer);
+        }
+    };
+
     /// Free the allocated portions of this Interface.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         if (!self._init) return;
         switch (self.usage) {
-            //.modify => |*mods| {
-            //    for (mods.items) |mod| alloc.destroy(mod);
-            //    mods.deinit(alloc);
-            //},
             .connect => |*conn| conn.deinit(alloc),
             else => {},
         }
@@ -208,13 +280,6 @@ pub const Interface = struct {
                 => core_ctx.nl80211_handler,
                 else => core_ctx.rtnetlink_handler,
             };
-            //const mod_ctx: *ModifyContext = core_ctx.alloc.create(ModifyContext) catch @panic("OOM");
-            //errdefer core_ctx.alloc.destroy(mod_ctx);
-            //mod_ctx.* = .{
-            //    .req_ctx = try .init(.{ .handler = .{ .handler = req_handler } }),
-            //    .mod_field = mod_field,
-            //};
-            //break :modReq mod_ctx;
             break :modReq .{
                 .req_ctx = try .init(.{ .handler = .{ .handler = req_handler } }),
                 .mod_field = mod_field,
@@ -353,15 +418,37 @@ pub const Interface = struct {
     }
 
     pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        var last_ts_buf: [50]u8 = undefined;
-        const last_ts = self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
-        const cur_usage: []const u8 = switch (self.usage) {
-            .unavailable => "-",
-            else => @tagName(self.usage),
-        };
+        try formatGen(@This(), self, writer);
+    } 
+
+    pub fn formatGen(T: type, self: T, writer: *Io.Writer) Io.Writer.Error!void {
+        if (@hasField(T, "last_upd")) {
+            var last_ts_buf: [50]u8 = undefined;
+            const last_ts = self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
+            //const cur_usage: []const u8 = switch (self.usage) {
+            //    .inactive => "-",
+            //    else => @tagName(self.usage),
+            //};
+            try writer.print(
+                \\({d}) {s} | {t}
+                \\{s}
+                \\
+                , .{
+                    self.index, self.name, self.usage,
+                    last_ts,
+                },
+            );
+        } //
+        else {
+            try writer.print(
+                \\({d}) {s} | {t}
+                \\
+                , .{
+                    self.index, self.name, self.usage
+                },
+            );
+        }
         try writer.print(
-            \\({d}) {s} | {s}
-            \\{s}
             \\- Phy:    ({d}) {s}
             \\- OG MAC: {f} ({s})
             \\- MAC:    {f} ({s})
@@ -370,8 +457,6 @@ pub const Interface = struct {
             \\- MTU:    {d}
             \\
             , .{
-                self.index, self.name, cur_usage,
-                last_ts,
                 self.phy_index, self.phy_name,
                 MACF{ .bytes = self.og_mac[0..] }, netdata.oui.findOUI(.short, self.og_mac) catch "OUI Unavailable",
                 MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "OUI Unavailable",
@@ -380,6 +465,9 @@ pub const Interface = struct {
                 self.mtu,
             },
         );
+        // TODO: Fix below for Simple Interfaces.
+        if (!@hasField(T, "last_upd"))
+            return;
         if (self.channel) |ch| //
             try writer.print("- Channel: {d} | {s}\n", .{ ch, if (self.ch_width) |width| @tagName(width) else "-" });
         if (self.ips[0] != null) ips: {
@@ -422,6 +510,50 @@ pub const Interface = struct {
                 try writer.print("    - 5G: {d} channels\n", .{ chans_5G });
             //try writer.print("\n", .{});
         }
+    }
+};
+
+/// External Interface
+pub const ExternalInterface = extern struct {
+    index: i32,
+    name: CSlice(u8),
+    phy_index: u32,
+    phy_name: CSlice(u8),
+    og_mac: [6]u8,
+    mac: [6]u8,
+    state: u32,
+    mtu: usize,
+    ips: CSlice([4]u8),
+    cidrs: CSlice([4]u8),
+    mode: u32,
+    channel: u32 = 0,
+    ch_width: nl._80211.CHANNEL_WIDTH,
+    ssid: CSlice(u8),
+    supported_freqs: CSlice(u32),
+
+    pub fn from(alloc: mem.Allocator, from_if: Interface) @This() {
+        return .{
+            .index = from_if.index,
+            .name = .init(alloc, from_if.name) catch @panic("OOM"),
+            .phy_index = from_if.phy_index,
+            .og_mac = from_if.og_mac,
+            .mac = from_if.mac,
+            .state = from_if.state,
+            .mtu = from_if.mtu,
+            .ips = ips: {
+                const len = mem.indexOfScalar(?[4]u8, from_if.ips, null) orelse 0;
+                break :ips .init(alloc, from_if.ips[0..len]) catch @panic("OOM");
+            },
+            .cidrs = cidrs: {
+                const len = mem.indexOfScalar(?[4]u8, from_if.cidrs, null) orelse 0;
+                break :cidrs .init(alloc, from_if.cidrs[0..len]) catch @panic("OOM");
+            },
+            .mode = from_if.mode,
+            .channel = from_if.channel orelse 0,
+            .ch_width = nl._80211.CHANNEL_WIDTH,
+            .ssid = .init(alloc, from_if.ssid) catch @panic("OOM"),
+            .supported_freqs = .init(alloc, from_if.supported_freqs) catch @panic("OOM"),
+        };
     }
 };
 
@@ -487,7 +619,7 @@ pub const Context = struct {
             const res_if = if_entry.value_ptr;
             //if (res_if.usage == .unavailable or res_if.usage == .err) continue;
             switch (res_if.usage) {
-                .unavailable,
+                .inactive,
                 .err,
                 => continue,
                 .connect => |*conn| {
@@ -781,11 +913,11 @@ pub const Context = struct {
             //log.debug("Working on IF '{s}'", .{ net_if.name });
             switch (net_if.usage) {
                 // Check for new WiFi Interface
-                .unavailable => {
+                .inactive => {
                     for (core_ctx.config.avail_if_names) |avail_if_name| {
                         //log.debug("- Check name: {s} ({d}B) vs {s} ({d}B)", .{ net_if.name, net_if.name.len, avail_if_name, avail_if_name.len });
                         if (!mem.eql(u8, net_if.name, avail_if_name)) continue;
-                        net_if.usage = .available;
+                        net_if.usage = .active;
                         if (core_ctx.run_condition) |condition| {
                             switch (condition) {
                                 .list_interfaces,
@@ -827,7 +959,7 @@ pub const Context = struct {
                     }
                 },
                 // Check for old WiFi Interface
-                .available,
+                .active,
                 .connect,
                 .scan,
                 .err,
@@ -913,3 +1045,4 @@ pub const Context = struct {
         }
     }
 };
+

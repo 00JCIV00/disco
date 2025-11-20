@@ -5,7 +5,6 @@ const std = @import("std");
 const atomic = std.atomic;
 const builtin = std.builtin;
 const enums = std.enums;
-const fifo = std.fifo;
 const fmt = std.fmt;
 const io = std.io;
 const math = std.math;
@@ -13,7 +12,12 @@ const mem = std.mem;
 const meta = std.meta;
 const posix = std.posix;
 const ArrayList = std.ArrayListUnmanaged;
+const AutoHashMap = std.AutoHashMapUnmanaged;
 const Io = std.Io;
+const StringHashMap = std.StringHashMapUnmanaged;
+const Thread = std.Thread;
+
+pub const ansi = @import("utils/ansi.zig");
 
 
 /// Create an instance of a Struct Type with Integer Fields from the given Enum (`E`).
@@ -26,6 +30,36 @@ pub fn toStruct(E: type) T: {
     inline for (meta.fields(@TypeOf(_struct))) |field|
         @field(_struct, field.name) = @intFromEnum(@field(E, field.name));
     return _struct;
+}
+
+/// A Slice of the specified Type (`T`) that's compatible with the C ABI.
+pub fn CSlice(T: type) type {
+    return extern struct {
+        ptr: [*]const T,
+        len: usize,
+
+        pub fn init(alloc: mem.Allocator, slice: []const u8) mem.Allocator.Error!@This() {
+            return .{
+                .ptr = try alloc.dupe(slice.ptr),
+                .len = slice.len,
+            };
+        }
+
+        pub fn deinit(self: @This(), alloc: mem.Allocator) void {
+            alloc.free(self.ptr);
+        }
+
+        pub fn fromSlice(slice: []const u8) @This() {
+            return .{
+                .ptr = slice.ptr,
+                .len = slice.len,
+            };
+        }
+
+        pub fn toSlice(self: *@This()) []const u8 {
+            self.ptr[0..self.len];
+        }
+    };
 }
 
 /// Format the provided `bytes` as readable Hexadecimal.
@@ -81,7 +115,7 @@ pub fn ThreadArrayList(T: type) type {
         pub const empty: @This() = .{};
 
         /// Mutex Lock
-        mutex: std.Thread.Mutex = .{},
+        mutex: Thread.Mutex = .{},
         /// ArrayList
         list: ListT = .empty,
 
@@ -127,12 +161,12 @@ pub fn ThreadHashMap(K: type, V: type) type {
     return struct {
         /// Map Type
         pub const MapT: type =
-            if (K == []const u8) std.StringHashMapUnmanaged(V)
-            else std.AutoHashMapUnmanaged(K, V);
+            if (K == []const u8) StringHashMap(V)
+            else AutoHashMap(K, V);
 
         /// Iterator
         pub const Iterator: type = struct {
-            _mutex: *std.Thread.Mutex,
+            _mutex: *Thread.Mutex,
             _iter: MapT.Iterator,
 
             pub fn next(self: *@This()) ?MapT.Entry {

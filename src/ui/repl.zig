@@ -19,6 +19,7 @@ const vxfw = vaxis.vxfw;
 const zeit = @import("zeit");
 
 const art = @import("../art.zig");
+const core = @import("../core.zig");
 const ui = @import("../ui.zig");
 const utils = @import("../utils.zig");
 const ansi = utils.ansi;
@@ -28,6 +29,7 @@ const ThreadArrayList = utils.ThreadArrayList;
 
 /// Full REPL Shell
 pub const Shell = struct {
+    core_ctx: *core.Core,
     display: *Display,
     cmd_bar: *CommandBar,
     tick_interval: u32 = 200,
@@ -35,9 +37,10 @@ pub const Shell = struct {
     legend_segs: []const vaxis.Segment,
 
     /// Initialize a new REPL Shell
-    pub fn init(alloc: mem.Allocator) mem.Allocator.Error!*@This() {
+    pub fn init(alloc: mem.Allocator, core_ctx: *core.Core) mem.Allocator.Error!*@This() {
         const self = try alloc.create(@This());
         self.* = .{
+            .core_ctx = core_ctx,
             .display = try .init(alloc),
             .cmd_bar = try .init(alloc),
             .legend_segs = ui.tui.ansiToSegments(alloc, legend_string) catch return mem.Allocator.Error.OutOfMemory,
@@ -781,6 +784,8 @@ pub const CommandBar = struct {
     arena: *heap.ArenaAllocator,
     /// Shortcut to `arena.allocator()`
     a_alloc: mem.Allocator,
+    /// Request ID List
+    req_list: ArrayList(usize) = .empty,
     ///// Border
     //border: vxfw.Border,
     /// Prompt Text
@@ -815,6 +820,8 @@ pub const CommandBar = struct {
     /// Deinitialize this Command Bar
     pub fn deinit(self: *@This()) void {
         const alloc = self.arena.child_allocator;
+        if (self.shell) |shell|
+            self.req_list.deinit(shell.core_ctx.alloc);
         self.prompt.deinit();
         self.textfield.deinit();
         self.arena.deinit();
@@ -835,8 +842,41 @@ pub const CommandBar = struct {
     /// Handle Events on this Command Bar
     pub fn handleEvent(self: *@This(), ctx: *vxfw.EventContext, event: vxfw.Event) !void {
         switch (event) {
-            .tick => {
+            .tick => tick: {
                 try ctx.requestFocus(self.textfield.widget());
+                const shell = self.shell orelse break :tick;
+                const core_ctx = shell.core_ctx;
+                const req_ids = try self.req_list.toOwnedSlice(core_ctx.alloc);
+                defer core_ctx.alloc.free(req_ids);
+                for (req_ids) |req_id| {
+                    log.debug("Parsing Response: {d}", .{ req_id });
+                    const sep: []const u8 = "------------------------------\n";
+                    const req = core_ctx.req_aggregator.get(req_id) orelse {
+                        try self.req_list.append(core_ctx.alloc, req_id);
+                        continue;
+                    };
+                    const resp = req catch |err| {
+                        log.err("Request Error: {t}", .{ err });
+                        continue;
+                    };
+                    switch (resp) {
+                        .interfaces => |if_resp| switch (if_resp) {
+                            .single => {},
+                            .list => |resp_ifs| respIFs: {
+                                if (resp_ifs.len == 0)
+                                    break :respIFs;
+                                defer core_ctx.alloc.free(resp_ifs);
+                                try shell.display.out_writer.print("Interfaces ({d}):\n{s}", .{ resp_ifs.len, sep });
+                                for (resp_ifs) |resp_if| {
+                                    defer resp_if.deinit(core_ctx.alloc);
+                                    try shell.display.out_writer.print("{f}{s}", .{ resp_if, sep });
+                                }
+                                try shell.display.out_writer.flush();
+                            },
+                        },
+                        else => {},
+                    }
+                }
             },
             .mouse => |mouse| switch (mouse.button) {
                 .left => {
@@ -927,7 +967,8 @@ pub const CommandBar = struct {
             debug("Null TextField Pointer?", .{});
         const self_ptr: **@This() = @ptrCast(@alignCast(ptr orelse return));
         const self = self_ptr.*;
-        const shell: *Shell = @fieldParentPtr("cmd_bar", self_ptr);
+        //const shell: *Shell = @fieldParentPtr("cmd_bar", self_ptr);
+        const shell = self.shell orelse return error.NoShell;
         // Parse Arguments
         var main_cmd = try setup_cmd.init(self.a_alloc, .{});
         defer main_cmd.deinit();
@@ -961,6 +1002,7 @@ pub const CommandBar = struct {
             return;
         }
         var out_msg: ?[]const u8 = null;
+        // - Display Filters
         if (main_cmd.matchSubCmd("filter")) |filter_cmd| {
             const dp_alloc = shell.display.alloc;
             if (filter_cmd.matchSubCmd("clear")) |clear_cmd| {
@@ -975,8 +1017,8 @@ pub const CommandBar = struct {
                     }
                     const filters = filters: {
                         if (mem.eql(u8, f_kind, "allow"))
-                            break :filters &shell.display.allow_filters;
-                        //if (mem.eql(u8, f_kind, "block"))
+                            break :filters &shell.display.allow_filters
+                        else
                             break :filters &shell.display.block_filters;
                     };
                     for (filters.*) |filter| {
@@ -1012,6 +1054,18 @@ pub const CommandBar = struct {
                 shell.display.block_filters = try filter_list.toOwnedSlice(dp_alloc);
                 out_msg = "Added Log Message Block Filter";
             }
+        }
+        // - Lists
+        if (main_cmd.matchSubCmd("list")) |list_cmd| {
+            const core_ctx = shell.core_ctx;
+            if (list_cmd.checkFlag("interfaces")) ifOpt: {
+                const req_id = core_ctx.req_aggregator.push(.{ .interfaces = .get_all }) catch |err| {
+                    log.err("Unable to request Interface Info: {t}", .{ err });
+                    break :ifOpt;
+                };
+                try self.req_list.append(core_ctx.alloc, req_id);
+                log.debug("Requested Interfaces. Req ID: {d}", .{ req_id });
+            } 
         }
         // Write Valid Arguments to Display
         const in_w = &shell.display.in_writer;
@@ -1081,7 +1135,43 @@ pub const setup_cmd: main_cli.CommandT = .{
                             .long_name = "block",
                         },
                     },
-                }
+                },
+            },
+        },
+        .{
+            .name = "list",
+            .alias_names = &.{ "view" },
+            .description = "List various System or DisCo properties.",
+            .cmd_group = "SETTINGS",
+            .vals_mandatory = false,
+            .opts = &.{
+                .{
+                    .name = "masks",
+                    .description = "List available Profile Masks.",
+                    .long_name = "masks",
+                },
+                .{
+                    .name = "conflict_pids",
+                    .description = "List Conflicting Processes.",
+                    .long_name = "conflict-pids",
+                    .alias_long_names = &.{ "pids", "conflicts", "procs", "processes" },
+                },
+                .{
+                    .name = "config",
+                    .description = "List the Config Fields.",
+                    .long_name = "config",
+                    .alias_long_names = &.{ "fields" },
+                },
+                .{
+                    .name = "interfaces",
+                    .description = "List the WiFi Interfaces of the system.",
+                    .long_name = "interfaces",
+                },
+                .{
+                    .name = "networks",
+                    .description = "List the seen WiFi Networks.",
+                    .long_name = "networks",
+                },
             },
         },
     }
