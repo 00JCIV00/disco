@@ -67,7 +67,9 @@ pub const Config = struct {
     /// Interfaces that are allowed to Connect to the corresponding Network.
     /// If this is left empty, any Interface may connect to the Network.
     if_names: []const []const u8 = &.{},
-    ssid: []const u8,
+    /// ID of the Network
+    id: ID,
+    /// Passphrase of the WEP, WPA2, WPA3T, or WPA3 Network
     passphrase: []const u8 = "",
     /// Security "Type" of the Network.
     /// If this is left `null` it will be derived from the Network's Beacon Frames.
@@ -85,6 +87,29 @@ pub const Config = struct {
     allow_mdns: ?dns.ProtoSetting = null,
     /// Allow Link-Local Multicast Name Resolution (LLMNR). Note, if the Global Policy in `/etc/systemd/resolved.conf` is set to `no`, this can't override it.
     allow_llmnr: ?dns.ProtoSetting = null,
+
+    pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+        for (self.if_names) |name|
+            alloc.free(name);
+        alloc.free(self.if_names);
+        alloc.free(self.passphrase);
+        self.id.deinit(alloc);
+    }
+
+    pub fn clone(self: *const @This(), alloc: mem.Allocator) mem.Allocator.Error!@This() {
+        var new: @This() = self.*;
+        var names_list: ArrayList([]const u8) = .empty;
+        errdefer names_list.deinit(alloc);
+        for (self.if_names) |name| {
+            const dupe_name = try alloc.dupe(u8, name);
+            errdefer alloc.free(dupe_name);
+            try names_list.append(alloc, dupe_name);
+        }
+        new.if_names = try names_list.toOwnedSlice(alloc);
+        new.passphrase = try alloc.dupe(u8, self.passphrase);
+        new.id = try self.id.clone(alloc);
+        return new;
+    }
 };
 
 /// Status of a Connection
@@ -95,6 +120,42 @@ pub const Status = struct {
     ended: ?zeit.Instant = null,
 };
 
+/// ID of a Network
+pub const ID = union(enum) {
+    bssid: [6]u8,
+    ssid: []const u8,
+
+    pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+        switch (self.*) {
+            .ssid => |ssid| alloc.free(ssid),
+            else => {},
+        }
+    }
+
+    pub fn clone(self: *const @This(), alloc: mem.Allocator) mem.Allocator.Error!@This() {
+        return switch (self.*) {
+            .ssid => |ssid| .{ .ssid = try alloc.dupe(u8, ssid) },
+            .bssid => self.*,
+        };
+    }
+
+    pub fn eql(self: @This(), other: @This()) bool {
+        if (meta.activeTag(self) != meta.activeTag(other)) //
+            return false;
+        return switch (self) {
+            .ssid => mem.eql(u8, self.ssid, other.ssid),
+            .bssid => mem.eql(u8, self.bssid[0..], other.bssid[0..]),
+        };
+    }
+
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        switch (self) {
+            .bssid => |bssid| try writer.print("{f}", .{ HexF{ .bytes = bssid[0..] } }),
+            .ssid => |ssid| try writer.print("{s}", .{ ssid }),
+        }
+    }
+};
+
 /// Connection Context
 pub const Context = struct {
     /// Connection Candidates
@@ -102,7 +163,8 @@ pub const Context = struct {
     _candidates: *ArrayList(Candidate),
     /// Status of Active & Previous Connections.
     statuses: *ThreadArrayList(Status),
-    timer: time.Timer,
+    /// Connection Configs
+    configs: *ThreadArrayList(Config),
 
 
     /// Initialize all Maps.
@@ -112,7 +174,15 @@ pub const Context = struct {
         self.statuses.* = .empty;
         self._candidates = core_ctx.alloc.create(ArrayList(Candidate)) catch @panic("OOM");
         self._candidates.* = .empty;
-        self.timer = try .start();
+        self.configs = configs: {
+            const configs = core_ctx.alloc.create(ThreadArrayList(Config)) catch @panic("OOM");
+            configs.* = .empty;
+            for (core_ctx.config.connect_configs) |config| {
+                const put_conf = config.clone(core_ctx.alloc) catch @panic("OOM");
+                configs.append(core_ctx.alloc, put_conf) catch @panic("OOM");
+            }
+            break :configs configs;
+        };
         const nl80211_info = nl._80211.ctrl_info orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
         const nl80211_mlme = nl80211_info.MCAST_GROUPS.get("mlme") orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
         try posix.setsockopt(
@@ -126,6 +196,12 @@ pub const Context = struct {
 
     /// Deinitialize all Maps.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+        self.configs.mutex.lock();
+        for (self.configs.list.items) |conf| //
+            conf.deinit(alloc);
+        self.configs.mutex.unlock();
+        self.configs.deinit(alloc);
+        alloc.destroy(self.configs);
         self.statuses.deinit(alloc);
         alloc.destroy(self.statuses);
         self._candidates.deinit(alloc);
@@ -211,8 +287,19 @@ pub const Context = struct {
         while (nw_iter.next()) |network_entry| {
             const network = network_entry.value_ptr;
             const config = connConfig: {
-                for (core_ctx.config.connect_configs) |conf| {
-                    if (!mem.eql(u8, conf.ssid, network.ssid)) continue;
+                self.configs.mutex.lock();
+                defer self.configs.mutex.unlock();
+                for (self.configs.list.items) |conf| {
+                    switch (conf.id) {
+                        .ssid => |ssid| {
+                            if (!mem.eql(u8, ssid, network.ssid)) //
+                                continue;
+                        },
+                        .bssid => |bssid| {
+                            if (!mem.eql(u8, bssid[0..], network.bssid[0..])) //
+                                continue;
+                        },
+                    }
                     break :connConfig conf;
                 }
                 continue;
@@ -222,11 +309,13 @@ pub const Context = struct {
             while (net_meta_iter.next()) |net_meta_entry| {
                 const net_meta = net_meta_entry.value_ptr;
                 checkIF: {
-                    if (config.if_names.len == 0) break :checkIF;
+                    if (config.if_names.len == 0) //
+                        break :checkIF;
                     for (config.if_names) |if_name| {
-                        if (mem.eql(u8, net_meta.seen_by, if_name)) break :checkIF;
+                        if (mem.eql(u8, net_meta.seen_by, if_name)) //
+                            break :checkIF;
                     }
-                    else continue;
+                    continue;
                 }
                 //log.debug("Network '{s}':", .{ network.ssid });
                 const time_score: u8 = timeScore: {
@@ -252,6 +341,7 @@ pub const Context = struct {
                 const candidate: Candidate = .{
                     .score = @min(100, time_score +| sig_score),
                     .bssid = network.bssid,
+                    .ssid = network.ssid,
                     .conn_if = net_meta_entry.key_ptr.*,
                     .channel = network.channel,
                     .config = config,
@@ -277,6 +367,7 @@ pub const Context = struct {
 const Candidate = struct {
     score: u8,
     bssid: [6]u8,
+    ssid: []const u8,
     conn_if: [6]u8,
     channel: u32,
     config: Config,
@@ -427,7 +518,7 @@ pub const Connection = struct {
         const security = candidate.config.security orelse network.security;
         const auth = candidate.config.auth orelse network.auth;
         const psk = switch (security) {
-            .wpa2 => wpa.genKey(security, candidate.config.ssid, candidate.config.passphrase) catch |err| {
+            .wpa2 => wpa.genKey(security, candidate.ssid, candidate.config.passphrase) catch |err| {
                 log.err("Key Generation Error: {t}", .{ err });
                 return error.UnableToGenKey;
             },
@@ -454,14 +545,16 @@ pub const Connection = struct {
             buf.insert(core_ctx.alloc, 0, c(nl._80211.IE).RSN) catch @panic("OOM");
             break :rsnBytes buf.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
         };
-        const ssid = core_ctx.alloc.dupe(u8, candidate.config.ssid) catch @panic("OOM");
+        const ssid = core_ctx.alloc.dupe(u8, candidate.ssid) catch @panic("OOM");
         errdefer core_ctx.alloc.free(ssid);
+        const passphrase = core_ctx.alloc.dupe(u8, candidate.config.passphrase) catch @panic("OOM");
+        errdefer core_ctx.alloc.free(passphrase);
         const self: @This() = .{
             .if_mac = candidate.conn_if,
             .bssid = candidate.bssid,
             .ssid = ssid,
             .freq = network.freq,
-            .passphrase = candidate.config.passphrase,
+            .passphrase = passphrase,
             .security = security,
             .auth = auth,
             .dhcp_conf = candidate.config.dhcp orelse core_ctx.config.global_connect_config.dhcp,
@@ -478,7 +571,7 @@ pub const Connection = struct {
             ._rtnetlink_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.rtnetlink_handler } }),
         };
         try self._nl80211_req_ctx.handler.?.trackCommand(c(nl._80211.CMD).AUTHENTICATE);
-        log.debug("Starting connection to '{s}' w/ '{f}'...", .{ candidate.config.ssid, MACF{ .bytes = candidate.conn_if[0..] } });
+        log.debug("Starting connection to '{s}' w/ '{f}'...", .{ candidate.ssid, MACF{ .bytes = candidate.conn_if[0..] } });
         return self;
     }
 
@@ -523,6 +616,7 @@ pub const Connection = struct {
         }
         log.debug("Deinitialized Connection '{s}'", .{ self.ssid });
         alloc.free(self.ssid);
+        alloc.free(self.passphrase);
     }
 
     /// Handle this Connection

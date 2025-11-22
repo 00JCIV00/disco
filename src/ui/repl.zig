@@ -20,6 +20,9 @@ const zeit = @import("zeit");
 
 const art = @import("../art.zig");
 const core = @import("../core.zig");
+const netdata = @import("../netdata.zig");
+const address = netdata.address;
+const nl = @import("../netlink.zig");
 const ui = @import("../ui.zig");
 const utils = @import("../utils.zig");
 const ansi = utils.ansi;
@@ -859,16 +862,24 @@ pub const CommandBar = struct {
                         log.err("Request Error: {t}", .{ err });
                         continue;
                     };
+                    defer resp.deinit(core_ctx.alloc);
                     switch (resp) {
+                        .ack => {
+                            log.debug("Ack from Request {d}", .{ req_id });
+                        },
                         .interfaces => |if_resp| switch (if_resp) {
-                            .single => {},
+                            .single => |resp_if| {
+                                const out_if = resp_if orelse continue;
+                                try shell.display.out_writer.print("{f}", .{ out_if });
+                                try shell.display.out_writer.flush();
+                            },
                             .list => |resp_ifs| respIFs: {
                                 if (resp_ifs.len == 0)
                                     break :respIFs;
-                                defer core_ctx.alloc.free(resp_ifs);
+                                //defer core_ctx.alloc.free(resp_ifs);
                                 try shell.display.out_writer.print("Interfaces ({d}):\n{s}", .{ resp_ifs.len, sep });
                                 for (resp_ifs) |resp_if| {
-                                    defer resp_if.deinit(core_ctx.alloc);
+                                    //defer resp_if.deinit(core_ctx.alloc);
                                     try shell.display.out_writer.print("{f}{s}", .{ resp_if, sep });
                                 }
                                 try shell.display.out_writer.flush();
@@ -970,7 +981,7 @@ pub const CommandBar = struct {
         //const shell: *Shell = @fieldParentPtr("cmd_bar", self_ptr);
         const shell = self.shell orelse return error.NoShell;
         // Parse Arguments
-        var main_cmd = try setup_cmd.init(self.a_alloc, .{});
+        var main_cmd = try setup_cmd.init(self.a_alloc, .{  });
         defer main_cmd.deinit();
         const args = cova.tokenizeArgs(input, ctx.alloc, .{}) catch |err| {
             log.err("Couldn't Tokenize Arguments `{s}`: {t}", .{ input, err });
@@ -985,11 +996,21 @@ pub const CommandBar = struct {
             main_cli.CommandT,
             main_cmd,
             out_w,
-            .{ .skip_first_arg = false },
+            .{
+                .skip_first_arg = false,
+                .auto_flush = false,
+            },
         ) catch |err| {
-            try out_w.flush();
+            defer out_w.flush() catch {};
             switch (err) {
-                error.UsageHelpCalled => return,
+                error.UsageHelpCalled => {
+                    const in_w = &shell.display.in_writer;
+                    try in_w.writeAll(input);
+                    try in_w.flush();
+                    self.textfield.clearRetainingCapacity();
+                    ctx.consumeAndRedraw();
+                    return;
+                },
                 else => {
                     log.err("CLI Parsing Error: {t}", .{ err });
                     return;
@@ -1001,6 +1022,7 @@ pub const CommandBar = struct {
             ctx.quit = true;
             return;
         }
+        const core_ctx = shell.core_ctx;
         var out_msg: ?[]const u8 = null;
         // - Display Filters
         if (main_cmd.matchSubCmd("filter")) |filter_cmd| {
@@ -1057,7 +1079,20 @@ pub const CommandBar = struct {
         }
         // - Lists
         if (main_cmd.matchSubCmd("list")) |list_cmd| {
-            const core_ctx = shell.core_ctx;
+            const list_opts = try list_cmd.getOpts(.{});
+            if (list_opts.get("interface")) |if_opt| ifOpt: {
+                const if_name = ifName: {
+                    const if_name = try if_opt.val.getAs([]const u8);
+                    break :ifName try core_ctx.alloc.dupe(u8, if_name);
+                };
+                errdefer core_ctx.alloc.free(if_name);
+                const req_id = core_ctx.req_aggregator.push(.{ .interfaces = .{ .get = .{ .name = if_name } } }) catch |err| {
+                    log.err("Unable to request Interface Info: {t}", .{ err });
+                    break :ifOpt;
+                };
+                try self.req_list.append(core_ctx.alloc, req_id);
+                log.debug("Requested Interface '{s}'. Req ID: {d}", .{ if_name, req_id });
+            }
             if (list_cmd.checkFlag("interfaces")) ifOpt: {
                 const req_id = core_ctx.req_aggregator.push(.{ .interfaces = .get_all }) catch |err| {
                     log.err("Unable to request Interface Info: {t}", .{ err });
@@ -1065,7 +1100,100 @@ pub const CommandBar = struct {
                 };
                 try self.req_list.append(core_ctx.alloc, req_id);
                 log.debug("Requested Interfaces. Req ID: {d}", .{ req_id });
-            } 
+            }
+        }
+        // - Activate/Deactivate Interfaces
+        if (main_cmd.matchSubCmd("activate")) |act_cmd| actCmd: {
+            const act_vals = try act_cmd.getVals(.{});
+            const act_if_val = act_vals.get("interface").?;
+            const if_name = try act_if_val.getAs([]const u8);
+            const act_req: core.requests.Request = .{
+                .interfaces = .{
+                    .usage = .{
+                        .if_id = .{ .name = try core_ctx.alloc.dupe(u8, if_name) },
+                        .state = .activate,
+                    },
+                },
+            };
+            const req_id = core_ctx.req_aggregator.push(act_req) catch |err| {
+                log.err("Unable to Activate Interface: {t}", .{ err });
+                break :actCmd;
+            };
+            try self.req_list.append(core_ctx.alloc, req_id);
+            log.debug("Activating '{s}'. Req ID: {d}", .{ if_name, req_id });
+        }
+        if (main_cmd.matchSubCmd("deactivate")) |act_cmd| actCmd: {
+            const act_vals = try act_cmd.getVals(.{});
+            const act_if_val = act_vals.get("interface").?;
+            const if_name = try act_if_val.getAs([]const u8);
+            const act_req: core.requests.Request = .{
+                .interfaces = .{
+                    .usage = .{
+                        .if_id = .{ .name = try core_ctx.alloc.dupe(u8, if_name) },
+                        .state = .deactivate,
+                    },
+                },
+            };
+            const req_id = core_ctx.req_aggregator.push(act_req) catch |err| {
+                log.err("Unable to Deactivate Interface: {t}", .{ err });
+                break :actCmd;
+            };
+            try self.req_list.append(core_ctx.alloc, req_id);
+            log.debug("Deactivating '{s}'. Req ID: {d}", .{ if_name, req_id });
+        }
+        // - Connect
+        if (main_cmd.matchSubCmd("connect")) |connect_cmd| connectCmd: {
+            const connect_vals = try connect_cmd.getVals(.{});
+            const raw_id = try (connect_vals.get("id").?).getAs([]const u8);
+            const id: core.connections.ID = id: {
+                break :id //
+                    if (address.parseMAC(raw_id)) |bssid| .{ .bssid = bssid } //
+                    else |_| .{ .ssid = core_ctx.alloc.dupe(u8, raw_id) catch @panic("OOM") };
+            };
+            const connect_opts = try connect_cmd.getOpts(.{});
+            const security = security: {
+                const security_opt = connect_opts.get("security") orelse break :security null;
+                break :security try security_opt.val.getAs(nl._80211.SecurityType);
+            };
+            const pass = pass: {
+                const pass_opt = connect_opts.get("passphrase") orelse {
+                    if (security != null and security.? != .open) //
+                        log.err("The {t} protocol requires a passhprase.", .{ security.? })
+                    else //
+                        log.warn("No passphrase provided. This will only work with Open Networks.", .{});
+                    break :pass "";
+                };
+                const raw_pass = try pass_opt.val.getAs([]const u8);
+                break :pass core_ctx.alloc.dupe(u8, raw_pass) catch @panic("OOM");
+            };
+            const freqs = freqs: {
+                const ch_opt = connect_opts.get("channels") orelse break :freqs null;
+                if (!ch_opt.val.isSet()) break :freqs null;
+                const channels = try ch_opt.val.getAllAs(usize);
+                var freqs_buf = try ArrayList(u32).initCapacity(core_ctx.alloc, 1);
+                for (channels) |ch|
+                    try freqs_buf.append(core_ctx.alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+                break :freqs try freqs_buf.toOwnedSlice(core_ctx.alloc);
+            };
+            defer if (freqs) |_freqs| //
+                core_ctx.alloc.free(_freqs);
+            const conn_req: core.requests.Request = .{
+                .connections = .{
+                    .add = .{
+                        .id = id,
+                        .passphrase = pass,
+                        .security = security,
+                        .dhcp = if (connect_cmd.checkFlag("dhcp")) .{} else null,
+                        .add_gw = connect_cmd.checkFlag("gateway"),
+                    },
+                },
+            };
+            const req_id = core_ctx.req_aggregator.push(conn_req) catch |err| {
+                log.err("Unable to Deactivate Interface: {t}", .{ err });
+                break :connectCmd;
+            };
+            try self.req_list.append(core_ctx.alloc, req_id);
+            log.debug("Adding Connection for '{s}'. Req ID: {d}", .{ raw_id, req_id });
         }
         // Write Valid Arguments to Display
         const in_w = &shell.display.in_writer;
@@ -1093,6 +1221,7 @@ pub const setup_cmd: main_cli.CommandT = .{
     .vals_mandatory = false,
     .allow_inheritable_opts = true,
     .sub_cmds = &.{
+        ui.cli.connect_cmd,
         .{
             .name = "exit",
             .alias_names = &.{ "quit", "q" },
@@ -1163,15 +1292,45 @@ pub const setup_cmd: main_cli.CommandT = .{
                     .alias_long_names = &.{ "fields" },
                 },
                 .{
+                    .name = "interface",
+                    .description = "View a specific WiFi Interfaces of the system.",
+                    .long_name = "interface",
+                    .alias_long_names = &.{ "if" },
+                    .val = .ofType([]const u8, .{}),
+                },
+                .{
                     .name = "interfaces",
                     .description = "List the WiFi Interfaces of the system.",
                     .long_name = "interfaces",
+                    .alias_long_names = &.{ "ifs" },
                 },
                 .{
                     .name = "networks",
                     .description = "List the seen WiFi Networks.",
                     .long_name = "networks",
                 },
+            },
+        },
+        .{
+            .name = "activate",
+            .description = "Activate the provided Interface for DisCo use.",
+            .cmd_group = "INTERFACE",
+            .vals = &.{
+                .ofType([]const u8, .{
+                    .name = "interface",
+                    .description = "The Interface to Activate",
+                }),
+            },
+        },
+        .{
+            .name = "deactivate",
+            .description = "Deactivate the designated Interface from DisCo use.",
+            .cmd_group = "INTERFACE",
+            .vals = &.{
+                .ofType([]const u8, .{
+                    .name = "interface",
+                    .description = "The Interface to Deactivate",
+                }),
             },
         },
     }

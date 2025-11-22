@@ -306,7 +306,8 @@ pub fn main() !void {
     const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUninitialized;
     const main_opts = try main_cmd.getOpts(.{});
     // Set up Core Data
-    var core_scan_confs: ArrayList(core.Core.Config.ScanConfig) = .{};
+    var core_global_scan_conf: core.Core.Config.GlobalScanConfig = .{};
+    var core_scan_confs: ArrayList(core.Core.Config.ScanConfig) = .empty;
     defer core_scan_confs.deinit(alloc);
     const if_names: []const []const u8 = ifOpt: {
         if (main_opts.get("interfaces")) |if_opt| {
@@ -328,6 +329,10 @@ pub fn main() !void {
                     break :getChs try ch_list.toOwnedSlice(cova_alloc);
                 }
                 break :getChs null;
+            };
+            core_global_scan_conf = .{
+                .ssids = ssids,
+                .channels = channels,
             };
             const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt &.{};
             for (if_names) |if_name| {
@@ -393,6 +398,7 @@ pub fn main() !void {
         var config: core.Core.Config = importConf: {
             var config: core.Core.Config = .{
                 .avail_if_names = if_names,
+                .global_scan_config = core_global_scan_conf,
                 .profile = .{
                     .require_conflicts_ack = !main_cmd.checkFlag("no_conflict_pids"),
                 },
@@ -460,7 +466,12 @@ pub fn main() !void {
         };
         if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
             const connect_vals = try connect_cmd.getVals(.{});
-            const ssid = try (connect_vals.get("ssid").?).getAs([]const u8);
+            const id: core.connections.ID = id: {
+                const raw_id = try (connect_vals.get("id").?).getAs([]const u8);
+                break :id //
+                    if (address.parseMAC(raw_id)) |bssid| .{ .bssid = bssid } //
+                    else |_| .{ .ssid = raw_id };
+            };
             const connect_opts = try connect_cmd.getOpts(.{});
             const security = security: {
                 const security_opt = connect_opts.get("security") orelse break :security null;
@@ -488,7 +499,7 @@ pub fn main() !void {
             defer if (freqs) |_freqs| alloc.free(_freqs);
             config.connect_configs = &.{
                 .{
-                    .ssid = ssid,
+                    .id = id,
                     .passphrase = pass,
                     .security = security,
                     .dhcp = if (connect_cmd.checkFlag("dhcp")) .{} else null,

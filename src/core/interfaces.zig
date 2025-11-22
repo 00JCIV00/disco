@@ -415,6 +415,7 @@ pub const Interface = struct {
         //self.restore(alloc, .all);
         if (self.raw_sock) |sock| posix.close(sock);
         self.deinit(alloc);
+        self.usage = .inactive;
     }
 
     pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
@@ -577,6 +578,8 @@ pub const Context = struct {
     // EXTERNAL USE
     /// Netlink Async State
     state: core.AsyncState,
+    /// Available Interface Names
+    avail_if_names: *ThreadHashMap([]const u8, void),
     /// Available Interfaces
     interfaces: *ThreadHashMap([6]u8, Interface),
     /// Interface Timeout
@@ -590,6 +593,17 @@ pub const Context = struct {
         self._arena.* = .init(core_ctx.alloc);
         self._a_alloc = self._arena.allocator();
         self.state = .ready;
+        self.avail_if_names = availNames: {
+            log.debug("Adding {d} Interfaces to Active List...", .{ core_ctx.config.avail_if_names.len });
+            const names = core_ctx.alloc.create(ThreadHashMap([]const u8, void)) catch @panic("OOM");
+            names.* = .empty;
+            for (core_ctx.config.avail_if_names) |name| {
+                const dupe_name = core_ctx.alloc.dupe(u8, name) catch @panic("OOM");
+                names.put(core_ctx.alloc, dupe_name, {}) catch @panic("OOM");
+                log.debug("- Added '{s}'", .{ dupe_name });
+            }
+            break :availNames names;
+        };
         self.interfaces = core_ctx.alloc.create(ThreadHashMap([6]u8, Interface)) catch @panic("OOM");
         self.interfaces.* = .empty;
         self._req_wifi_ifs = try .init(.{ .handler = .{ .handler = core_ctx.nl80211_handler } });
@@ -601,8 +615,15 @@ pub const Context = struct {
 
     /// Deinitialize the Interface Context.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+        var names_iter = self.avail_if_names.iterator();
+        while (names_iter.next()) |name_entry|
+            alloc.free(name_entry.key_ptr.*);
+        names_iter.unlock();
+        self.avail_if_names.deinit(alloc);
+        alloc.destroy(self.avail_if_names);
         var if_iter = self.interfaces.iterator();
-        while (if_iter.next()) |if_entry| if_entry.value_ptr.stop(alloc);
+        while (if_iter.next()) |if_entry|
+            if_entry.value_ptr.stop(alloc);
         if_iter.unlock();
         self.interfaces.deinit(alloc);
         alloc.destroy(self.interfaces);
@@ -867,6 +888,8 @@ pub const Context = struct {
                         add_if.max_penalty = upd_if.max_penalty;
                         add_if.supported_freqs = upd_if.supported_freqs;
                         add_if.mod_queue = upd_if.mod_queue;
+                        if (add_if.usage == .inactive and add_if._init) //
+                            add_if.stop(core_ctx.alloc);
                         core_ctx.alloc.free(upd_if.name);
                         core_ctx.alloc.free(upd_if.phy_name);
                         nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
@@ -914,7 +937,10 @@ pub const Context = struct {
             switch (net_if.usage) {
                 // Check for new WiFi Interface
                 .inactive => {
-                    for (core_ctx.config.avail_if_names) |avail_if_name| {
+                    var names_iter = self.avail_if_names.iterator();
+                    defer names_iter.unlock();
+                    while (names_iter.next()) |name_entry| {
+                        const avail_if_name = name_entry.key_ptr.*;
                         //log.debug("- Check name: {s} ({d}B) vs {s} ({d}B)", .{ net_if.name, net_if.name.len, avail_if_name, avail_if_name.len });
                         if (!mem.eql(u8, net_if.name, avail_if_name)) continue;
                         net_if.usage = .active;
@@ -936,7 +962,8 @@ pub const Context = struct {
                             var scan_list: ArrayList(u32) = .empty;
                             errdefer scan_list.deinit(core_ctx.alloc);
                             for (freqs) |freq| {
-                                if (mem.indexOfScalar(u32, net_if.supported_freqs, freq) == null) continue;
+                                if (mem.indexOfScalar(u32, net_if.supported_freqs, freq) == null) //
+                                    continue;
                                 scan_list.append(core_ctx.alloc, freq) catch @panic("OOM");
                             }
                             if (scan_list.items.len == 0) {
@@ -948,7 +975,8 @@ pub const Context = struct {
                         }
                         if (core_ctx.config.profile.mask) |pro_mask| {
                             var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
-                            if (pro_mask.oui) |mask_oui| @memcpy(mask_mac[0..3], mask_oui[0..]);
+                            if (pro_mask.oui) |mask_oui| //
+                                @memcpy(mask_mac[0..3], mask_oui[0..]);
                             if (net_if.state & c(nl.route.IFF).UP != c(nl.route.IFF).DOWN) //
                                 try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN });
                             if (mem.eql(u8, net_if.mac[0..], net_if.og_mac[0..])) //

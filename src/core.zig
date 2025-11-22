@@ -44,16 +44,12 @@ pub const Core = struct {
     /// Config
     /// This is made to be configurable by users via JSON or ZON.
     pub const Config = struct {
-        pub const ScanConfig = struct {
-            if_name: []const u8,
-            ssids: ?[]const []const u8 = null,
-            channels: ?[]const usize = null,
-        };
-
         /// Profile Settings
         profile: profiles.Profile = .{},
         /// Available Interface Names
         avail_if_names: []const []const u8 = &.{},
+        /// Global Scan Config
+        global_scan_config: GlobalScanConfig = .{},
         /// Scan Configs
         scan_configs: []const ScanConfig = &.{},
         /// Global Connect Config
@@ -66,6 +62,17 @@ pub const Core = struct {
         pcap_config: captures.Config = .{},
         /// Serve Config
         serve_config: ?serve.Config = null,
+
+        pub const GlobalScanConfig = struct {
+            ssids: ?[]const []const u8 = null,
+            channels: ?[]const usize = null,
+        };
+
+        pub const ScanConfig = struct {
+            if_name: []const u8,
+            ssids: ?[]const []const u8 = null,
+            channels: ?[]const usize = null,
+        };
     };
 
     /// Mutex Lock
@@ -160,13 +167,16 @@ pub const Core = struct {
         errdefer self.nl_event_loop.deinit(alloc);
         try self.nl_event_loop.addHandler(self.alloc, self.nl80211_handler);
         try self.nl_event_loop.addHandler(self.alloc, self.rtnetlink_handler);
-        //// Context Initialization
+        // Context Initialization
         self.if_ctx = try .init(&self);
         errdefer self.if_ctx.deinit(alloc);
+        log.debug("Initialized Interfaces Context", .{});
         self.network_ctx = try .init(&self);
         errdefer self.network_ctx.deinit(alloc);
+        log.debug("Initialized Networks Context", .{});
         self.conn_ctx = try .init(&self);
         errdefer self.conn_ctx.deinit(alloc);
+        log.debug("Initialized Connections Context", .{});
         self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
         errdefer self.serve_ctx.deinit(alloc);
         // Context Setup
@@ -346,7 +356,6 @@ pub const Core = struct {
     }
 
     /// Stop the Core Context
-    /// TODO: archive session data
     pub fn stop(self: *@This()) void {
         var stop_timer = time.Timer.start() catch null;
         log.info("{s}{s}Stopping DisCo Core...{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });

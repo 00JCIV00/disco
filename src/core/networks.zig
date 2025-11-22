@@ -151,14 +151,16 @@ pub const NetworkScanContext = union(enum) {
 /// Network Contextrtnetlink_handler
 pub const Context = struct {
     /// Buffer
-    /// TODO: Figure out StackFallback for this or a way to Stream through the data while parsing. (Or move back to Heap Allocation) 
-    _buffer: [666_000]u8 = undefined,
-    /// Fixed Buffer Allocator
-    _arena_fba: *heap.FixedBufferAllocator,
+    ///// TODO: Figure out StackFallback for this or a way to Stream through the data while parsing. (Or move back to Heap Allocation) 
+    //_buffer: [666_000]u8 = undefined,
+    ///// Fixed Buffer Allocator
+    //_arena_fba: *heap.FixedBufferAllocator,
     /// Arena
     _arena: *heap.ArenaAllocator,
     /// Arena Allocator
     _a_alloc: mem.Allocator,
+    /// Global Scan Config
+    global_scan_config: nl._80211.TriggerScanConfig,
     /// Scan Configs for Interfaces
     scan_configs: *ThreadHashMap([]const u8, nl._80211.TriggerScanConfig),
     /// List of all Networks seen
@@ -167,12 +169,28 @@ pub const Context = struct {
     /// Initialize all Maps.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
-        self._arena_fba = core_ctx.alloc.create(heap.FixedBufferAllocator) catch @panic("OOM");
-        self._arena_fba.* = .init(self._buffer[0..]);
+        //self._arena_fba = core_ctx.alloc.create(heap.FixedBufferAllocator) catch @panic("OOM");
+        //self._arena_fba.* = .init(self._buffer[0..]);
         self._arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
-        self._arena.* = .init(self._arena_fba.allocator());
-        //self._arena.* = .init(core_ctx.alloc);
+        //self._arena.* = .init(self._arena_fba.allocator());
+        self._arena.* = .init(core_ctx.alloc);
         self._a_alloc = self._arena.allocator();
+        self.global_scan_config = globalConf: {
+            const freqs: ?[]const u32 = freqs: {
+                const channels = core_ctx.config.global_scan_config.channels orelse break :freqs null;
+                var freqs_list: ArrayList(u32) = .empty;
+                errdefer freqs_list.deinit(core_ctx.alloc);
+                for (channels) |ch| {
+                    const freq = try nl._80211.freqFromChannel(ch);
+                    freqs_list.append(core_ctx.alloc, @truncate(freq)) catch @panic("OOM");
+                }
+                break :freqs freqs_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+            };
+            break :globalConf .{
+                .freqs = freqs,
+                .ssids = core_ctx.config.global_scan_config.ssids,
+            };
+        };
         self.scan_configs = core_ctx.alloc.create(ThreadHashMap([]const u8, nl._80211.TriggerScanConfig)) catch @panic("OOM");
         self.scan_configs.* = .empty;
         for (core_ctx.config.scan_configs) |config| {
@@ -222,7 +240,7 @@ pub const Context = struct {
         alloc.destroy(self.networks);
         self._arena.deinit();
         alloc.destroy(self._arena);
-        alloc.destroy(self._arena_fba);
+        //alloc.destroy(self._arena_fba);
     }
 
     /// Update Networks
@@ -313,8 +331,13 @@ pub const Context = struct {
                                         .trigger => {
                                             if (scan_if.checkPenalty()) continue;
                                             defer self.scan_configs.mutex.unlock();
-                                            const scan_config_entry = self.scan_configs.getEntry(scan_if.name) orelse continue;
-                                            const scan_config = scan_config_entry.value_ptr.*;
+                                            const scan_config = scanConfig: {
+                                                const scan_config_entry = self.scan_configs.getEntry(scan_if.name) orelse {
+                                                    break :scanConfig self.global_scan_config;
+                                                };
+                                                break :scanConfig scan_config_entry.value_ptr.*;
+                                            };
+                                            //const scan_config = self.global_scan_config;
                                             try nl._80211.requestTriggerScan(
                                                 core_ctx.alloc,
                                                 &nl_ctx.req_ctx,
@@ -424,11 +447,21 @@ pub const Context = struct {
                                                         .scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, result),
                                                     };
                                                     //log.debug("{s}===================\n", .{ new_network });
-                                                    confs: for (core_ctx.config.connect_configs) |conf| {
-                                                        if (mem.eql(u8, conf.ssid, new_network.ssid)) {
-                                                            log.debug("{f}===================\n", .{ new_network });
-                                                            break :confs;
+                                                    core_ctx.conn_ctx.configs.mutex.lock();
+                                                    defer core_ctx.conn_ctx.configs.mutex.unlock();
+                                                    confs: for (core_ctx.conn_ctx.configs.list.items) |conf| {
+                                                        switch (conf.id) {
+                                                            .bssid => |bssid| {
+                                                                if (!mem.eql(u8, bssid[0..], new_network.bssid[0..])) //
+                                                                    continue;
+                                                            },
+                                                            .ssid => |conf_ssid| {
+                                                                if (!mem.eql(u8, conf_ssid, new_network.ssid)) //
+                                                                    continue;
+                                                            },
                                                         }
+                                                        log.debug("{f}===================\n", .{ new_network });
+                                                        break :confs;
                                                     }
                                                     valid = true;
                                                     if (old_network_entry) |entry| {

@@ -33,6 +33,7 @@ pub const CommandT = cova.Command.Custom(.{
     .global_allow_inheritable_opts = false,
     .allow_abbreviated_cmds = true,
     .abbreviated_min_len = 1,
+    .auto_flush = false,
     .val_config = .{
         .max_children = 50,
         .custom_types = &.{
@@ -311,54 +312,7 @@ pub const setup_cmd: CommandT = .{
         }
     },
     .sub_cmds = &.{
-        .{
-            .name = "connect",
-            .description = "Connect to a WiFi Network using the specified Interface.",
-            .cmd_group = "ACTIVE",
-            .vals = &.{
-                .ofType([]const u8, .{
-                    .name = "ssid",
-                    .description = "Set the SSID of the Network. (Up to 32 characters)",
-                    .default_val = "",
-                    .valid_fn = struct {
-                        pub fn validSSID(arg: []const u8, _: mem.Allocator) bool {
-                            return arg.len > 0 and arg.len <= 32;
-                        }
-                    }.validSSID,
-                }),
-            },
-            .opts = &.{
-                channels_opt,
-                .{
-                    .name = "passphrase",
-                    .description = "Set the Passhprase for the Network. (Between 8-63 characters)",
-                    .long_name = "passphrase",
-                    .alias_long_names = &.{ "password", "pwd" },
-                    .short_name = 'p',
-                    .val = .ofType([]const u8, .{
-                        .valid_fn = struct {
-                            pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
-                                return arg.len >= 8 and arg.len <= 63;
-                            }
-                        }.validPass,
-                    }),
-                },
-                .{
-                    .name = "security",
-                    .description = "Set the WiFi Secruity Protocol. (open, wep, or wpa2 | Default = wpa2)",
-                    .long_name = "security",
-                    .short_name = 's',
-                    .val = .ofType(nl._80211.SecurityType, .{}),
-                },
-                .{
-                    .name = "dhcp",
-                    .description = "Obtain an IP Address via DHCP upon successful connection.",
-                    .long_name = "dhcp",
-                    .short_name = 'd',
-                },
-                conn_gw_opt,
-            },
-        },
+        connect_cmd,
         .{
             .name = "scan",
             .description = "Scan for WiFi Networks.",
@@ -710,6 +664,55 @@ pub const setup_cmd: CommandT = .{
 
 
 // Multi-use Arguments
+/// Connect
+pub const connect_cmd: CommandT = .{
+    .name = "connect",
+    .description = "Connect to a WiFi Network using the specified Interface.",
+    .cmd_group = "ACTIVE",
+    .vals = &.{
+        .ofType([]const u8, .{
+            .name = "id",
+            .description = "Set the SSID (up to 32 characters) or BSSID (6 Byte MAC Address) of the Network.",
+            .default_val = "",
+            .valid_fn = struct {
+                pub fn validSSID(arg: []const u8, _: mem.Allocator) bool {
+                    return arg.len > 0 and arg.len <= 32;
+                }
+            }.validSSID,
+        }),
+    },
+    .opts = &.{
+        channels_opt,
+        .{
+            .name = "passphrase",
+            .description = "Set the Passhprase for the Network. (Between 8-63 characters)",
+            .long_name = "passphrase",
+            .alias_long_names = &.{ "password", "pwd" },
+            .short_name = 'p',
+            .val = .ofType([]const u8, .{
+                .valid_fn = struct {
+                    pub fn validPass(arg: []const u8, _: mem.Allocator) bool {
+                        return arg.len >= 8 and arg.len <= 63;
+                    }
+                }.validPass,
+            }),
+        },
+        .{
+            .name = "security",
+            .description = "Set the WiFi Secruity Protocol. (open, wep, or wpa2 | Default = wpa2)",
+            .long_name = "security",
+            .short_name = 's',
+            .val = .ofType(nl._80211.SecurityType, .{}),
+        },
+        .{
+            .name = "dhcp",
+            .description = "Obtain an IP Address via DHCP upon successful connection.",
+            .long_name = "dhcp",
+            .short_name = 'd',
+        },
+        conn_gw_opt,
+    },
+};
 /// Channels
 const channels_opt: OptionT = .{
     .name = "channels",

@@ -15,6 +15,7 @@ const core = @import("../core.zig");
 const nl = @import("../netlink.zig");
 const utils = @import("../utils.zig");
 const CSlice = utils.CSlice;
+const HexF = utils.HexFormatter;
 const ThreadArrayList = utils.ThreadArrayList;
 const ThreadHashMap = utils.ThreadHashMap;
 
@@ -34,15 +35,49 @@ pub const Module = union(enum) {
 pub const Request = union(enum) {
     core,
     interfaces: union(enum) {
-        get: [6]u8,
+        get: InterfaceID,
         get_all,
         mod: struct { mod_if: [6]u8, mod_field: core.interfaces.Interface.ModifyField },
+        usage: struct {
+            if_id: InterfaceID,
+            state: enum { activate, deactivate }
+        },
+
+        pub const InterfaceID = union(enum) {
+            mac: [6]u8,
+            name: []const u8,
+
+            pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+                switch (self.*) {
+                    .name => |name| alloc.free(name),
+                    else => {},
+                }
+            }
+        };
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                .get => |get_id| get_id.deinit(alloc),
+                .usage => |usage_req| usage_req.if_id.deinit(alloc),
+                else => {},
+            }
+        }
     },
     networks,
-    connections,
+    connections: union(enum) {
+        add: core.connections.Config,
+    },
     sockets,
     captures,
     serve,
+
+    /// Deinitialize any Allocations in this Request.
+    pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+        switch (self.*) {
+            .interfaces => |if_req| if_req.deinit(alloc),
+            else => {},
+        }
+    }
 };
 
 /// Response
@@ -51,9 +86,31 @@ pub const Response = union(enum) {
     interfaces: union(enum) {
         single: ?core.interfaces.Interface.Simple,
         list: []const core.interfaces.Interface.Simple,
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                .single => |s_if| single: {
+                    const resp_if = s_if orelse break :single;
+                    resp_if.deinit(alloc);
+                },
+                .list => |if_list| {
+                    for (if_list) |resp_if| //
+                        resp_if.deinit(alloc);
+                    alloc.free(if_list);
+                }
+            }
+        }
     },
     networks,
     connections,
+
+    /// Deinitialize any Allocations in this Response.
+    pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+        switch (self.*) {
+            .interfaces => |if_resp| if_resp.deinit(alloc),
+            else => {},
+        }
+    }
 };
 
 /// Errors
@@ -89,7 +146,23 @@ pub const Aggregator = struct {
 
     /// Deinitialize this Aggregator
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+        {
+            self.req_map.mutex.lock();
+            defer self.req_map.mutex.unlock();
+            var req_iter = self.req_map.map.valueIterator();
+            while (req_iter.next()) |req| //
+                req.deinit(alloc);
+        }
         self.req_map.deinit(alloc);
+        {
+            self.resp_map.mutex.lock();
+            defer self.resp_map.mutex.unlock();
+            var resp_iter = self.resp_map.map.valueIterator();
+            while (resp_iter.next()) |resp| {
+                const free_resp = resp.* catch continue;
+                free_resp.deinit(alloc);
+            }
+        }
         self.resp_map.deinit(alloc);
     }
 
@@ -117,27 +190,101 @@ pub const Aggregator = struct {
         self.req_map.mutex.unlock();
         var reqs_iter = reqs.iterator();
         while (reqs_iter.next()) |req| {
+            var deinit_req: bool = true;
+            defer if (deinit_req) //
+                req.value_ptr.deinit(core_ctx.alloc);
             switch (req.value_ptr.*) {
                 .interfaces => |if_req| {
                     core_ctx.if_ctx.interfaces.mutex.lock();
                     defer core_ctx.if_ctx.interfaces.mutex.unlock();
                     switch (if_req) {
-                        .get => |if_mac| {
-                            const resp_if = core_ctx.if_ctx.interfaces.get(if_mac);
-                            _ = resp_if;
+                        .get => |if_id| {
+                            const get_if = switch (if_id) {
+                                .name => |if_name| getIF: {
+                                    var if_iter = core_ctx.if_ctx.interfaces.map.valueIterator();
+                                    while (if_iter.next()) |next_if| {
+                                        if (mem.eql(u8, if_name, next_if.name))
+                                            break :getIF next_if.*;
+                                    }
+                                    break :getIF null;
+                                },
+                                .mac => |if_mac| core_ctx.if_ctx.interfaces.get(if_mac),
+                            };
+                            const resp_if: ?core.interfaces.Interface.Simple = respIF: {
+                                const raw_if = get_if orelse break :respIF null;
+                                break :respIF .from(core_ctx.alloc, raw_if);
+                            };
+                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .{ .interfaces = .{ .single = resp_if } }) catch @panic("OOM");
                         },
                         .get_all => {
                             var if_list: ArrayList(core.interfaces.Interface.Simple) = .empty;
                             var if_iter = core_ctx.if_ctx.interfaces.map.valueIterator();
                             while (if_iter.next()) |next_if| {
                                 const resp_if: core.interfaces.Interface.Simple = .from(core_ctx.alloc, next_if.*);
-                                try if_list.append(core_ctx.alloc, resp_if);
+                                if_list.append(core_ctx.alloc, resp_if) catch @panic("OOM");
                             }
-                            const resp_ifs = try if_list.toOwnedSlice(core_ctx.alloc);
-                            try self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .{ .interfaces = .{ .list = resp_ifs } });
-                            log.debug("Handled Interfaces Request: {d}", .{ req.key_ptr.* });
+                            const resp_ifs = if_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .{ .interfaces = .{ .list = resp_ifs } }) catch @panic("OOM");
                         },
-                        else => {},
+                        .usage => |usage| {
+                            const if_name = switch (usage.if_id) {
+                                .name => |name| name,
+                                .mac => |mac| mac: {
+                                    var if_iter = core_ctx.if_ctx.interfaces.map.valueIterator();
+                                    while (if_iter.next()) |next_if| {
+                                        if (!mem.eql(u8, mac[0..], next_if.og_mac[0..]))
+                                            continue;
+                                        break :mac next_if.name;
+                                    }
+                                    log.err("No Interface found for MAC '{f}'.", .{ HexF{ .bytes = mac[0..] } });
+                                    self.resp_map.put(core_ctx.alloc, req.key_ptr.*, error.InvalidRequest) catch @panic("OOM");
+                                    continue;
+                                },
+                            };
+                            switch (usage.state) {
+                                .activate => {
+                                    core_ctx.if_ctx.avail_if_names.put(core_ctx.alloc, if_name, {}) catch @panic("OOM");
+                                    log.info("Added Interface '{s}' to the Active list.", .{ if_name });
+                                    self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                                    deinit_req = false;
+                                },
+                                .deactivate => deactivate: {
+                                    core_ctx.if_ctx.avail_if_names.mutex.lock();
+                                    defer core_ctx.if_ctx.avail_if_names.mutex.unlock();
+                                    const name = core_ctx.if_ctx.avail_if_names.map.fetchRemove(if_name) orelse break :deactivate;
+                                    core_ctx.alloc.free(name.key);
+                                    var if_iter = core_ctx.if_ctx.interfaces.map.iterator();
+                                    while (if_iter.next()) |next_if_entry| {
+                                        const next_if = next_if_entry.value_ptr;
+                                        if (!mem.eql(u8, if_name, next_if.name))
+                                            continue;
+                                        next_if.usage = .inactive;
+                                        break;
+                                    }
+                                    log.info("Removed Interface '{s}' from the Active list.", .{ if_name });
+                                    self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                                },
+                            }
+                        },
+                        .mod => {},
+                    }
+                    log.debug("Handled Interfaces Request: {d}", .{ req.key_ptr.* });
+                },
+                .connections => |conn| {
+                    core_ctx.conn_ctx.configs.mutex.lock();
+                    defer core_ctx.conn_ctx.configs.mutex.unlock();
+                    switch (conn) {
+                        .add => |add_conn| {
+                            for (core_ctx.conn_ctx.configs.list.items, 0..) |next_conn, idx| {
+                                if (!next_conn.id.eql(add_conn.id))
+                                    continue;
+                                _ = core_ctx.conn_ctx.configs.list.orderedRemove(idx);
+                                break;
+                            }
+                            core_ctx.conn_ctx.configs.list.append(core_ctx.alloc, add_conn) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                            log.info("Added new Connection: '{f}'", .{ add_conn.id });
+                        },
                     }
                 },
                 else => |tag| log.err("Unimplemented: {t}", .{ tag }),
