@@ -155,6 +155,7 @@ pub const setup_cmd: CommandT = .{
             .opt_group = "ACTIVE",
             .short_name = 'i',
             .long_name = "interfaces",
+            .inheritable = true,
             .val = .ofType([]const u8, .{
                 .set_behavior = .Multi,
                 .max_entries = 32,
@@ -668,11 +669,16 @@ pub const setup_cmd: CommandT = .{
 pub const connect_cmd: CommandT = .{
     .name = "connect",
     .description = "Connect to a WiFi Network using the specified Interface.",
+    .examples = &.{
+        "connect NetworkSSID -p network_passphrase",
+        "connect network -p passphrase --dhcp --gw",
+    },
     .cmd_group = "ACTIVE",
+    .allow_inheritable_opts = true,
     .vals = &.{
         .ofType([]const u8, .{
             .name = "id",
-            .description = "Set the SSID (up to 32 characters) or BSSID (6 Byte MAC Address) of the Network.",
+            .description = "The SSID (up to 32 characters) or BSSID (6 octet MAC Address) of the Network.",
             .default_val = "",
             .valid_fn = struct {
                 pub fn validSSID(arg: []const u8, _: mem.Allocator) bool {

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const atomic = std.atomic;
+const fmt = std.fmt;
 const fs = std.fs;
 const heap = std.heap;
 const io = std.io;
@@ -457,7 +458,7 @@ pub const Core = struct {
                 \\{f}
                 \\-----------
                 \\
-                , .{ print_if }
+                , .{ fmt.alt(print_if.*, .ansiFormat) }
             );
         }
     }
@@ -476,7 +477,7 @@ pub fn findConflictPIDs(
     alloc: mem.Allocator,
     proc_names: []const []const u8,
     writer: ?*Io.Writer,
-    comptime fmt: []const u8,
+    comptime fmt_str: []const u8,
 ) !bool {
     var found_pids: bool = false;
     for (proc_names) |p_name| {
@@ -485,10 +486,10 @@ pub fn findConflictPIDs(
         if (pids.len > 0) {
             found_pids = true;
             if (writer) |w| {
-                try w.print(fmt, .{ p_name, pids.len, PIDF{ .slice = pids } });
+                try w.print(fmt_str, .{ p_name, pids.len, PIDF{ .slice = pids } });
                 continue;
             }
-            log.warn(fmt, .{ p_name, pids.len, PIDF{ .slice = pids } });
+            log.warn(fmt_str, .{ p_name, pids.len, PIDF{ .slice = pids } });
         }
     }
     return found_pids;

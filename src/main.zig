@@ -466,7 +466,7 @@ pub fn main() !void {
         };
         if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
             const connect_vals = try connect_cmd.getVals(.{});
-            const id: core.connections.ID = id: {
+            const id: core.networks.Network.ID = id: {
                 const raw_id = try (connect_vals.get("id").?).getAs([]const u8);
                 break :id //
                     if (address.parseMAC(raw_id)) |bssid| .{ .bssid = bssid } //

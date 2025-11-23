@@ -28,6 +28,7 @@ const nl = @import("../netlink.zig");
 const protocols = @import("../protocols.zig");
 const dns = protocols.dns;
 const utils = @import("../utils.zig");
+const ansi = utils.ansi;
 const c = utils.toStruct;
 const CSlice = utils.CSlice;
 const ThreadHashMap = utils.ThreadHashMap;
@@ -182,8 +183,12 @@ pub const Interface = struct {
         }
 
         pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-            try formatGen(@This(), self, writer);
-        }
+            try formatGen(@This(), self, writer, false);
+        } 
+
+        pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            try formatGen(@This(), self, writer, true);
+        } 
     };
 
     /// Free the allocated portions of this Interface.
@@ -419,72 +424,106 @@ pub const Interface = struct {
     }
 
     pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        try formatGen(@This(), self, writer);
+        try formatGen(@This(), self, writer, false);
     } 
 
-    pub fn formatGen(T: type, self: T, writer: *Io.Writer) Io.Writer.Error!void {
+    pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        try formatGen(@This(), self, writer, true);
+    } 
+
+    pub fn formatGen(T: type, self: T, writer: *Io.Writer, use_ansi: bool) Io.Writer.Error!void {
+        // Setup Writer
+        var filter_writer: ansi.FilterWriter = .init(writer);
+        const w: *Io.Writer =
+            if (use_ansi) writer
+            else &filter_writer.io_writer;
+        // ANSI Resets
+        try w.print("{s}", .{ ansi.reset });
+        defer w.print("{s}", .{ ansi.reset }) catch {};
+        // Format Interface
+        const usage_color: []const u8 = switch (self.usage) {
+            .inactive => ansi.fg.gray,
+            .err => ansi.fg.red,
+            .active => ansi.fg.bright_green,
+            else => ansi.fg.green,
+        };
+        try w.print(
+            \\({d}) {s}{s}{s} | {s}{t}{s}
+            \\
+            , .{
+                self.index,
+                ansi.fmt.bold, self.name, ansi.fmt.reset,
+                usage_color, self.usage, ansi.reset,
+            },
+        );
         if (@hasField(T, "last_upd")) {
             var last_ts_buf: [50]u8 = undefined;
             const last_ts = self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
-            //const cur_usage: []const u8 = switch (self.usage) {
-            //    .inactive => "-",
-            //    else => @tagName(self.usage),
-            //};
-            try writer.print(
-                \\({d}) {s} | {t}
+            try w.print(
                 \\{s}
                 \\
                 , .{
-                    self.index, self.name, self.usage,
                     last_ts,
                 },
-            );
-        } //
-        else {
-            try writer.print(
-                \\({d}) {s} | {t}
-                \\
-                , .{
-                    self.index, self.name, self.usage
-                },
-            );
+        );
         }
-        try writer.print(
-            \\- Phy:    ({d}) {s}
-            \\- OG MAC: {f} ({s})
-            \\- MAC:    {f} ({s})
-            \\- State:  {f}
-            \\- Mode:   {t}
-            \\- MTU:    {d}
-            \\
+        try w.print(
+            \\- {s}Phy{s}:    ({d}) {s}
+            \\- {s}OG MAC{s}: {f} ({s})
+            \\- {s}MAC{s}:    {f} ({s})
+            \\- {s}State{s}:  {f}
+            \\- {s}Mode{s}:   {t}
+            \\- {s}MTU{s}:    {d}
+            \\{s}
             , .{
-                self.phy_index, self.phy_name,
-                MACF{ .bytes = self.og_mac[0..] }, netdata.oui.findOUI(.short, self.og_mac) catch "OUI Unavailable",
-                MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "OUI Unavailable",
-                IFStateF{ .flags = self.state },
-                @as(nl._80211.IFTYPE, @enumFromInt(self.mode)),
-                self.mtu,
+                ansi.fmt.underline, ansi.reset, self.phy_index, self.phy_name,
+                ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.og_mac[0..] }, netdata.oui.findOUI(.short, self.og_mac) catch "OUI Unavailable",
+                ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "OUI Unavailable",
+                ansi.fmt.underline, ansi.reset, IFStateF{ .flags = self.state },
+                ansi.fmt.underline, ansi.reset, @as(nl._80211.IFTYPE, @enumFromInt(self.mode)),
+                ansi.fmt.underline, ansi.reset, self.mtu,
+                ansi.reset,
             },
         );
+        if (self.channel) |ch| {
+            try w.print(
+                "- {s}Channel{s}: {d} | {s}\n", 
+                .{
+                    ansi.fmt.underline,
+                    ansi.reset,
+                    ch,
+                    if (self.ch_width) |width| @tagName(width) //
+                    else "-",
+                }
+            );
+        }
         // TODO: Fix below for Simple Interfaces.
-        if (!@hasField(T, "last_upd"))
-            return;
-        if (self.channel) |ch| //
-            try writer.print("- Channel: {d} | {s}\n", .{ ch, if (self.ch_width) |width| @tagName(width) else "-" });
-        if (self.ips[0] != null) ips: {
-            try writer.print("- IPs:\n", .{});
-            for (self.ips, self.cidrs) |_ip, _cidr| {
-                const ip = _ip orelse break :ips;
-                const cidr = _cidr orelse continue;
-                writer.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
+        if (@hasField(T, "last_upd")) {
+            if (self.ips[0] != null) ips: {
+                try w.print("- {s}IPs{s}:\n", .{ ansi.fmt.underline, ansi.reset });
+                for (self.ips, self.cidrs) |_ip, _cidr| {
+                    const ip = _ip orelse break :ips;
+                    const cidr = _cidr orelse continue;
+                    w.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
+                }
+            }
+        } //
+        else {
+            if (self.ips.len > 0) {
+                try w.print("- {s}IPs{s}:\n", .{ ansi.fmt.underline, ansi.reset });
+                for (self.ips, self.cidrs) |ip, cidr| {
+                    w.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
+                }
             }
         }
-        try writer.print(
-            \\- Support:
+        try w.print(
+            \\- {s}Support{s}:
             //\\  - Channels: ({d} Channels)
             \\
             //, .{ self.supported_freqs.len }
-            , .{},
+            , .{
+                ansi.fmt.underline, ansi.reset,
+            },
         );
         var chans_2G: u8 = 0;
         var chans_5G: u8 = 0;
@@ -504,11 +543,11 @@ pub const Interface = struct {
             //try writer.print("    - {d} ({d})MHz\n", .{ ch, freq });
         }
         if (chans_2G > 0 or chans_5G > 0) {
-            try writer.print("  - Bands:\n", .{});
+            try w.print("  - {s}Bands{s}:\n", .{ ansi.fmt.underline, ansi.reset });
             if (chans_2G > 0) //
-                try writer.print("    - 2G: {d} channels\n", .{ chans_2G });
+                try w.print("    - 2G: {d} channels\n", .{ chans_2G });
             if (chans_5G > 0) //
-                try writer.print("    - 5G: {d} channels\n", .{ chans_5G });
+                try w.print("    - 5G: {d} channels\n", .{ chans_5G });
             //try writer.print("\n", .{});
         }
     }

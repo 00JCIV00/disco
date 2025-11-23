@@ -64,11 +64,13 @@ pub const GlobalConfig = struct {
 
 /// Config for a Single Connection.
 pub const Config = struct {
+    /// Enable/Disable this Config
+    enabled: bool = true,
     /// Interfaces that are allowed to Connect to the corresponding Network.
     /// If this is left empty, any Interface may connect to the Network.
     if_names: []const []const u8 = &.{},
     /// ID of the Network
-    id: ID,
+    id: core.networks.Network.ID,
     /// Passphrase of the WEP, WPA2, WPA3T, or WPA3 Network
     passphrase: []const u8 = "",
     /// Security "Type" of the Network.
@@ -120,41 +122,6 @@ pub const Status = struct {
     ended: ?zeit.Instant = null,
 };
 
-/// ID of a Network
-pub const ID = union(enum) {
-    bssid: [6]u8,
-    ssid: []const u8,
-
-    pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
-        switch (self.*) {
-            .ssid => |ssid| alloc.free(ssid),
-            else => {},
-        }
-    }
-
-    pub fn clone(self: *const @This(), alloc: mem.Allocator) mem.Allocator.Error!@This() {
-        return switch (self.*) {
-            .ssid => |ssid| .{ .ssid = try alloc.dupe(u8, ssid) },
-            .bssid => self.*,
-        };
-    }
-
-    pub fn eql(self: @This(), other: @This()) bool {
-        if (meta.activeTag(self) != meta.activeTag(other)) //
-            return false;
-        return switch (self) {
-            .ssid => mem.eql(u8, self.ssid, other.ssid),
-            .bssid => mem.eql(u8, self.bssid[0..], other.bssid[0..]),
-        };
-    }
-
-    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        switch (self) {
-            .bssid => |bssid| try writer.print("{f}", .{ HexF{ .bytes = bssid[0..] } }),
-            .ssid => |ssid| try writer.print("{s}", .{ ssid }),
-        }
-    }
-};
 
 /// Connection Context
 pub const Context = struct {
@@ -290,6 +257,8 @@ pub const Context = struct {
                 self.configs.mutex.lock();
                 defer self.configs.mutex.unlock();
                 for (self.configs.list.items) |conf| {
+                    if (!conf.enabled) //
+                        continue;
                     switch (conf.id) {
                         .ssid => |ssid| {
                             if (!mem.eql(u8, ssid, network.ssid)) //
@@ -499,15 +468,6 @@ pub const Connection = struct {
                 },
             );
         }
-    };
-
-    /// Current Thread State for a Connection.
-    const ThreadState = union(enum) {
-        ready,
-        starting,
-        working: struct { timer: time.Timer, id: u32 },
-        done,
-        err: anyerror,
     };
 
     /// Start a new Connection

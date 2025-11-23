@@ -63,9 +63,30 @@ pub const Request = union(enum) {
             }
         }
     },
-    networks,
+    networks: union(enum) {
+        get: core.networks.Network.ID,
+        get_all,
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                .get => |id| id.deinit(alloc),
+                else => {},
+            }
+        }
+    },
     connections: union(enum) {
         add: core.connections.Config,
+        enable: core.networks.Network.ID,
+        disable: core.networks.Network.ID,
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                .enable,
+                .disable,
+                    => |id| id.deinit(alloc),
+                else => {},
+            }
+        }
     },
     sockets,
     captures,
@@ -75,6 +96,8 @@ pub const Request = union(enum) {
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
         switch (self.*) {
             .interfaces => |if_req| if_req.deinit(alloc),
+            .networks => |net_req| net_req.deinit(alloc),
+            .connections => |conn_req| conn_req.deinit(alloc),
             else => {},
         }
     }
@@ -101,13 +124,31 @@ pub const Response = union(enum) {
             }
         }
     },
-    networks,
+    networks: union(enum) {
+        single: ?core.networks.Network.Simple,
+        list: []const core.networks.Network.Simple,
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                .single => |s_net| single: {
+                    const resp_net = s_net orelse break :single;
+                    resp_net.deinit(alloc);
+                },
+                .list => |net_list| {
+                    for (net_list) |resp_net| //
+                        resp_net.deinit(alloc);
+                    alloc.free(net_list);
+                }
+            }
+        }
+    },
     connections,
 
     /// Deinitialize any Allocations in this Response.
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
         switch (self.*) {
             .interfaces => |if_resp| if_resp.deinit(alloc),
+            .networks => |net_resp| net_resp.deinit(alloc),
             else => {},
         }
     }
@@ -270,6 +311,24 @@ pub const Aggregator = struct {
                     }
                     log.debug("Handled Interfaces Request: {d}", .{ req.key_ptr.* });
                 },
+                .networks => |net_req| {
+                    core_ctx.network_ctx.networks.mutex.lock();
+                    defer core_ctx.network_ctx.networks.mutex.unlock();
+                    switch (net_req) {
+                        .get_all => {
+                            var net_list: ArrayList(core.networks.Network.Simple) = .empty;
+                            var net_iter = core_ctx.network_ctx.networks.map.valueIterator();
+                            while (net_iter.next()) |next_net| {
+                                const resp_net: core.networks.Network.Simple = .from(core_ctx.alloc, next_net.*);
+                                net_list.append(core_ctx.alloc, resp_net) catch @panic("OOM");
+                            }
+                            const resp_nets = net_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .{ .networks = .{ .list = resp_nets } }) catch @panic("OOM");
+                        },
+                        else => {},
+                    }
+                    log.debug("Handled Networks Request: {d}", .{ req.key_ptr.* });
+                },
                 .connections => |conn| {
                     core_ctx.conn_ctx.configs.mutex.lock();
                     defer core_ctx.conn_ctx.configs.mutex.unlock();
@@ -285,7 +344,48 @@ pub const Aggregator = struct {
                             self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
                             log.info("Added new Connection: '{f}'", .{ add_conn.id });
                         },
+                        .enable => |enable_id| {
+                            var enabled = false;
+                            for (core_ctx.conn_ctx.configs.list.items) |*next_conn| {
+                                if (!next_conn.id.eql(enable_id))
+                                    continue;
+                                next_conn.enabled = true;
+                                enabled = true;
+                            }
+                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                            if (!enabled) //
+                                log.info("Connection '{f}' not found.", .{ enable_id }) //
+                            else //
+                                log.info("Enabled Connection: '{f}'", .{ enable_id });
+                        },
+                        .disable => |disable_id| disable: {
+                            var disabled = false;
+                            for (core_ctx.conn_ctx.configs.list.items) |*next_conn| {
+                                if (!next_conn.id.eql(disable_id))
+                                    continue;
+                                next_conn.enabled = false;
+                                disabled = true;
+                            }
+                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                            if (!disabled) {
+                                log.info("Connection '{f}' not found.", .{ disable_id });
+                                break :disable;
+                            } //
+                            else //
+                                log.info("Disabled Connection: '{f}'", .{ disable_id });
+                            core_ctx.if_ctx.interfaces.mutex.lock();
+                            defer core_ctx.if_ctx.interfaces.mutex.unlock();
+                            var if_iter = core_ctx.if_ctx.interfaces.map.iterator();
+                            while (if_iter.next()) |next_if_entry| {
+                                const next_if = next_if_entry.value_ptr;
+                                switch (next_if.usage) {
+                                    .connect => |*if_conn| if_conn.stop(core_ctx),
+                                    else => {},
+                                }
+                            }
+                        },
                     }
+                    log.debug("Handled Connection Request: {d}", .{ req.key_ptr.* });
                 },
                 else => |tag| log.err("Unimplemented: {t}", .{ tag }),
             }

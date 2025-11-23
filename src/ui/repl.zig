@@ -870,20 +870,32 @@ pub const CommandBar = struct {
                         .interfaces => |if_resp| switch (if_resp) {
                             .single => |resp_if| {
                                 const out_if = resp_if orelse continue;
-                                try shell.display.out_writer.print("{f}", .{ out_if });
+                                try shell.display.out_writer.print("{f}", .{ fmt.alt(out_if, .ansiFormat) });
                                 try shell.display.out_writer.flush();
                             },
                             .list => |resp_ifs| respIFs: {
                                 if (resp_ifs.len == 0)
                                     break :respIFs;
-                                //defer core_ctx.alloc.free(resp_ifs);
                                 try shell.display.out_writer.print("Interfaces ({d}):\n{s}", .{ resp_ifs.len, sep });
                                 for (resp_ifs) |resp_if| {
-                                    //defer resp_if.deinit(core_ctx.alloc);
-                                    try shell.display.out_writer.print("{f}{s}", .{ resp_if, sep });
+                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_if, .ansiFormat), sep });
                                 }
                                 try shell.display.out_writer.flush();
                             },
+                        },
+                        .networks => |net_resp| switch (net_resp) {
+                            .list => |resp_nets| respNets: {
+                                if (resp_nets.len == 0)
+                                    break :respNets;
+                                try shell.display.out_writer.print("Networks ({d}):\n{s}", .{ resp_nets.len, sep });
+                                for (resp_nets, 0..) |resp_net, idx| {
+                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_net, .ansiFormat), sep });
+                                    if (idx % 5 == 0)
+                                        try shell.display.out_writer.flush();
+                                }
+                                try shell.display.out_writer.flush();
+                            },
+                            else => {},
                         },
                         else => {},
                     }
@@ -1101,6 +1113,14 @@ pub const CommandBar = struct {
                 try self.req_list.append(core_ctx.alloc, req_id);
                 log.debug("Requested Interfaces. Req ID: {d}", .{ req_id });
             }
+            if (list_cmd.checkFlag("networks")) netOpt: {
+                const req_id = core_ctx.req_aggregator.push(.{ .networks = .get_all }) catch |err| {
+                    log.err("Unable to request Network Info: {t}", .{ err });
+                    break :netOpt;
+                };
+                try self.req_list.append(core_ctx.alloc, req_id);
+                log.debug("Requested Networks. Req ID: {d}", .{ req_id });
+            }
         }
         // - Activate/Deactivate Interfaces
         if (main_cmd.matchSubCmd("activate")) |act_cmd| actCmd: {
@@ -1145,7 +1165,7 @@ pub const CommandBar = struct {
         if (main_cmd.matchSubCmd("connect")) |connect_cmd| connectCmd: {
             const connect_vals = try connect_cmd.getVals(.{});
             const raw_id = try (connect_vals.get("id").?).getAs([]const u8);
-            const id: core.connections.ID = id: {
+            const id: core.networks.Network.ID = id: {
                 break :id //
                     if (address.parseMAC(raw_id)) |bssid| .{ .bssid = bssid } //
                     else |_| .{ .ssid = core_ctx.alloc.dupe(u8, raw_id) catch @panic("OOM") };
@@ -1183,17 +1203,61 @@ pub const CommandBar = struct {
                         .id = id,
                         .passphrase = pass,
                         .security = security,
-                        .dhcp = if (connect_cmd.checkFlag("dhcp")) .{} else null,
+                        .dhcp =
+                            if (connect_cmd.checkFlag("dhcp")) .{}
+                            else null,
                         .add_gw = connect_cmd.checkFlag("gateway"),
                     },
                 },
             };
             const req_id = core_ctx.req_aggregator.push(conn_req) catch |err| {
-                log.err("Unable to Deactivate Interface: {t}", .{ err });
+                log.err("Unable to Add Connection: {t}", .{ err });
                 break :connectCmd;
             };
             try self.req_list.append(core_ctx.alloc, req_id);
             log.debug("Adding Connection for '{s}'. Req ID: {d}", .{ raw_id, req_id });
+        }
+        // - Disconnect
+        if (main_cmd.matchSubCmd("disconnect")) |disconn_cmd| disconnCmd: {
+            const disconn_vals = try disconn_cmd.getVals(.{});
+            const raw_id = try (disconn_vals.get("id").?).getAs([]const u8);
+            const id: core.networks.Network.ID = id: {
+                break :id //
+                    if (address.parseMAC(raw_id)) |bssid| .{ .bssid = bssid } //
+                    else |_| .{ .ssid = core_ctx.alloc.dupe(u8, raw_id) catch @panic("OOM") };
+            };
+            const disconn_req: core.requests.Request = .{
+                .connections = .{
+                    .disable = id,
+                },
+            };
+            const req_id = core_ctx.req_aggregator.push(disconn_req) catch |err| {
+                log.err("Unable to Disable Connection: {t}", .{ err });
+                break :disconnCmd;
+            };
+            try self.req_list.append(core_ctx.alloc, req_id);
+            log.debug("Disabling Connection for '{s}'. Req ID: {d}", .{ raw_id, req_id });
+        }
+        // - Reconnect
+        if (main_cmd.matchSubCmd("reconnect")) |reconn_cmd| reconnCmd: {
+            const reconn_vals = try reconn_cmd.getVals(.{});
+            const raw_id = try (reconn_vals.get("id").?).getAs([]const u8);
+            const id: core.networks.Network.ID = id: {
+                break :id //
+                    if (address.parseMAC(raw_id)) |bssid| .{ .bssid = bssid } //
+                    else |_| .{ .ssid = core_ctx.alloc.dupe(u8, raw_id) catch @panic("OOM") };
+            };
+            const reconn_req: core.requests.Request = .{
+                .connections = .{
+                    .enable = id,
+                },
+            };
+            const req_id = core_ctx.req_aggregator.push(reconn_req) catch |err| {
+                log.err("Unable to Re-add Connection: {t}", .{ err });
+                break :reconnCmd;
+            };
+            try self.req_list.append(core_ctx.alloc, req_id);
+            log.debug("Re-adding Connection for '{s}'. Req ID: {d}", .{ raw_id, req_id });
         }
         // Write Valid Arguments to Display
         const in_w = &shell.display.in_writer;
@@ -1212,8 +1276,9 @@ pub const setup_cmd: main_cli.CommandT = .{
     .name = "disco-tui",
     .description = "TUI Commands for DisCo.",
     .examples = &.{
+        "usage",
+        "help",
         "exit",
-        "quit",
     },
     .cmd_groups = &.{ "ACTIVE", "INTERFACE", "SETTINGS" },
     .opt_groups = &.{ "ACTIVE", "MASK", "SETTINGS" },
@@ -1223,9 +1288,41 @@ pub const setup_cmd: main_cli.CommandT = .{
     .sub_cmds = &.{
         ui.cli.connect_cmd,
         .{
+            .name = "disconnect",
+            .description = "Disconnect from the specified Network.",
+            .cmd_group = "ACTIVE",
+            .vals = &.{
+                .ofType([]const u8, .{
+                    .name = "id",
+                    .description = "The Network SSID (up to 32 characters) or BSSID (6 octet MAC Address) to Disconnect from.",
+                    .valid_fn = struct {
+                        pub fn validSSID(arg: []const u8, _: mem.Allocator) bool {
+                            return arg.len > 0 and arg.len <= 32;
+                        }
+                    }.validSSID,
+                }),
+            },
+        },
+        .{
+            .name = "reconnect",
+            .description = "Reconnect to the specified Network.",
+            .cmd_group = "ACTIVE",
+            .vals = &.{
+                .ofType([]const u8, .{
+                    .name = "id",
+                    .description = "The Network SSID (up to 32 characters) or BSSID (6 octet MAC Address) to Reconnect to.",
+                    .valid_fn = struct {
+                        pub fn validSSID(arg: []const u8, _: mem.Allocator) bool {
+                            return arg.len > 0 and arg.len <= 32;
+                        }
+                    }.validSSID,
+                }),
+            },
+        },
+        .{
             .name = "exit",
             .alias_names = &.{ "quit", "q" },
-            .description = "Exit DisCo."
+            .description = "Exit DisCo.",
         },
         .{
             .name = "filter",

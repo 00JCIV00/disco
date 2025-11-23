@@ -26,6 +26,7 @@ const nl = @import("../netlink.zig");
 const proto = @import("../protocols.zig");
 const wpa = proto.wpa;
 const utils = @import("../utils.zig");
+const ansi = utils.ansi;
 const c = utils.toStruct;
 const ThreadHashMap = utils.ThreadHashMap;
 
@@ -44,6 +45,87 @@ pub const Network = struct {
     net_meta: *ThreadHashMap([6]u8, Meta),
     scan_result: nl._80211.ScanResults,
 
+    /// ID of a Network
+    pub const ID = union(enum) {
+        bssid: [6]u8,
+        ssid: []const u8,
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                .ssid => |ssid| alloc.free(ssid),
+                else => {},
+            }
+        }
+
+        pub fn clone(self: *const @This(), alloc: mem.Allocator) mem.Allocator.Error!@This() {
+            return switch (self.*) {
+                .ssid => |ssid| .{ .ssid = try alloc.dupe(u8, ssid) },
+                .bssid => self.*,
+            };
+        }
+
+        pub fn eql(self: @This(), other: @This()) bool {
+            if (meta.activeTag(self) != meta.activeTag(other)) //
+                return false;
+            return switch (self) {
+                .ssid => mem.eql(u8, self.ssid, other.ssid),
+                .bssid => mem.eql(u8, self.bssid[0..], other.bssid[0..]),
+            };
+        }
+
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            switch (self) {
+                .bssid => |bssid| try writer.print("{f}", .{ MACF{ .bytes = bssid[0..] } }),
+                .ssid => |ssid| try writer.print("{s}", .{ ssid }),
+            }
+        }
+    };
+
+    /// Simple Network
+    pub const Simple = struct {
+        bssid: [6]u8,
+        ssid: []const u8,
+        security: nl._80211.SecurityType,
+        auth: nl._80211.AuthType,
+        channel: u32,
+        freq: u32,
+        net_meta: []const Meta,
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            alloc.free(self.ssid);
+            for (self.net_meta) |nm|
+                nm.deinit(alloc);
+            alloc.free(self.net_meta);
+        }
+
+        pub fn from(alloc: mem.Allocator, from_net: Network) @This() {
+            return .{
+                .bssid = from_net.bssid,
+                .ssid = alloc.dupe(u8, from_net.ssid) catch @panic("OOM"),
+                .security = from_net.security,
+                .auth = from_net.auth,
+                .channel = from_net.channel,
+                .freq = from_net.freq,
+                .net_meta = netMeta: {
+                    var nm_list: ArrayList(Meta) = .empty;
+                    var nm_iter = from_net.net_meta.iterator();
+                    defer nm_iter.unlock();
+                    while (nm_iter.next()) |nm_entry|
+                        nm_list.append(alloc, nm_entry.value_ptr.dupe(alloc)) catch @panic("OOM");
+                    break :netMeta nm_list.toOwnedSlice(alloc) catch @panic("OOM");
+                },
+            };
+        }
+
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            try formatGen(@This(), self, writer, false);
+        } 
+
+        pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            try formatGen(@This(), self, writer, true);
+        } 
+    };
+
     /// Meta Information about how a Network was Seen
     pub const Meta = struct {
         seen_by: []const u8,
@@ -57,6 +139,15 @@ pub const Network = struct {
                 alloc.free(self.frame_nums);
         }
 
+        pub fn dupe(self: *const @This(), alloc: mem.Allocator) @This() {
+            return .{
+                .seen_by = alloc.dupe(u8, self.seen_by) catch @panic("OOM"),
+                .last_seen = self.last_seen,
+                .rssi = self.rssi,
+                .frame_nums = alloc.dupe(usize, self.frame_nums) catch @panic("OOM"),
+            };
+        }
+
         pub fn calcRxQual(self: *const @This()) usize {
             if (self.frame_nums.len < 2) return 0;
             const first = self.frame_nums[0];
@@ -68,17 +159,22 @@ pub const Network = struct {
         pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             var last_ts_buf: [50]u8 = undefined;
             const last_ts = self.last_seen.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
+            const rssi_color: []const u8 = switch (self.rssi) {
+                -40...100 => ansi.fg.green,
+                -70...-41 => ansi.fg.yellow,
+                else => ansi.fg.red,
+            };
             try writer.print(
-                \\- Seen By:   {s}
-                \\- RSSI:      {d} dBm
-                \\- Rx Qual:   {d}
-                \\- Last Seen: {s}
+                \\- {s}Seen By{s}:   {s}
+                \\- {s}RSSI{s}:      {s}{d}{s} dBm
+                \\- {s}Rx Qual{s}:   {d}
+                \\- {s}Last Seen{s}: {s}
                 \\
                 , .{
-                    self.seen_by,
-                    self.rssi,
-                    self.calcRxQual(),
-                    last_ts,
+                    ansi.fmt.underline, ansi.reset, self.seen_by,
+                    ansi.fmt.underline, ansi.reset, rssi_color, self.rssi, ansi.reset,
+                    ansi.fmt.underline, ansi.reset, self.calcRxQual(),
+                    ansi.fmt.underline, ansi.reset, last_ts,
                 },
             );
         }
@@ -96,6 +192,22 @@ pub const Network = struct {
     }
 
     pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        try formatGen(@This(), self, writer, false);
+    } 
+
+    pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        try formatGen(@This(), self, writer, true);
+    } 
+
+    pub fn formatGen(T: type, self: T, writer: *Io.Writer, use_ansi: bool) Io.Writer.Error!void {
+        // Setup Writer
+        var filter_writer: ansi.FilterWriter = .init(writer);
+        const w: *Io.Writer =
+            if (use_ansi) writer
+            else &filter_writer.io_writer;
+        // ANSI Resets
+        try w.print("{s}", .{ ansi.reset });
+        defer w.print("{s}", .{ ansi.reset }) catch {};
         const ssid: []const u8 = ssid: {
             if (//
                 self.ssid.len > 0 and //
@@ -104,28 +216,39 @@ pub const Network = struct {
             break :ssid "[HIDDEN NETWORK] (DisCo)";
         };
         try writer.print(
-            \\{s}
-            \\- BSSID:     {f} ({s})
-            \\- Security:  {t}
-            \\- Auth:      {t}
-            \\- Channel:   {d} ({d} MHz)
+            \\{s}{s}{s}
+            \\- {s}BSSID{s}:     {f} ({s})
+            \\- {s}Security{s}:  {t}
+            \\- {s}Auth{s}:      {t}
+            \\- {s}Channel{s}:   {d} ({d} MHz)
             \\
             , .{
-                ssid,
-                MACF{ .bytes = self.bssid[0..] }, netdata.oui.findOUI(.short, self.bssid) catch "OUI Unavailable",
-                self.security,
-                self.auth,
-                self.channel, self.freq,
+                ansi.fmt.bold, ssid, ansi.reset,
+                ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.bssid[0..] }, netdata.oui.findOUI(.short, self.bssid) catch "OUI Unavailable",
+                ansi.fmt.underline, ansi.reset, self.security,
+                ansi.fmt.underline, ansi.reset, self.auth,
+                ansi.fmt.underline, ansi.reset, self.channel, self.freq,
             },
         );
-        var meta_iter = self.net_meta.iterator();
-        defer self.net_meta.mutex.unlock();
-        while (meta_iter.next()) |meta_entry| {
-            try writer.print(
-                \\----------
-                \\{f}
-                , .{ meta_entry.value_ptr }
-            );
+        if (T == Network) {
+            var meta_iter = self.net_meta.iterator();
+            defer self.net_meta.mutex.unlock();
+            while (meta_iter.next()) |meta_entry| {
+                try writer.print(
+                    \\----------
+                    \\{f}
+                    , .{ meta_entry.value_ptr }
+                );
+            }
+        } //
+        else {
+            for (self.net_meta) |nm| {
+                try writer.print(
+                    \\----------
+                    \\{f}
+                    , .{ nm }
+                );
+            }
         }
     }
 };
