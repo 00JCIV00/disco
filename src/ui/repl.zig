@@ -797,6 +797,10 @@ pub const CommandBar = struct {
     prompt: vxfw.TextField,
     /// Text Field
     textfield: vxfw.TextField,
+    /// Command History
+    history: ArrayList([]const u8) = .empty,
+    /// Command History Index
+    hist_idx: ?usize = null,
 
 
     /// Initialize a new CommandBar
@@ -908,6 +912,42 @@ pub const CommandBar = struct {
                 },
                 else => {},
             },
+            .key_press => |key| key: {
+                if (key.matchesAny(&.{ vaxis.Key.up, vaxis.Key.down }, .{})) {
+                    const hist_len = self.history.items.len;
+                    if (hist_len == 0)
+                        break :key;
+                    if (key.matches(vaxis.Key.up, .{})) {
+                        if (self.hist_idx) |*idx| {
+                            idx.* +|= 1;
+                            idx.* = @min(hist_len - 1, idx.*);
+                        } //
+                        else
+                            self.hist_idx = 0;
+                    }
+                    if (key.matches(vaxis.Key.down, .{})) {
+                        if (self.hist_idx) |*idx| {
+                            if (idx.* == 0) //
+                                self.hist_idx = null //
+                            else //
+                                idx.* -|= 1;
+                        }
+                    }
+                    self.textfield.clearAndFree();
+                    const hist_item: []const u8 = //
+                        if (self.hist_idx) |idx| self.history.items[idx] //
+                        else "";
+                    try self.textfield.insertSliceAtCursor(hist_item);
+                    ctx.consumeAndRedraw();
+                }
+                if (key.matchesAny(&.{ vaxis.Key.left, vaxis.Key.right }, .{ .ctrl = true })) {
+                    if (key.matches(vaxis.Key.left, .{ .ctrl = true }))
+                        self.textfield.moveBackwardWordwise();
+                    if (key.matches(vaxis.Key.right, .{ .ctrl = true }))
+                        self.textfield.moveForwardWordwise();
+                    ctx.consume_event = true;
+                }
+            },
             else => {},
         }
     }
@@ -1016,10 +1056,9 @@ pub const CommandBar = struct {
             defer out_w.flush() catch {};
             switch (err) {
                 error.UsageHelpCalled => {
-                    const in_w = &shell.display.in_writer;
-                    try in_w.writeAll(input);
-                    try in_w.flush();
-                    self.textfield.clearRetainingCapacity();
+                    if (mem.indexOf(u8, input, "help") == null)
+                        return;
+                    try self.addInput(input);
                     ctx.consumeAndRedraw();
                     return;
                 },
@@ -1260,15 +1299,24 @@ pub const CommandBar = struct {
             log.debug("Re-adding Connection for '{s}'. Req ID: {d}", .{ raw_id, req_id });
         }
         // Write Valid Arguments to Display
-        const in_w = &shell.display.in_writer;
-        try in_w.writeAll(input);
-        try in_w.flush();
-        self.textfield.clearRetainingCapacity();
+        try self.addInput(input);
         ctx.consumeAndRedraw();
         if (out_msg) |msg| {
             try out_w.writeAll(msg);
             try out_w.flush();
         }
+    }
+
+    /// Send the provided `input` to the Display's Input Writer and add it to History.
+    pub fn addInput(self: *@This(), input: []const u8) Io.Writer.Error!void {
+        const hist_item = self.a_alloc.dupe(u8, input) catch @panic("OOM");
+        self.history.insert(self.a_alloc, 0, hist_item) catch @panic("OOM");
+        self.hist_idx = null;
+        const shell = self.shell orelse return;
+        const in_w = &shell.display.in_writer;
+        try in_w.writeAll(input);
+        try in_w.flush();
+        self.textfield.clearRetainingCapacity();
     }
 };
 
