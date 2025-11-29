@@ -11,10 +11,10 @@ pub const tui = @import("ui/tui.zig");
 pub const Mode = enum {
     /// Basic, headeless mode for DisCo that runs based on CLI Input & Configs.
     /// This mode has no user interaction while running.
-    cli,
+    cli, headless, none,
     /// Read, Evaluate, Print Loop (REPL) Shell for DisCo.
     /// This mode allows for Command based interactivity while running.
-    repl,
+    repl, shell,
     /// Text User Interface (TUI) for DisCo.
     /// This mode provides a full UI users within the Terminal.
     tui,

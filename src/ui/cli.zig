@@ -286,20 +286,13 @@ pub const setup_cmd: CommandT = .{
         },
         .{
             .name = "ui",
-            .description = "Choose the UI Mode for DisCo (cli, repl, or tui).",
+            .description = "Choose the UI Mode for DisCo (headless, shell, or tui).",
             .short_name = 'U',
             .long_name = "ui",
             .val = .ofType(ui.Mode, .{
                 .name = "ui_mode",
                 .description = "The UI Mode for DisCo.",
-                .default_val = .cli,
             }),
-        },
-        // TODO Implement these Base Options
-        .{
-            .name = "no_mouse",
-            .description = "Disable mouse events for the TUI.",
-            .long_name = "no-mouse",
         },
         .{
             .name = "no_conflict_pids",
@@ -310,7 +303,13 @@ pub const setup_cmd: CommandT = .{
             .name = "no_default_config",
             .description = "Ignore any Default Configs",
             .long_name = "no-default-config",
-        }
+        },
+        // TODO Implement these Base Options
+        .{
+            .name = "no_mouse",
+            .description = "Disable mouse events for the TUI.",
+            .long_name = "no-mouse",
+        },
     },
     .sub_cmds = &.{
         connect_cmd,

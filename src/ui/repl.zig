@@ -37,7 +37,8 @@ pub const Shell = struct {
     cmd_bar: *CommandBar,
     tick_interval: u32 = 200,
     active: enum { display, cmd_bar } = .cmd_bar,
-    legend_segs: []const vaxis.Segment,
+    cmd_legend_segs: []const vaxis.Segment,
+    dis_legend_segs: []const vaxis.Segment,
 
     /// Initialize a new REPL Shell
     pub fn init(alloc: mem.Allocator, core_ctx: *core.Core) mem.Allocator.Error!*@This() {
@@ -46,7 +47,8 @@ pub const Shell = struct {
             .core_ctx = core_ctx,
             .display = try .init(alloc),
             .cmd_bar = try .init(alloc),
-            .legend_segs = ui.tui.ansiToSegments(alloc, legend_string) catch return mem.Allocator.Error.OutOfMemory,
+            .cmd_legend_segs = ui.tui.ansiToSegments(alloc, comptime legendString(.cmd_bar)) catch return mem.Allocator.Error.OutOfMemory,
+            .dis_legend_segs = ui.tui.ansiToSegments(alloc, comptime legendString(.display)) catch return mem.Allocator.Error.OutOfMemory,
         };
         self.display.shell = self;
         self.cmd_bar.shell = self;
@@ -59,9 +61,11 @@ pub const Shell = struct {
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         self.display.deinit();
         self.cmd_bar.deinit();
-        for (self.legend_segs) |seg|
-            alloc.free(seg.text);
-        alloc.free(self.legend_segs);
+        inline for (&.{ self.cmd_legend_segs, self.dis_legend_segs }) |legend_segs| {
+            for (legend_segs) |seg|
+                alloc.free(seg.text);
+            alloc.free(legend_segs);
+        }
         alloc.destroy(self);
     }
 
@@ -116,8 +120,12 @@ pub const Shell = struct {
     /// Draw this REPL Shell
     pub fn draw(self: *@This(), ctx: vxfw.DrawContext) mem.Allocator.Error!vxfw.Surface {
         const max = ctx.max.size();
+        const legend_segs = switch (self.active) {
+            .cmd_bar => self.cmd_legend_segs,
+            .display => self.dis_legend_segs,
+        };
         const legend_text: vxfw.RichText = .{
-            .text = self.legend_segs,
+            .text = legend_segs,
             .softwrap = false,
         };
         const legend_center: vxfw.Center = .{
@@ -167,7 +175,7 @@ pub const Shell = struct {
         return try self.draw(ctx);
     }
 
-    const legend_string: []const u8 = legendString: {
+    fn legendString(comptime kind: enum { cmd_bar, display }) []const u8 {
         const focus_display: []const u8 = fmt.comptimePrint(
             "{s}{s}Focus Display{s}:{s} {s}{f}ctrl+up{s}",
             .{
@@ -183,7 +191,7 @@ pub const Shell = struct {
             },
         );
         const focus_cmd_bar: []const u8 = fmt.comptimePrint(
-            "{s}{s}Focus Command Bar{s}:{s} {s}{f}ctrl+down{s}{s} or {s}{f}:{s}",
+            "{s}{s}Focus Command Bar{s}:{s} {s}{f}ctrl+down{s}{s} or {s}{s}{f}:{s}",
             .{
                 // Focus Command Bar
                 ansi.fmt.underline,
@@ -196,6 +204,28 @@ pub const Shell = struct {
                 ansi.reset,
                 // or
                 ansi.fmt.dim,
+                ansi.reset,
+                // :
+                ansi.fmt.bold,
+                ansi.fg.rgb(.from(art.disco_blue)),
+                ansi.reset,
+            },
+        );
+        const cmd_history: []const u8 = fmt.comptimePrint(
+            "{s}{s}Command History{s}:{s} {s}{f}up{s}{s}/{s}{s}{f}down{s}",
+            .{
+                // Focus Command Bar
+                ansi.fmt.underline,
+                ansi.fmt.dim,
+                ansi.fmt.reset_underline,
+                ansi.reset,
+                // ctrl+down
+                ansi.fmt.bold,
+                ansi.fg.rgb(.from(art.disco_blue)),
+                ansi.reset,
+                // /
+                ansi.fmt.dim,
+                ansi.reset,
                 // :
                 ansi.fmt.bold,
                 ansi.fg.rgb(.from(art.disco_blue)),
@@ -231,7 +261,7 @@ pub const Shell = struct {
             },
         );
         const exit: []const u8 = fmt.comptimePrint(
-            "{s}{s}Exit{s}:{s} {s}{f}ctrl+c{s}{s} or {s}{f}exit{s}",
+            "{s}{s}Exit{s}:{s} {s}{f}ctrl+c{s}{s} or {s}{s}{f}exit{s}",
             .{
                 // Exit
                 ansi.fmt.underline,
@@ -244,23 +274,33 @@ pub const Shell = struct {
                 ansi.reset,
                 // or
                 ansi.fmt.dim,
+                ansi.reset,
                 // exit
                 ansi.fmt.bold,
                 ansi.fg.rgb(.from(art.disco_blue)),
                 ansi.reset,
             },
         );
-        break :legendString fmt.comptimePrint(
-            "{s} | {s} | {s} | {s} | {s}",
-            .{
-                focus_display,
-                focus_cmd_bar,
-                auto_scroll,
-                see_cmds,
-                exit,
-            },
-        );
-    };
+        return switch (kind) {
+            .cmd_bar => fmt.comptimePrint(
+                "{s} | {s} | {s} | {s}",
+                .{
+                    focus_display,
+                    see_cmds,
+                    cmd_history,
+                    exit,
+                },
+            ),
+            .display => fmt.comptimePrint(
+                "{s} | {s} | {s}",
+                .{
+                    focus_cmd_bar,
+                    auto_scroll,
+                    exit,
+                },
+            ),
+        };
+    }
 };
 
 /// Display
@@ -974,12 +1014,6 @@ pub const CommandBar = struct {
                 },
             }
         }
-        //const border_surf: vxfw.SubSurface = .{
-        //    .origin = .{ .row = 0, .col = 0 },
-        //    .surface = try self.border.draw(ctx),
-        //};
-        //const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-        //children[0] = border_surf;
         const pt_len: u16 = @truncate(self.prompt_text.len);
         const prompt_surf: vxfw.SubSurface = .{
             .origin = .{ .row = 0, .col = 0 },
@@ -1217,7 +1251,7 @@ pub const CommandBar = struct {
             const pass = pass: {
                 const pass_opt = connect_opts.get("passphrase") orelse {
                     if (security != null and security.? != .open) //
-                        log.err("The {t} protocol requires a passhprase.", .{ security.? })
+                        log.err("The {t} protocol requires a passhprase.", .{ security.? }) //
                     else //
                         log.warn("No passphrase provided. This will only work with Open Networks.", .{});
                     break :pass "";
@@ -1242,8 +1276,8 @@ pub const CommandBar = struct {
                         .id = id,
                         .passphrase = pass,
                         .security = security,
-                        .dhcp =
-                            if (connect_cmd.checkFlag("dhcp")) .{}
+                        .dhcp = //
+                            if (connect_cmd.checkFlag("dhcp")) .{} //
                             else null,
                         .add_gw = connect_cmd.checkFlag("gateway"),
                     },

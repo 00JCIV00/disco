@@ -47,7 +47,7 @@ pub const MainWidget = union(enum) {
 
     pub fn init(alloc: mem.Allocator, mode: ui.Mode, core_ctx: *core.Core) mem.Allocator.Error!@This() {
         return switch (mode) {
-            .repl => .{ .repl = try ui.repl.Shell.init(alloc, core_ctx) },
+            .repl, .shell => .{ .repl = try ui.repl.Shell.init(alloc, core_ctx) },
             else => @panic("Non-TUI Mode"),
         };
     }

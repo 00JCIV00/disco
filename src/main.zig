@@ -403,6 +403,9 @@ pub fn main() !void {
                     .require_conflicts_ack = !main_cmd.checkFlag("no_conflict_pids"),
                 },
             };
+            
+            if (main_opts.get("ui")) |ui_mode_opt| //
+                config.profile.ui_mode = try ui_mode_opt.val.getAs(ui.Mode);
             if (main_opts.get("config")) |config_opt| userConf: {
                 const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
                 defer config_file.close();
@@ -649,11 +652,8 @@ pub fn main() !void {
         while (!(&core_ctx).active.load(.acquire)) //
             Thread.sleep(10 * time.ns_per_ms);
         // UI Mode
-        const ui_mode: ui.Mode = uiMode: {
-            const ui_mode_opt = main_opts.get("ui").?;
-            break :uiMode try ui_mode_opt.val.getAs(ui.Mode);
-        };
-        log.info("{s}{s}{s}UI Mode{s}: {s}{t}{s}", .{ 
+        const ui_mode = core_config.profile.ui_mode;
+        log.info("{s}{s}{s}UI Mode{s}: {s}{t}{s}", .{
             ansi.bg.blue,
             ansi.fg.black,
             ansi.fmt.underline,
@@ -663,7 +663,7 @@ pub fn main() !void {
             ansi.reset
         });
         switch (ui_mode) {
-            .repl, .tui => {
+            .shell, .repl, .tui => {
                 errdefer core_ctx.stop();
                 core_ctx.tui_ctx = try .init(alloc, ui_mode, &core_ctx);
                 defer core_ctx.tui_ctx.?.deinit(alloc);

@@ -14,6 +14,7 @@ const Io = std.Io;
 const StaticStringMap = std.StaticStringMap;
 
 const netdata = @import("../netdata.zig");
+const ui = @import("../ui.zig");
 const address = netdata.address;
 const MACF = address.MACFormatter;
 const utils = @import("../utils.zig");
@@ -45,6 +46,8 @@ pub const Profile = struct {
     require_conflicts_ack: bool = true,
     /// Time Zone
     timezone: enum { local, utc } = .local,
+    /// UI Mode
+    ui_mode: ui.Mode = .shell,
 };
 
 /// Masking Information to obfuscate the Host System.

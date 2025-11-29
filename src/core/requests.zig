@@ -337,6 +337,7 @@ pub const Aggregator = struct {
                             for (core_ctx.conn_ctx.configs.list.items, 0..) |next_conn, idx| {
                                 if (!next_conn.id.eql(add_conn.id))
                                     continue;
+                                next_conn.deinit(core_ctx.alloc);
                                 _ = core_ctx.conn_ctx.configs.list.orderedRemove(idx);
                                 break;
                             }

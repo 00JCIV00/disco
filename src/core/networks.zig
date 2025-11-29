@@ -534,9 +534,11 @@ pub const Context = struct {
                                                     const sec_info = try bss.getSecurityInfo();
                                                     const ies = bss.INFORMATION_ELEMENTS orelse continue;
                                                     const ssid = core_ctx.alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]") catch @panic("OOM");
-                                                    defer if (!valid) core_ctx.alloc.free(ssid);
+                                                    defer if (!valid) //
+                                                        core_ctx.alloc.free(ssid);
                                                     const if_name = core_ctx.alloc.dupe(u8, scan_if.name) catch @panic("OOM");
-                                                    defer if (!valid) core_ctx.alloc.free(if_name);
+                                                    defer if (!valid) //
+                                                        core_ctx.alloc.free(if_name);
                                                     const net_meta: Network.Meta = .{
                                                         .seen_by = if_name,
                                                         .last_seen = try zeit.instant(.{}),
@@ -583,7 +585,7 @@ pub const Context = struct {
                                                                     continue;
                                                             },
                                                         }
-                                                        log.debug("{f}===================\n", .{ new_network });
+                                                        log.info("{f}===================\n", .{ new_network });
                                                         break :confs;
                                                     }
                                                     valid = true;
