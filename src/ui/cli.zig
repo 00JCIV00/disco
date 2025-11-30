@@ -387,60 +387,7 @@ pub const setup_cmd: CommandT = .{
                 }),
             }
         },
-        .{
-            .name = "serve",
-            .description = "Serve files from the provided `--directory` on the designated `--port` using HTTP and TFTP.",
-            .cmd_group = "ACTIVE",
-            .opts = &.{
-                .{
-                    .name = "ip",
-                    .description = "IP Address to serve on. (Default: 0.0.0.0)",
-                    .long_name = "ip",
-                    .short_name = 'i',
-                    .val = .ofType(address.IPv4, .{
-                        .default_val = .{ .addr = .{ 0, 0, 0, 0 } },
-                        .parse_fn = parseIPv4,
-                    }),
-                },
-                .{
-                    .name = "port",
-                    .description = "Port to serve on. (Default: 12070)",
-                    .long_name = "port",
-                    .short_name = 'p',
-                    .val = .ofType(u16, .{ .default_val = 12070 }),
-                },
-                .{
-                    .name = "directory",
-                    .description = "Directory to serve. (Default: Current Directory '.')",
-                    .long_name = "directory",
-                    .short_name = 'd',
-                    .val = .ofType([]const u8, .{
-                        .default_val = ".",
-                        .alias_child_type= "path",
-                        .valid_fn = struct{
-                            pub fn validatePath(path: []const u8, _: mem.Allocator) bool {
-                                const cwd = fs.cwd();
-                                var dir = cwd.openDir(path, .{}) catch return false;
-                                defer dir.close();
-                                return true;
-                            }
-                        }.validatePath,
-                    }),
-                },
-                .{
-                    .name = "protocols",
-                    .description = "Protocols to serve on. (http, tftp, or all)",
-                    .long_name = "protocols",
-                    .short_name = 'P',
-                    .val = .ofType(core.serve.Protocol, .{
-                        .default_val = .all,
-                        .alias_child_type = "file_serve_protocol",
-                        .max_entries = 10,
-                        .set_behavior = .Multi,
-                    }),
-                }
-            },
-        },
+        serve_cmd,
         .{
             .name = "set",
             .alias_names = &.{ "change" },
@@ -716,6 +663,68 @@ pub const connect_cmd: CommandT = .{
             .short_name = 'd',
         },
         conn_gw_opt,
+    },
+};
+/// Serve
+pub const serve_cmd: CommandT = .{
+    .name = "serve",
+    .description = "Serve files from the provided `--directory` on the designated `--port` using HTTP and TFTP.",
+    .cmd_group = "ACTIVE",
+    .sub_cmds_mandatory = false,
+    .opts = &.{
+        .{
+            .name = "ip",
+            .description = "IP Address to serve on. (Default: 0.0.0.0)",
+            .long_name = "ip",
+            .short_name = 'i',
+            .val = .ofType(address.IPv4, .{
+                .default_val = .{ .addr = .{ 0, 0, 0, 0 } },
+                .parse_fn = parseIPv4,
+            }),
+        },
+        .{
+            .name = "port",
+            .description = "Port to serve on. (Default: 12070)",
+            .long_name = "port",
+            .short_name = 'p',
+            .val = .ofType(u16, .{ .default_val = 12070 }),
+        },
+        .{
+            .name = "directory",
+            .description = "Directory to serve. (Default: Current Directory '.')",
+            .long_name = "directory",
+            .short_name = 'd',
+            .val = .ofType([]const u8, .{
+                .default_val = ".",
+                .alias_child_type= "path",
+                .valid_fn = struct{
+                    pub fn validatePath(path: []const u8, _: mem.Allocator) bool {
+                        const cwd = fs.cwd();
+                        var dir = cwd.openDir(path, .{}) catch return false;
+                        defer dir.close();
+                        return true;
+                    }
+                }.validatePath,
+            }),
+        },
+        .{
+            .name = "protocols",
+            .description = "Protocols to serve on. (http, tftp, or all)",
+            .long_name = "protocols",
+            .short_name = 'P',
+            .val = .ofType(core.serve.Protocol, .{
+                .default_val = .all,
+                .alias_child_type = "file_serve_protocol",
+                .max_entries = 2,
+                .set_behavior = .Multi,
+            }),
+        }
+    },
+    .sub_cmds = &.{
+        .{
+            .name = "stop",
+            .description = "Stop the File Server when running with a UI (Shell or TUI)",
+        },
     },
 };
 /// Channels

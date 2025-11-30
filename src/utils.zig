@@ -246,7 +246,7 @@ pub fn ThreadHashMap(K: type, V: type) type {
             alloc: mem.Allocator, 
             key: K, 
             val: V,
-        ) !void {
+        ) mem.Allocator.Error!void {
             self.mutex.lock();
             defer self.mutex.unlock();
             try self.map.put(alloc, key, val);

@@ -34,19 +34,29 @@ pub const Module = union(enum) {
 /// Request
 pub const Request = union(enum) {
     core,
+    /// Interface Requests
     interfaces: union(enum) {
+        /// Get Information on a WiFi Interface
         get: InterfaceID,
+        /// Get Information on all WiFi Interfaces
         get_all,
+        /// Modify a WiFi Interface
         mod: struct { mod_if: [6]u8, mod_field: core.interfaces.Interface.ModifyField },
+        /// Set the `usage` State of a WiFi Interface.
+        /// This Activates or Deactivates the WiFi Interface for DisCo specifically.
         usage: struct {
+            /// The Interface ID
             if_id: InterfaceID,
+            /// Activate/Deactivate
             state: enum { activate, deactivate }
         },
 
+        /// The Original MAC or Name corresponding to a WiFi Interface
         pub const InterfaceID = union(enum) {
             mac: [6]u8,
             name: []const u8,
 
+            /// Deinitialize this Interface ID
             pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
                 switch (self.*) {
                     .name => |name| alloc.free(name),
@@ -55,6 +65,7 @@ pub const Request = union(enum) {
             }
         };
 
+        /// Deinitialize this Interface Request
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
             switch (self.*) {
                 .get => |get_id| get_id.deinit(alloc),
@@ -63,10 +74,14 @@ pub const Request = union(enum) {
             }
         }
     },
+    /// Network Requests
     networks: union(enum) {
+        /// Get Information on a WiFi Network
         get: core.networks.Network.ID,
+        /// Get Information on all WiFi Networks
         get_all,
 
+        /// Deinitialize this Network Request
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
             switch (self.*) {
                 .get => |id| id.deinit(alloc),
@@ -74,11 +89,16 @@ pub const Request = union(enum) {
             }
         }
     },
+    /// Connection Requests
     connections: union(enum) {
+        /// Add a New Connection
         add: core.connections.Config,
+        /// Enable an Existing Connection
         enable: core.networks.Network.ID,
+        /// Disable an Existing Connection
         disable: core.networks.Network.ID,
 
+        /// Deinitialize this Connection Request
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
             switch (self.*) {
                 .enable,
@@ -90,7 +110,12 @@ pub const Request = union(enum) {
     },
     sockets,
     captures,
-    serve,
+    serve: union(enum) {
+        /// Start Serving
+        start: core.serve.Config,
+        /// Stop Serving
+        stop,
+    },
 
     /// Deinitialize any Allocations in this Request.
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
@@ -154,6 +179,19 @@ pub const Response = union(enum) {
     }
 };
 
+/// Task
+pub const Task = struct {
+    /// Async State
+    state: core.AsyncState = .request,
+    /// Objective
+    obj: union(enum) {
+        serve: union(enum) {
+            start: core.serve.Config,
+            stop,
+        },
+    },
+};
+
 /// Errors
 pub const Error = error {
     InvalidRequest,
@@ -184,6 +222,8 @@ pub const Aggregator = struct {
     req_map: ThreadHashMap(usize, Request) = .empty,
     /// Response Map
     resp_map: ThreadHashMap(usize, Error!Response) = .empty,
+    /// Task Map
+    task_map: ThreadHashMap(usize, Task) = .empty,
 
     /// Deinitialize this Aggregator
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
@@ -205,6 +245,7 @@ pub const Aggregator = struct {
             }
         }
         self.resp_map.deinit(alloc);
+        self.task_map.deinit(alloc);
     }
 
     /// Push a Request to the queue (`req_map`).
@@ -230,11 +271,13 @@ pub const Aggregator = struct {
         defer reqs.deinit(core_ctx.alloc);
         self.req_map.mutex.unlock();
         var reqs_iter = reqs.iterator();
-        while (reqs_iter.next()) |req| {
+        while (reqs_iter.next()) |req_entry| {
+            const key = req_entry.key_ptr.*;
+            const req = req_entry.value_ptr;
             var deinit_req: bool = true;
             defer if (deinit_req) //
-                req.value_ptr.deinit(core_ctx.alloc);
-            switch (req.value_ptr.*) {
+                req.deinit(core_ctx.alloc);
+            switch (req.*) {
                 .interfaces => |if_req| {
                     core_ctx.if_ctx.interfaces.mutex.lock();
                     defer core_ctx.if_ctx.interfaces.mutex.unlock();
@@ -255,7 +298,7 @@ pub const Aggregator = struct {
                                 const raw_if = get_if orelse break :respIF null;
                                 break :respIF .from(core_ctx.alloc, raw_if);
                             };
-                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .{ .interfaces = .{ .single = resp_if } }) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .{ .interfaces = .{ .single = resp_if } }) catch @panic("OOM");
                         },
                         .get_all => {
                             var if_list: ArrayList(core.interfaces.Interface.Simple) = .empty;
@@ -265,7 +308,7 @@ pub const Aggregator = struct {
                                 if_list.append(core_ctx.alloc, resp_if) catch @panic("OOM");
                             }
                             const resp_ifs = if_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
-                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .{ .interfaces = .{ .list = resp_ifs } }) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .{ .interfaces = .{ .list = resp_ifs } }) catch @panic("OOM");
                         },
                         .usage => |usage| {
                             const if_name = switch (usage.if_id) {
@@ -278,7 +321,7 @@ pub const Aggregator = struct {
                                         break :mac next_if.name;
                                     }
                                     log.err("No Interface found for MAC '{f}'.", .{ HexF{ .bytes = mac[0..] } });
-                                    self.resp_map.put(core_ctx.alloc, req.key_ptr.*, error.InvalidRequest) catch @panic("OOM");
+                                    self.resp_map.put(core_ctx.alloc, key, error.InvalidRequest) catch @panic("OOM");
                                     continue;
                                 },
                             };
@@ -286,7 +329,7 @@ pub const Aggregator = struct {
                                 .activate => {
                                     core_ctx.if_ctx.avail_if_names.put(core_ctx.alloc, if_name, {}) catch @panic("OOM");
                                     log.info("Added Interface '{s}' to the Active list.", .{ if_name });
-                                    self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                                    self.resp_map.put(core_ctx.alloc, key, .ack) catch @panic("OOM");
                                     deinit_req = false;
                                 },
                                 .deactivate => deactivate: {
@@ -303,13 +346,13 @@ pub const Aggregator = struct {
                                         break;
                                     }
                                     log.info("Removed Interface '{s}' from the Active list.", .{ if_name });
-                                    self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                                    self.resp_map.put(core_ctx.alloc, key, .ack) catch @panic("OOM");
                                 },
                             }
                         },
                         .mod => {},
                     }
-                    log.debug("Handled Interfaces Request: {d}", .{ req.key_ptr.* });
+                    log.debug("Handled Interfaces Request: {d}", .{ key });
                 },
                 .networks => |net_req| {
                     core_ctx.network_ctx.networks.mutex.lock();
@@ -323,26 +366,26 @@ pub const Aggregator = struct {
                                 net_list.append(core_ctx.alloc, resp_net) catch @panic("OOM");
                             }
                             const resp_nets = net_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
-                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .{ .networks = .{ .list = resp_nets } }) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .{ .networks = .{ .list = resp_nets } }) catch @panic("OOM");
                         },
                         else => {},
                     }
-                    log.debug("Handled Networks Request: {d}", .{ req.key_ptr.* });
+                    log.debug("Handled Networks Request: {d}", .{ key });
                 },
-                .connections => |conn| {
+                .connections => |conn_req| {
                     core_ctx.conn_ctx.configs.mutex.lock();
                     defer core_ctx.conn_ctx.configs.mutex.unlock();
-                    switch (conn) {
+                    switch (conn_req) {
                         .add => |add_conn| {
                             for (core_ctx.conn_ctx.configs.list.items, 0..) |next_conn, idx| {
-                                if (!next_conn.id.eql(add_conn.id))
+                                if (!next_conn.id.eql(add_conn.id)) //
                                     continue;
                                 next_conn.deinit(core_ctx.alloc);
                                 _ = core_ctx.conn_ctx.configs.list.orderedRemove(idx);
                                 break;
                             }
                             core_ctx.conn_ctx.configs.list.append(core_ctx.alloc, add_conn) catch @panic("OOM");
-                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .ack) catch @panic("OOM");
                             log.info("Added new Connection: '{f}'", .{ add_conn.id });
                         },
                         .enable => |enable_id| {
@@ -353,7 +396,7 @@ pub const Aggregator = struct {
                                 next_conn.enabled = true;
                                 enabled = true;
                             }
-                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .ack) catch @panic("OOM");
                             if (!enabled) //
                                 log.info("Connection '{f}' not found.", .{ enable_id }) //
                             else //
@@ -367,7 +410,7 @@ pub const Aggregator = struct {
                                 next_conn.enabled = false;
                                 disabled = true;
                             }
-                            self.resp_map.put(core_ctx.alloc, req.key_ptr.*, .ack) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .ack) catch @panic("OOM");
                             if (!disabled) {
                                 log.info("Connection '{f}' not found.", .{ disable_id });
                                 break :disable;
@@ -386,9 +429,74 @@ pub const Aggregator = struct {
                             }
                         },
                     }
-                    log.debug("Handled Connection Request: {d}", .{ req.key_ptr.* });
+                    log.debug("Handled Connection Request: {d}", .{ key });
+                },
+                .serve => |serve_req| switch (serve_req) {
+                    .start => |conf| {
+                        const start_task: Task = .{
+                            .obj = .{
+                                .serve = .{ .start = conf },
+                            },
+                        };
+                        self.task_map.put(core_ctx.alloc, key, start_task) catch @panic("OOM");
+                    },
+                    .stop => {
+                        const stop_task: Task = .{
+                            .obj = .{
+                                .serve = .stop,
+                            },
+                        };
+                        self.task_map.put(core_ctx.alloc, key, stop_task) catch @panic("OOM");
+                    },
                 },
                 else => |tag| log.err("Unimplemented: {t}", .{ tag }),
+            }
+        }
+        var tasks_iter = self.task_map.iterator();
+        defer tasks_iter.unlock();
+        tasks: while (tasks_iter.next()) |task_entry| {
+            const key = task_entry.key_ptr.*;
+            const task = task_entry.value_ptr;
+            switch (task.obj) {
+                .serve => |serve_task| state: switch (task.state) {
+                    .ready, .request => {
+                        if (core_ctx.config.serve_config) |_| {
+                            core_ctx.serve_ctx.active.store(false, .monotonic);
+                            task.state = .await_response;
+                            continue :state task.state;
+                        }
+                        task.state = .parse;
+                        continue :state task.state;
+                    },
+                    .await_response => wait: {
+                        if (!core_ctx.serve_ctx.done.load(.acquire)) //
+                            break :wait;
+                        task.state = .parse;
+                        continue :state task.state;
+                    },
+                    .parse => {
+                        if (core_ctx.config.serve_config) |_| {
+                            core_ctx.serve_ctx.deinit(core_ctx.alloc);
+                            core_ctx.config.serve_config = null;
+                        }
+                        switch (serve_task) {
+                            .start => |conf| {
+                                core_ctx.config.serve_config = conf;
+                                core_ctx.serve_ctx = core.serve.Context.init(core_ctx.alloc, conf) catch {
+                                    self.resp_map.put(core_ctx.alloc, key, error.ProcessingFailure) catch @panic("OOM");
+                                    continue :tasks;
+                                };
+                                core_ctx.serve_ctx.start(core_ctx.alloc) catch {
+                                    self.resp_map.put(core_ctx.alloc, key, error.ProcessingFailure) catch @panic("OOM");
+                                    continue :tasks;
+                                };
+                            },
+                            .stop => {},
+                        }
+                        self.resp_map.put(core_ctx.alloc, key, .ack) catch @panic("OOM");
+                        _ = self.task_map.map.remove(key);
+                    }
+                }
             }
         }
     }

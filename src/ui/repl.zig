@@ -105,7 +105,7 @@ pub const Shell = struct {
                 try ctx.tick(self.tick_interval, self.widget());
                 try ctx.tick(self.tick_interval, self.display.widget());
                 try ctx.tick(self.tick_interval, self.cmd_bar.widget());
-                if (self.display.auto_scroll)
+                if (self.display.auto_scroll) //
                     try ctx.queueRefresh();
                 switch (self.active) {
                     //.display => try ctx.requestFocus(self.display.list_view.widget()),
@@ -1152,9 +1152,9 @@ pub const CommandBar = struct {
             }
             if (filter_cmd.matchSubCmd("block")) |block_cmd| {
                 var filter: Display.Message.Filter = try block_cmd.to(Display.Message.Filter, .{});
-                if (filter.scope) |scope|
+                if (filter.scope) |scope| //
                     filter.scope = try dp_alloc.dupe(u8, scope);
-                if (filter.text) |text|
+                if (filter.text) |text| //
                     filter.text = try dp_alloc.dupe(u8, text);
                 var filter_list: ArrayList(Display.Message.Filter) = .fromOwnedSlice(shell.display.block_filters);
                 try filter_list.append(dp_alloc, filter);
@@ -1332,6 +1332,34 @@ pub const CommandBar = struct {
             try self.req_list.append(core_ctx.alloc, req_id);
             log.debug("Re-adding Connection for '{s}'. Req ID: {d}", .{ raw_id, req_id });
         }
+        if (main_cmd.matchSubCmd("serve")) |serve_cmd| serveCmd: {
+            const serve_req: core.requests.Request = serveReq: {
+                if (serve_cmd.checkFlag("stop")) //
+                    break :serveReq .{ .serve = .stop };
+                const serve_opts = try serve_cmd.getOpts(.{});
+                const ip = try serve_opts.get("ip").?.val.getAs(address.IPv4);
+                const port = try serve_opts.get("port").?.val.getAs(u16);
+                const dir = try serve_opts.get("directory").?.val.getAs([]const u8);
+                const protos = try serve_opts.get("protocols").?.val.getAllAs(core.serve.Protocol);
+                const conf: core.serve.Config = .{
+                    .ip = ip.addr,
+                    .port = port,
+                    .path = self.a_alloc.dupe(u8, dir) catch @panic("OOM"),
+                    .protocols = protos,
+                };
+                break :serveReq .{
+                    .serve = .{
+                        .start = conf,
+                    },
+                };
+            };
+            const req_id = core_ctx.req_aggregator.push(serve_req) catch |err| {
+                log.err("Unable to Start/Stop File Server: {t}", .{ err });
+                break :serveCmd;
+            };
+            self.req_list.append(core_ctx.alloc, req_id) catch @panic("OOM");
+            log.debug("Updating File Server. Req ID: {d}", .{ req_id });
+        }
         // Write Valid Arguments to Display
         try self.addInput(input);
         ctx.consumeAndRedraw();
@@ -1401,6 +1429,7 @@ pub const setup_cmd: main_cli.CommandT = .{
                 }),
             },
         },
+        ui.cli.serve_cmd,
         .{
             .name = "exit",
             .alias_names = &.{ "quit", "q" },

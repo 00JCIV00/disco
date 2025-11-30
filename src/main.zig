@@ -288,18 +288,14 @@ pub fn main() !void {
         const conf: core.serve.Config = .{
             .ip = ip.addr,
             .port = port,
-            .serve_path = dir,
+            .path = dir,
             .protocols = protos,
         };
-        var ctx = try core.serve.Context.init(alloc);
-        defer ctx.deinit(alloc);
-        ctx.conf.* = conf;
-        serve.serveDir(
-            alloc,
-            &ctx,
-            &active,
-        );
-        while (active.load(.acquire)) {}
+        var serve_ctx: serve.Context = try .init(alloc, conf);
+        defer serve_ctx.deinit(alloc);
+        try serve_ctx.start(alloc);
+        try awaitEnter(&stdout_log_ctx);
+        serve_ctx.stop();
         return;
     }
 
@@ -403,7 +399,6 @@ pub fn main() !void {
                     .require_conflicts_ack = !main_cmd.checkFlag("no_conflict_pids"),
                 },
             };
-            
             if (main_opts.get("ui")) |ui_mode_opt| //
                 config.profile.ui_mode = try ui_mode_opt.val.getAs(ui.Mode);
             if (main_opts.get("config")) |config_opt| userConf: {
@@ -675,14 +670,7 @@ pub fn main() !void {
                 });
                 try core_ctx.tui_ctx.?.run(.{});
             },
-            else => {
-                try stdout_log_ctx.print("\nPress {s}{s}[ENTER]{s} to stop.\n\n", .{ ansi.fmt.bold, ansi.fg.blue, ansi.reset });
-                var stdin_file: fs.File = .stdin();
-                var stdin_buf: [16]u8 = undefined;
-                var stdin_reader = stdin_file.reader(stdin_buf[0..]);
-                const stdin = &stdin_reader.interface;
-                _ = try stdin.discardDelimiterExclusive('\n');
-            },
+            else => try awaitEnter(&stdout_log_ctx),
         }
         core_ctx.stop();
         return;
@@ -1039,6 +1027,17 @@ pub fn main() !void {
     try core_ctx.printInfo(stdout, print_config);
     try stdout.flush();
     posix.exit(0);
+}
+
+/// Await Enter Press
+fn awaitEnter(writer: anytype) !void {
+    try writer.print("\nPress {s}{s}[ENTER]{s} to stop.\n\n", .{ ansi.fmt.bold, ansi.fg.blue, ansi.reset });
+    var stdin_file: fs.File = .stdin();
+    var stdin_buf: [16]u8 = undefined;
+    var stdin_reader = stdin_file.reader(stdin_buf[0..]);
+    const stdin = &stdin_reader.interface;
+    _ = try stdin.discardDelimiterExclusive('\n');
+    log.debug("[ENTER] Pressed!", .{});
 }
 
 /// Check for Root 

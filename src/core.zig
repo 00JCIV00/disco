@@ -178,24 +178,13 @@ pub const Core = struct {
         self.conn_ctx = try .init(&self);
         errdefer self.conn_ctx.deinit(alloc);
         log.debug("Initialized Connections Context", .{});
-        self.serve_ctx = serve.Context.init(alloc) catch @panic("OOM");
-        errdefer self.serve_ctx.deinit(alloc);
-        // Context Setup
-        //self.conn_ctx.global_config.* = config.global_connect_config;
-        //for (config.connect_configs) |conn_conf| {
-        //    try self.conn_ctx.configs.put(
-        //        alloc,
-        //        conn_conf.ssid,
-        //        conn_conf,
-        //    );
-        //}
-        //log.info("- Initialized Connection Tracking Data.", .{});
         if (config.serve_config) |serve_conf| {
-            self.serve_ctx.conf.* = serve_conf;
+            self.serve_ctx = serve.Context.init(alloc, serve_conf) catch @panic("OOM");
             log.info("- Initialized File Serve Data.", .{});
         }
+        errdefer if (config.serve_config) |_| //
+            self.serve_ctx.deinit(alloc);
         log.info("{s}{s}Initialized DisCo Core.{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
-        //Thread.sleep(5 * time.ns_per_s);
         return self;
     }
 
@@ -259,32 +248,13 @@ pub const Core = struct {
             if (self.config.profile.change_sys_hostname) {
                 try sys.setHostName(pro_mask.hostname);
                 log.info("- Set Hostname to '{s}'.", .{ pro_mask.hostname });
-            }
-            else
+            } //
+            else //
                 log.info("- The masked Network Hostname is '{s}'. The System Hostname is still '{s}'.", .{ pro_mask.hostname, self.og_hostname });
         }
         // File Serving
-        if (self.config.serve_config) |_| {
-            //self._thread_pool.spawnWg(
-            //    &self._wait_group,
-            //    serve.serveDir,
-            //    .{
-            //        self.alloc,
-            //        &self.serve_ctx,
-            //        &self.active,
-            //    },
-            //);
-            const serve_thread: Thread = try .spawn(
-                .{ .allocator = self.alloc },
-                serve.serveDir,
-                .{
-                    self.alloc,
-                    &self.serve_ctx,
-                    &self.active,
-                },
-            );
-            serve_thread.detach();
-        }
+        if (self.config.serve_config) |_| //
+            try self.serve_ctx.start(self.alloc);
         self._wait_group.start();
         // Available Interfaces
         log.debug("Searching for the following Interfaces: {f}", .{ SlicesF{ .slice = self.config.avail_if_names } });
@@ -367,6 +337,9 @@ pub const Core = struct {
         //log.info("- Stopped Netlink Event Loop.", .{});
         //self._thread_pool.waitAndWork(&self._wait_group);
         //self._thread_pool.deinit();
+        //self.serve_ctx.active.store(false, .monotonic);
+        if (self.config.serve_config) |_| //
+            self.serve_ctx.stop();
         log.info("- Stopped all Core Threads.", .{});
         // TODO Archive Session Data
         self.cleanUp();
@@ -400,8 +373,10 @@ pub const Core = struct {
         log.info("- Deinitialized Network Tracking.", .{});
         self.conn_ctx.deinit(self.alloc);
         log.info("- Deinitialized Connection Tracking.", .{});
-        self.serve_ctx.deinit(self.alloc);
-        log.info("- Deinitialized File Serving.", .{});
+        if (self.config.serve_config) |_| {
+            self.serve_ctx.deinit(self.alloc);
+            log.info("- Deinitialized File Serving.", .{});
+        }
         if (self.run_condition == null) //
             log.info("- Deinitialized PCAP Writing.", .{});
         self.sock_event_loop.deinit(self.alloc);
