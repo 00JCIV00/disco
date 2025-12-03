@@ -40,13 +40,20 @@ pub fn build(b: *std.Build) void {
             if (optimize == .Debug) target //
             else target,
         .optimize = optimize,
-        //.sanitize_thread = if (optimize == .Debug) true else null,
+        .sanitize_thread = if (optimize == .Debug) true else null,
+        //.sanitize_thread = true,
+        //.strip = false,
+        //.omit_frame_pointer = false,
+        //.error_tracing = true,
     });
     const exe = b.addExecutable(.{
         .name = exe_name,
         .root_module = exe_mod,
         .use_llvm = true,
     });
+    //vaxis_mod.strip = false;
+    //vaxis_mod.omit_frame_pointer = false;
+    //vaxis_mod.error_tracing = true;
     exe.root_module.addImport("cova", cova_mod);
     exe.root_module.addImport("vaxis", vaxis_mod);
     exe.root_module.addImport("zeit", zeit_mod);
@@ -55,10 +62,11 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // Exe Testing
-    var test_mod = exe_mod;
-    test_mod.strip = optimize != .Debug;
+    //var test_mod = exe_mod;
+    //test_mod.strip = optimize != .Debug;
     const exe_unit_tests = b.addTest(.{
-        .root_module = test_mod,
+        //.root_module = test_mod,
+        .root_module = exe_mod,
     });
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     const test_step = b.step("test", "Run unit tests");
