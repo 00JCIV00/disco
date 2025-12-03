@@ -186,14 +186,15 @@ pub const Interface = struct {
             try formatGen(@This(), self, writer, false);
         } 
 
-        pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             try formatGen(@This(), self, writer, true);
         } 
     };
 
     /// Free the allocated portions of this Interface.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-        if (!self._init) return;
+        if (!self._init) //
+            return;
         switch (self.usage) {
             .connect => |*conn| conn.deinit(alloc),
             else => {},
@@ -392,9 +393,9 @@ pub const Interface = struct {
                     nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch {};
                     Thread.sleep(time.ns_per_ms);
                     if (nl.route.setMAC(self.index, self.og_mac))
-                        log.info("-- Restored Orignal MAC '{f}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
+                        log.info("-- Restored Original MAC '{f}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
                     else |_|
-                        log.warn("-- Could not restore Interface '{s}' to its orignal MAC '{f}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
+                        log.warn("-- Could not restore Interface '{s}' to its original MAC '{f}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
                 },
                 .dns => resetDNS: {
                     if (!has_ip) break :resetDNS;
@@ -427,15 +428,15 @@ pub const Interface = struct {
         try formatGen(@This(), self, writer, false);
     } 
 
-    pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+    pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         try formatGen(@This(), self, writer, true);
     } 
 
     pub fn formatGen(T: type, self: T, writer: *Io.Writer, use_ansi: bool) Io.Writer.Error!void {
         // Setup Writer
         var filter_writer: ansi.FilterWriter = .init(writer);
-        const w: *Io.Writer =
-            if (use_ansi) writer
+        const w: *Io.Writer = //
+            if (use_ansi) writer //
             else &filter_writer.io_writer;
         // ANSI Resets
         try w.print("{s}", .{ ansi.reset });
@@ -456,7 +457,7 @@ pub const Interface = struct {
                 usage_color, self.usage, ansi.reset,
             },
         );
-        if (@hasField(T, "last_upd")) {
+        if (T == @This()) {
             var last_ts_buf: [50]u8 = undefined;
             const last_ts = self.last_upd.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
             try w.print(
@@ -497,8 +498,7 @@ pub const Interface = struct {
                 }
             );
         }
-        // TODO: Fix below for Simple Interfaces.
-        if (@hasField(T, "last_upd")) {
+        if (T == @This()) {
             if (self.ips[0] != null) ips: {
                 try w.print("- {s}IPs{s}:\n", .{ ansi.fmt.underline, ansi.reset });
                 for (self.ips, self.cidrs) |_ip, _cidr| {

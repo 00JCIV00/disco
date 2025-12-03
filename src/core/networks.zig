@@ -29,6 +29,7 @@ const utils = @import("../utils.zig");
 const ansi = utils.ansi;
 const c = utils.toStruct;
 const ThreadHashMap = utils.ThreadHashMap;
+const RSSI = core.devices.RSSI;
 
 
 /// Network Info
@@ -110,8 +111,8 @@ pub const Network = struct {
                     var nm_list: ArrayList(Meta) = .empty;
                     var nm_iter = from_net.net_meta.iterator();
                     defer nm_iter.unlock();
-                    while (nm_iter.next()) |nm_entry|
-                        nm_list.append(alloc, nm_entry.value_ptr.dupe(alloc)) catch @panic("OOM");
+                    while (nm_iter.next()) |nm_entry| //
+                        nm_list.append(alloc, nm_entry.value_ptr.clone(alloc)) catch @panic("OOM");
                     break :netMeta nm_list.toOwnedSlice(alloc) catch @panic("OOM");
                 },
             };
@@ -119,11 +120,11 @@ pub const Network = struct {
 
         pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             try formatGen(@This(), self, writer, false);
-        } 
+        }
 
-        pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             try formatGen(@This(), self, writer, true);
-        } 
+        }
     };
 
     /// Meta Information about how a Network was Seen
@@ -139,7 +140,7 @@ pub const Network = struct {
                 alloc.free(self.frame_nums);
         }
 
-        pub fn dupe(self: *const @This(), alloc: mem.Allocator) @This() {
+        pub fn clone(self: *const @This(), alloc: mem.Allocator) @This() {
             return .{
                 .seen_by = alloc.dupe(u8, self.seen_by) catch @panic("OOM"),
                 .last_seen = self.last_seen,
@@ -159,20 +160,15 @@ pub const Network = struct {
         pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             var last_ts_buf: [50]u8 = undefined;
             const last_ts = self.last_seen.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
-            const rssi_color: []const u8 = switch (self.rssi) {
-                -40...100 => ansi.fg.green,
-                -70...-41 => ansi.fg.yellow,
-                else => ansi.fg.red,
-            };
             try writer.print(
                 \\- {s}Seen By{s}:   {s}
-                \\- {s}RSSI{s}:      {s}{d}{s} dBm
+                \\- {s}RSSI{s}:      {f}{s} dBm
                 \\- {s}Rx Qual{s}:   {d}
                 \\- {s}Last Seen{s}: {s}
                 \\
                 , .{
                     ansi.fmt.underline, ansi.reset, self.seen_by,
-                    ansi.fmt.underline, ansi.reset, rssi_color, self.rssi, ansi.reset,
+                    ansi.fmt.underline, ansi.reset, RSSI{ .rssi = self.rssi }, ansi.reset,
                     ansi.fmt.underline, ansi.reset, self.calcRxQual(),
                     ansi.fmt.underline, ansi.reset, last_ts,
                 },
@@ -195,11 +191,16 @@ pub const Network = struct {
         try formatGen(@This(), self, writer, false);
     } 
 
-    pub fn ansiFormat(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+    pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         try formatGen(@This(), self, writer, true);
     } 
 
-    pub fn formatGen(T: type, self: T, writer: *Io.Writer, use_ansi: bool) Io.Writer.Error!void {
+    pub fn formatGen(
+        T: type,
+        self: T,
+        writer: *Io.Writer,
+        use_ansi: bool,
+    ) Io.Writer.Error!void {
         // Setup Writer
         var filter_writer: ansi.FilterWriter = .init(writer);
         const w: *Io.Writer =
@@ -208,6 +209,7 @@ pub const Network = struct {
         // ANSI Resets
         try w.print("{s}", .{ ansi.reset });
         defer w.print("{s}", .{ ansi.reset }) catch {};
+        // Format
         const ssid: []const u8 = ssid: {
             if (//
                 self.ssid.len > 0 and //

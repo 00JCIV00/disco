@@ -97,6 +97,8 @@ pub const Request = union(enum) {
         enable: core.networks.Network.ID,
         /// Disable an Existing Connection
         disable: core.networks.Network.ID,
+        /// Get Information on all active WiFi Connections
+        get_all,
 
         /// Deinitialize this Connection Request
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
@@ -167,13 +169,30 @@ pub const Response = union(enum) {
             }
         }
     },
-    connections,
+    connections: union(enum) {
+        list: []const core.connections.Connection.Simple,
+
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            switch (self.*) {
+                //.single => |s_net| single: {
+                //    const resp_net = s_net orelse break :single;
+                //    resp_net.deinit(alloc);
+                //},
+                .list => |conn_list| {
+                    for (conn_list) |resp_conn| //
+                        resp_conn.deinit(alloc);
+                    alloc.free(conn_list);
+                }
+            }
+        }
+    },
 
     /// Deinitialize any Allocations in this Response.
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
         switch (self.*) {
             .interfaces => |if_resp| if_resp.deinit(alloc),
             .networks => |net_resp| net_resp.deinit(alloc),
+            .connections => |conn_resp| conn_resp.deinit(alloc),
             else => {},
         }
     }
@@ -427,6 +446,18 @@ pub const Aggregator = struct {
                                     else => {},
                                 }
                             }
+                        },
+                        .get_all => {
+                            var conn_list: ArrayList(core.connections.Connection.Simple) = .empty;
+                            var if_iter = core_ctx.if_ctx.interfaces.map.valueIterator();
+                            while (if_iter.next()) |next_if| {
+                                if (next_if.usage != .connect)
+                                    continue;
+                                const resp_conn: core.connections.Connection.Simple = .from(core_ctx.alloc, next_if.usage.connect, core_ctx);
+                                conn_list.append(core_ctx.alloc, resp_conn) catch @panic("OOM");
+                            }
+                            const resp_conns = conn_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .{ .connections = .{ .list = resp_conns } }) catch @panic("OOM");
                         },
                     }
                     log.debug("Handled Connection Request: {d}", .{ key });

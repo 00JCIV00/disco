@@ -914,7 +914,7 @@ pub const CommandBar = struct {
                         .interfaces => |if_resp| switch (if_resp) {
                             .single => |resp_if| {
                                 const out_if = resp_if orelse continue;
-                                try shell.display.out_writer.print("{f}", .{ fmt.alt(out_if, .ansiFormat) });
+                                try shell.display.out_writer.print("{f}", .{ fmt.alt(out_if, .formatANSI) });
                                 try shell.display.out_writer.flush();
                             },
                             .list => |resp_ifs| respIFs: {
@@ -922,7 +922,7 @@ pub const CommandBar = struct {
                                     break :respIFs;
                                 try shell.display.out_writer.print("Interfaces ({d}):\n{s}", .{ resp_ifs.len, sep });
                                 for (resp_ifs) |resp_if| {
-                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_if, .ansiFormat), sep });
+                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_if, .formatANSI), sep });
                                 }
                                 try shell.display.out_writer.flush();
                             },
@@ -933,7 +933,7 @@ pub const CommandBar = struct {
                                     break :respNets;
                                 try shell.display.out_writer.print("Networks ({d}):\n{s}", .{ resp_nets.len, sep });
                                 for (resp_nets, 0..) |resp_net, idx| {
-                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_net, .ansiFormat), sep });
+                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_net, .formatANSI), sep });
                                     if (idx % 5 == 0)
                                         try shell.display.out_writer.flush();
                                 }
@@ -941,7 +941,20 @@ pub const CommandBar = struct {
                             },
                             else => {},
                         },
-                        else => {},
+                        .connections => |conn_resp| switch (conn_resp) {
+                            .list => |resp_conns| respconns: {
+                                if (resp_conns.len == 0)
+                                    break :respconns;
+                                try shell.display.out_writer.print("Connections ({d}):\n{s}", .{ resp_conns.len, sep });
+                                for (resp_conns, 0..) |resp_conn, idx| {
+                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_conn, .formatANSI), sep });
+                                    if (idx % 5 == 0)
+                                        try shell.display.out_writer.flush();
+                                }
+                                try shell.display.out_writer.flush();
+                            },
+                        },
+                        //else => {},
                     }
                 }
             },
@@ -1123,9 +1136,9 @@ pub const CommandBar = struct {
                         continue;
                     }
                     const filters = filters: {
-                        if (mem.eql(u8, f_kind, "allow"))
-                            break :filters &shell.display.allow_filters
-                        else
+                        if (mem.eql(u8, f_kind, "allow")) //
+                            break :filters &shell.display.allow_filters //
+                        else //
                             break :filters &shell.display.block_filters;
                     };
                     for (filters.*) |filter| {
@@ -1194,45 +1207,57 @@ pub const CommandBar = struct {
                 try self.req_list.append(core_ctx.alloc, req_id);
                 log.debug("Requested Networks. Req ID: {d}", .{ req_id });
             }
+            if (list_cmd.checkFlag("connections")) connOpt: {
+                const req_id = core_ctx.req_aggregator.push(.{ .connections = .get_all }) catch |err| {
+                    log.err("Unable to request Connection Info: {t}", .{ err });
+                    break :connOpt;
+                };
+                try self.req_list.append(core_ctx.alloc, req_id);
+                log.debug("Requested Connections. Req ID: {d}", .{ req_id });
+            }
         }
         // - Activate/Deactivate Interfaces
-        if (main_cmd.matchSubCmd("activate")) |act_cmd| actCmd: {
+        if (main_cmd.matchSubCmd("activate")) |act_cmd| {
             const act_vals = try act_cmd.getVals(.{});
-            const act_if_val = act_vals.get("interface").?;
-            const if_name = try act_if_val.getAs([]const u8);
-            const act_req: core.requests.Request = .{
-                .interfaces = .{
-                    .usage = .{
-                        .if_id = .{ .name = try core_ctx.alloc.dupe(u8, if_name) },
-                        .state = .activate,
+            const act_ifs_val = act_vals.get("interface").?;
+            const if_names = try act_ifs_val.getAllAs([]const u8);
+            for (if_names) |if_name| {
+                const act_req: core.requests.Request = .{
+                    .interfaces = .{
+                        .usage = .{
+                            .if_id = .{ .name = try core_ctx.alloc.dupe(u8, if_name) },
+                            .state = .activate,
+                        },
                     },
-                },
-            };
-            const req_id = core_ctx.req_aggregator.push(act_req) catch |err| {
-                log.err("Unable to Activate Interface: {t}", .{ err });
-                break :actCmd;
-            };
-            try self.req_list.append(core_ctx.alloc, req_id);
-            log.debug("Activating '{s}'. Req ID: {d}", .{ if_name, req_id });
+                };
+                const req_id = core_ctx.req_aggregator.push(act_req) catch |err| {
+                    log.err("Unable to Activate Interface: {t}", .{ err });
+                    continue;
+                };
+                try self.req_list.append(core_ctx.alloc, req_id);
+                log.debug("Activating '{s}'. Req ID: {d}", .{ if_name, req_id });
+            }
         }
-        if (main_cmd.matchSubCmd("deactivate")) |act_cmd| actCmd: {
-            const act_vals = try act_cmd.getVals(.{});
-            const act_if_val = act_vals.get("interface").?;
-            const if_name = try act_if_val.getAs([]const u8);
-            const act_req: core.requests.Request = .{
-                .interfaces = .{
-                    .usage = .{
-                        .if_id = .{ .name = try core_ctx.alloc.dupe(u8, if_name) },
-                        .state = .deactivate,
+        if (main_cmd.matchSubCmd("deactivate")) |deact_cmd| {
+            const deact_vals = try deact_cmd.getVals(.{});
+            const deact_if_val = deact_vals.get("interface").?;
+            const if_names = try deact_if_val.getAllAs([]const u8);
+            for (if_names) |if_name| {
+                const act_req: core.requests.Request = .{
+                    .interfaces = .{
+                        .usage = .{
+                            .if_id = .{ .name = try core_ctx.alloc.dupe(u8, if_name) },
+                            .state = .deactivate,
+                        },
                     },
-                },
-            };
-            const req_id = core_ctx.req_aggregator.push(act_req) catch |err| {
-                log.err("Unable to Deactivate Interface: {t}", .{ err });
-                break :actCmd;
-            };
-            try self.req_list.append(core_ctx.alloc, req_id);
-            log.debug("Deactivating '{s}'. Req ID: {d}", .{ if_name, req_id });
+                };
+                const req_id = core_ctx.req_aggregator.push(act_req) catch |err| {
+                    log.err("Unable to Deactivate Interface: {t}", .{ err });
+                    continue;
+                };
+                try self.req_list.append(core_ctx.alloc, req_id);
+                log.debug("Deactivating '{s}'. Req ID: {d}", .{ if_name, req_id });
+            }
         }
         // - Connect
         if (main_cmd.matchSubCmd("connect")) |connect_cmd| connectCmd: {
@@ -1508,7 +1533,7 @@ pub const setup_cmd: main_cli.CommandT = .{
                 },
                 .{
                     .name = "interfaces",
-                    .description = "List the WiFi Interfaces of the system.",
+                    .description = "List the system's WiFi Interfaces.",
                     .long_name = "interfaces",
                     .alias_long_names = &.{ "ifs" },
                 },
@@ -1516,6 +1541,11 @@ pub const setup_cmd: main_cli.CommandT = .{
                     .name = "networks",
                     .description = "List the seen WiFi Networks.",
                     .long_name = "networks",
+                },
+                .{
+                    .name = "connections",
+                    .description = "List the active WiFi Connections.",
+                    .long_name = "connections",
                 },
             },
         },
@@ -1527,6 +1557,8 @@ pub const setup_cmd: main_cli.CommandT = .{
                 .ofType([]const u8, .{
                     .name = "interface",
                     .description = "The Interface to Activate",
+                    .set_behavior = .Multi,
+                    .max_entries = 10,
                 }),
             },
         },
@@ -1538,6 +1570,8 @@ pub const setup_cmd: main_cli.CommandT = .{
                 .ofType([]const u8, .{
                     .name = "interface",
                     .description = "The Interface to Deactivate",
+                    .set_behavior = .Multi,
+                    .max_entries = 10,
                 }),
             },
         },

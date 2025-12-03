@@ -31,6 +31,7 @@ const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
 pub const captures = @import("core/captures.zig");
 pub const connections = @import("core/connections.zig");
+pub const devices = @import("core/devices.zig");
 pub const interfaces = @import("core/interfaces.zig");
 pub const networks = @import("core/networks.zig");
 pub const profiles = @import("core/profiles.zig");
@@ -433,7 +434,7 @@ pub const Core = struct {
                 \\{f}
                 \\-----------
                 \\
-                , .{ fmt.alt(print_if.*, .ansiFormat) }
+                , .{ fmt.alt(print_if.*, .formatANSI) }
             );
         }
     }

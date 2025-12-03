@@ -32,11 +32,13 @@ const dns = proto.dns;
 const sae = proto.sae;
 const wpa = proto.wpa;
 const utils = @import("../utils.zig");
+const ansi = utils.ansi;
 const c = utils.toStruct;
 const HexF = utils.HexFormatter;
 const SlicesF = utils.SliceFormatter;
 const ThreadArrayList = utils.ThreadArrayList;
 const ThreadHashMap = utils.ThreadHashMap;
+const RSSI = core.devices.RSSI;
 
 
 /// Config for All Connections.
@@ -399,6 +401,100 @@ pub const Connection = struct {
     _nl80211_req_ctx: nl.io.RequestContext,
     _rtnetlink_req_ctx: nl.io.RequestContext,
 
+    /// Simple Connection for Sharing
+    pub const Simple = struct {
+        // Network
+        bssid: [6]u8,
+        ssid: []const u8,
+        passphrase: []const u8,
+        signal: ?i8 = null,
+        // Connection
+        connected_time: ?u32 = null,
+        inactive_time: ?u32 = null,
+        // Interface
+        if_mac: [6]u8,
+        if_name: []const u8,
+        channel: ?u32,
+
+
+        /// Get a Simple Connection from the provided Connection (`from_conn`).
+        /// Note, this function is intended for use by `core.requests`. It assusmes the `core_ctx.if_ctx` is locked.
+        pub fn from(alloc: mem.Allocator, from_conn: Connection, core_ctx: *core.Core) @This() {
+            const conn_if = core_ctx.if_ctx.interfaces.map.get(from_conn.if_mac).?;
+            var self: @This() = .{
+                .bssid = from_conn.bssid,
+                .ssid = alloc.dupe(u8, from_conn.ssid) catch @panic("OOM"),
+                .passphrase = alloc.dupe(u8, from_conn.passphrase) catch @panic("OOM"),
+                .if_mac = from_conn.if_mac,
+                .if_name = alloc.dupe(u8, conn_if.name) catch @panic("OOM"),
+                .channel = conn_if.channel,
+            };
+            if (from_conn._station) |station| {
+                self.signal = station.STA_INFO.SIGNAL;
+                self.connected_time = station.STA_INFO.CONNECTED_TIME;
+                self.inactive_time = station.STA_INFO.INACTIVE_TIME;
+            }
+            return self;
+        }
+
+        /// Deinitialize this Simple Connection
+        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
+            alloc.free(self.ssid);
+            alloc.free(self.passphrase);
+            alloc.free(self.if_name);
+        }
+
+        /// Format this Connection
+        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            try self.formatGen(writer, false);
+        }
+
+        /// Format this Connection w/ ANSI Formatting
+        pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            try self.formatGen(writer, true);
+        }
+
+        /// Format this Connection
+        pub fn formatGen(self: @This(), writer: *Io.Writer, use_ansi: bool) Io.Writer.Error!void {
+            // Setup Writer
+            var filter_writer: ansi.FilterWriter = .init(writer);
+            const w: *Io.Writer =
+                if (use_ansi) writer
+                else &filter_writer.io_writer;
+            // ANSI Resets
+            try w.print("{s}", .{ ansi.reset });
+            defer w.print("{s}", .{ ansi.reset }) catch {};
+            // Format
+            const ssid: []const u8 = ssid: {
+                if (//
+                    self.ssid.len > 0 and //
+                    !mem.eql(u8, self.ssid, &.{ 0 }) //
+                ) break :ssid self.ssid;
+                break :ssid "[HIDDEN NETWORK] (DisCo)";
+            };
+            try writer.print(
+                \\
+                \\ {s}{s}{s}
+                \\ {s}BSSID{s}:     {f}
+                \\ {s}Interface{s}: {s}
+                \\ {s}Channel{s}:   {?d} | {?d}MHz
+                \\ {s}Connected{s}: {d}s
+                \\ {s}Inactive{s}:  {d}ms
+                \\ {s}Signal{s}:    {f} dBm
+                \\
+                , .{
+                    ansi.fmt.bold, ssid, ansi.reset,
+                    ansi.fmt.underline, ansi.fmt.reset, MACF{ .bytes = self.bssid[0..] },
+                    ansi.fmt.underline, ansi.fmt.reset, self.if_name,
+                    ansi.fmt.underline, ansi.fmt.reset, self.channel, nl._80211.freqFromChannel(self.channel orelse 0) catch null,
+                    ansi.fmt.underline, ansi.fmt.reset, self.connected_time orelse 0,
+                    ansi.fmt.underline, ansi.fmt.reset, self.inactive_time orelse 99999,
+                    ansi.fmt.underline, ansi.fmt.reset, RSSI{ .rssi = self.signal orelse -127 },
+                }
+            );
+        }
+    };
+
     /// The Current State of a Connection.
     pub const State = union(enum) {
         /// Setup the Connection
@@ -582,26 +678,25 @@ pub const Connection = struct {
     /// Handle this Connection
     /// TODO: Implement all Security Protocols/Types
     pub fn handle(self: *@This(), core_ctx: *core.Core) !void {
-        if (self._retries >= self.max_retries) {
+        if (self._retries >= self.max_retries and self._state != .disconn) {
             self._state = .{ .disconn = .start };
             log.warn("Max Retries Reached for Connection '{s}'", .{ self.ssid });
-            //return error.MaxRetriesReached;
         }
         //defer core_ctx.if_ctx.interfaces.mutex.unlock();
         const conn_if_entry = core_ctx.if_ctx.interfaces.map.getEntry(self.if_mac) orelse return error.InterfaceNotFound;
         const conn_if = conn_if_entry.value_ptr;
-        if (conn_if.usage != .connect) {
-            //self.deinit(core_ctx.alloc);
+        if (conn_if.usage != .connect) //
             return error.InterfaceInUse;
-        }
-        if (conn_if.checkPenalty() and self._state != .disconn) return error.InterfaceUnderPenalty;
+        if (conn_if.checkPenalty() and self._state != .disconn) //
+            return error.InterfaceUnderPenalty;
         errdefer {
             self._retries +%= 1;
             self._nl_state = .ready;
             conn_if.addPenalty();
         }
         if (self._if_index) |idx| idxCheck: {
-            if (conn_if.index == idx) break :idxCheck;
+            if (conn_if.index == idx) //
+                break :idxCheck;
             log.warn("The Interface '{s}' was interrupted during the Connection to '{s}'.", .{ conn_if.name, self.ssid });
             self.deinit(core_ctx.alloc);
             conn_if.usage = .active;
