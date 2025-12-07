@@ -40,6 +40,7 @@ const dhcp = proto.dhcp;
 const wpa = proto.wpa;
 const address = netdata.address;
 const oui = netdata.oui;
+const wifi = netdata.l2.wifi;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const masks_map = core.profiles.Mask.map;
@@ -159,7 +160,7 @@ pub fn main() !void {
         const gen_key_vals = try gen_key_cmd.getVals(.{});
         const key = try gen_key_cmd.callAs(wpa.genKey, null, [32]u8);
         var key_buf: [64]u8 = undefined;
-        const end: usize = switch (try (gen_key_vals.get("protocol").?).getAs(nl._80211.SecurityType)) {
+        const end: usize = switch (try (gen_key_vals.get("protocol").?).getAs(wifi.SecurityType)) {
             .wpa2, .wpa3t, .wpa3 => 32,
             .wep => 13,
             else => 0,
@@ -174,7 +175,7 @@ pub fn main() !void {
             \\
             \\
             , .{
-                @tagName(try (gen_key_vals.get("protocol").?).getAs(nl._80211.SecurityType)),
+                @tagName(try (gen_key_vals.get("protocol").?).getAs(wifi.SecurityType)),
                 try (gen_key_vals.get("ssid").?).getAs([]const u8),
                 try (gen_key_vals.get("passphrase").?).getAs([]const u8),
                 key_buf[0..],
@@ -318,8 +319,8 @@ pub fn main() !void {
                     var ch_list: ArrayList(usize) = .empty;
                     const bands = try band_opt.val.getAllAs(u8);
                     for (bands) |band| switch (band) {
-                        2 => try ch_list.appendSlice(cova_alloc, nl._80211.Channels.band_2G),
-                        5 => try ch_list.appendSlice(cova_alloc, nl._80211.Channels.band_5G),
+                        2 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_2G),
+                        5 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_5G),
                         else => {},
                     };
                     break :getChs try ch_list.toOwnedSlice(cova_alloc);
@@ -473,7 +474,7 @@ pub fn main() !void {
             const connect_opts = try connect_cmd.getOpts(.{});
             const security = security: {
                 const security_opt = connect_opts.get("security") orelse break :security null;
-                break :security try security_opt.val.getAs(nl._80211.SecurityType);
+                break :security try security_opt.val.getAs(wifi.SecurityType);
             };
             const pass = pass: {
                 const pass_opt = connect_opts.get("passphrase") orelse {
@@ -491,7 +492,7 @@ pub fn main() !void {
                 const channels = try ch_opt.val.getAllAs(usize);
                 var freqs_buf = try ArrayList(u32).initCapacity(alloc, 1);
                 for (channels) |ch|
-                    try freqs_buf.append(alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+                    try freqs_buf.append(alloc, @intCast(try wifi.channels.freqFromChannel(ch)));
                 break :freqs try freqs_buf.toOwnedSlice(alloc);
             };
             defer if (freqs) |_freqs| alloc.free(_freqs);

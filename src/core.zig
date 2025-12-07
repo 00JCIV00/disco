@@ -267,7 +267,9 @@ pub const Core = struct {
         self.cap_writer = try .init(self);
         // Core Loop
         log.info("{s}{s}Started DisCo Core.{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
+        self._timer.reset();
         while (self.active.load(.acquire)) {
+            defer log.debug("Core Loop: {d}ms", .{ self._timer.lap() / time.ns_per_ms });
             //log.debug("Core Update", .{});
             defer Thread.sleep(10 * time.ns_per_ms);
             // Interface Tracking

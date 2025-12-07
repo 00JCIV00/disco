@@ -19,6 +19,8 @@ const zeit = @import("zeit");
 
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
+const wifi = netdata.l2.wifi;
+const chs = wifi.channels;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const core = @import("../core.zig");
@@ -37,8 +39,8 @@ pub const Network = struct {
     // Details
     bssid: [6]u8,
     ssid: []const u8,
-    security: nl._80211.SecurityType,
-    auth: nl._80211.AuthType,
+    security: wifi.SecurityType,
+    auth: wifi.AuthType,
     channel: u32,
     freq: u32,
     //beacon_interval: ?u16 = null,
@@ -86,8 +88,8 @@ pub const Network = struct {
     pub const Simple = struct {
         bssid: [6]u8,
         ssid: []const u8,
-        security: nl._80211.SecurityType,
-        auth: nl._80211.AuthType,
+        security: wifi.SecurityType,
+        auth: wifi.AuthType,
         channel: u32,
         freq: u32,
         net_meta: []const Meta,
@@ -306,7 +308,7 @@ pub const Context = struct {
                 var freqs_list: ArrayList(u32) = .empty;
                 errdefer freqs_list.deinit(core_ctx.alloc);
                 for (channels) |ch| {
-                    const freq = try nl._80211.freqFromChannel(ch);
+                    const freq = try chs.freqFromChannel(ch);
                     freqs_list.append(core_ctx.alloc, @truncate(freq)) catch @panic("OOM");
                 }
                 break :freqs freqs_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
@@ -325,7 +327,7 @@ pub const Context = struct {
                 var freqs_list: ArrayList(u32) = .empty;
                 errdefer freqs_list.deinit(core_ctx.alloc);
                 for (channels) |ch| {
-                    const freq = try nl._80211.freqFromChannel(ch);
+                    const freq = try chs.freqFromChannel(ch);
                     try freqs_list.append(core_ctx.alloc, @truncate(freq));
                 }
                 break :freqs try freqs_list.toOwnedSlice(core_ctx.alloc);
@@ -569,9 +571,13 @@ pub const Context = struct {
                                                         .security = sec_info.type,
                                                         .auth = sec_info.auth,
                                                         .freq = bss.FREQUENCY,
-                                                        .channel = @intCast(try nl._80211.channelFromFreq(bss.FREQUENCY)),
+                                                        .channel = @intCast(try chs.channelFromFreq(bss.FREQUENCY)),
                                                         .net_meta = net_meta_map,
-                                                        .scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, result),
+                                                        .scan_result = scanResult: {
+                                                            if (old_network_entry) |entry| //
+                                                                break :scanResult entry.value_ptr.scan_result;
+                                                            break :scanResult try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, result);
+                                                        },
                                                     };
                                                     //log.debug("{s}===================\n", .{ new_network });
                                                     core_ctx.conn_ctx.configs.mutex.lock();
@@ -594,7 +600,6 @@ pub const Context = struct {
                                                     if (old_network_entry) |entry| {
                                                         const old_network = entry.value_ptr;
                                                         core_ctx.alloc.free(old_network.ssid);
-                                                        nl.parse.freeBytes(core_ctx.alloc, nl._80211.ScanResults, old_network.scan_result);
                                                     }
                                                     break :newNetwork new_network;
                                                 };

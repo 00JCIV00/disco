@@ -22,6 +22,10 @@ const zeit = @import("zeit");
 
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
+const ies = netdata.l2.information_elements;
+const wifi = netdata.l2.wifi;
+const chs = wifi.channels;
+const suites = wifi.suites;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const core = @import("../core.zig");
@@ -77,10 +81,10 @@ pub const Config = struct {
     passphrase: []const u8 = "",
     /// Security "Type" of the Network.
     /// If this is left `null` it will be derived from the Network's Beacon Frames.
-    security: ?nl._80211.SecurityType = null,
+    security: ?wifi.SecurityType = null,
     /// Authentication "Type" of the Network.
     /// If this is left `null` it will be derived from the Network's Beacon Frames.
-    auth: ?nl._80211.AuthType = null,
+    auth: ?wifi.AuthType = null,
     /// DHCP Config.
     dhcp: ?proto.dhcp.LeaseConfig = null,
     /// Add a Default Route Gateway & DNS.
@@ -377,8 +381,8 @@ pub const Connection = struct {
     ssid: []const u8,
     freq: u32,
     passphrase: []const u8,
-    security: nl._80211.SecurityType,
-    auth: nl._80211.AuthType,
+    security: wifi.SecurityType,
+    auth: wifi.AuthType,
     dhcp_conf: ?proto.dhcp.LeaseConfig = null,
     add_gw: bool = false,
     gw_metric: ?u32 = null,
@@ -486,7 +490,7 @@ pub const Connection = struct {
                     ansi.fmt.bold, ssid, ansi.reset,
                     ansi.fmt.underline, ansi.fmt.reset, MACF{ .bytes = self.bssid[0..] },
                     ansi.fmt.underline, ansi.fmt.reset, self.if_name,
-                    ansi.fmt.underline, ansi.fmt.reset, self.channel, nl._80211.freqFromChannel(self.channel orelse 0) catch null,
+                    ansi.fmt.underline, ansi.fmt.reset, self.channel, chs.freqFromChannel(self.channel orelse 0) catch null,
                     ansi.fmt.underline, ansi.fmt.reset, self.connected_time orelse 0,
                     ansi.fmt.underline, ansi.fmt.reset, self.inactive_time orelse 99999,
                     ansi.fmt.underline, ansi.fmt.reset, RSSI{ .rssi = self.signal orelse -127 },
@@ -588,17 +592,17 @@ pub const Connection = struct {
         errdefer nl.parse.freeBytes(core_ctx.alloc, nl._80211.ScanResults, scan_result);
         const rsn_bytes = rsnBytes: {
             const bss = scan_result.BSS orelse return error.MissingBSS;
-            const ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
-            var rsn = ies.RSN orelse return error.MissingRSN;
+            const bss_ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+            var rsn = bss_ies.RSN orelse return error.MissingRSN;
             if (security == .wpa3t) {
                 rsn.AKM_SUITES = &.{ .{ .OUI = [_]u8{ 0x00, 0x0F, 0xAC }, .TYPE = 0x08 } };
                 rsn.AKM_SUITE_COUNT = 1;
             }
-            const bytes = try nl.parse.toBytes(core_ctx.alloc, nl._80211.InformationElements.RobustSecurityNetwork, rsn);
+            const bytes = try nl.parse.toBytes(core_ctx.alloc, ies.InformationElements.RobustSecurityNetwork, rsn);
             var buf = ArrayList(u8).fromOwnedSlice(bytes);
             errdefer buf.deinit(core_ctx.alloc);
             buf.insert(core_ctx.alloc, 0, @intCast(bytes.len)) catch @panic("OOM");
-            buf.insert(core_ctx.alloc, 0, c(nl._80211.IE).RSN) catch @panic("OOM");
+            buf.insert(core_ctx.alloc, 0, c(ies.IE).RSN) catch @panic("OOM");
             break :rsnBytes buf.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
         };
         const ssid = core_ctx.alloc.dupe(u8, candidate.ssid) catch @panic("OOM");
@@ -1137,7 +1141,7 @@ pub const Connection = struct {
                             bssid,
                             .{
                                 .DATA = key.*,
-                                .CIPHER = c(nl._80211.CIPHER_SUITES).CCMP,
+                                .CIPHER = c(suites.CIPHER).CCMP,
                                 //.SEQ = if (idx == 0) null else .{ 2 } ++ .{ 0 } ** 5,
                                 .SEQ = seq,
                                 //.IDX = idx,

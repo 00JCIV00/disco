@@ -22,6 +22,8 @@ const art = @import("../art.zig");
 const core = @import("../core.zig");
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
+const wifi = netdata.l2.wifi;
+const chs = wifi.channels;
 const nl = @import("../netlink.zig");
 const ui = @import("../ui.zig");
 const utils = @import("../utils.zig");
@@ -1271,7 +1273,7 @@ pub const CommandBar = struct {
             const connect_opts = try connect_cmd.getOpts(.{});
             const security = security: {
                 const security_opt = connect_opts.get("security") orelse break :security null;
-                break :security try security_opt.val.getAs(nl._80211.SecurityType);
+                break :security try security_opt.val.getAs(wifi.SecurityType);
             };
             const pass = pass: {
                 const pass_opt = connect_opts.get("passphrase") orelse {
@@ -1290,7 +1292,7 @@ pub const CommandBar = struct {
                 const channels = try ch_opt.val.getAllAs(usize);
                 var freqs_buf = try ArrayList(u32).initCapacity(core_ctx.alloc, 1);
                 for (channels) |ch|
-                    try freqs_buf.append(core_ctx.alloc, @intCast(try nl._80211.freqFromChannel(ch)));
+                    try freqs_buf.append(core_ctx.alloc, @intCast(try chs.freqFromChannel(ch)));
                 break :freqs try freqs_buf.toOwnedSlice(core_ctx.alloc);
             };
             defer if (freqs) |_freqs| //

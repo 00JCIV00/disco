@@ -22,6 +22,7 @@ const nl = @import("../netlink.zig");
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
 const oui = netdata.oui;
+const wifi = netdata.l2.wifi;
 const proto = @import("../protocols.zig");
 const wpa = proto.wpa;
 const ui = @import("../ui.zig");
@@ -51,7 +52,7 @@ pub const CommandT = cova.Command.Custom(.{
             nl.route.IFF,
             nl._80211.IFTYPE,
             nl._80211.CHANNEL_WIDTH,
-            nl._80211.SecurityType,
+            wifi.SecurityType,
             ui.Mode,
         },
         .child_type_parse_fns = &.{
@@ -106,7 +107,7 @@ pub const CommandT = cova.Command.Custom(.{
             .{ .ChildT = core.connections.Config, .alias = "connection_info" },
             .{ .ChildT = nl.route.IFF, .alias = "interface_state" },
             .{ .ChildT = nl._80211.CHANNEL_WIDTH, .alias = "channel_width" },
-            .{ .ChildT = nl._80211.SecurityType, .alias = "security_protocol" },
+            .{ .ChildT = wifi.SecurityType, .alias = "security_protocol" },
             .{ .ChildT = ui.Mode, .alias = "ui_mode" },
             .{ .ChildT = ui.repl.Display.Message.Filter, .alias = "message_filter" },
             .{ .ChildT = ui.repl.Display.Message.Tag, .alias = "message_tag" },
@@ -406,7 +407,7 @@ pub const setup_cmd: CommandT = .{
                         .name = "chan",
                         .valid_fn = struct{
                             pub fn valCh(ch: usize, _: mem.Allocator) bool {
-                                return nl._80211.validateChannel(ch);
+                                return wifi.channels.validateChannel(ch);
                             }
                         }.valCh,
                     }),
@@ -430,7 +431,7 @@ pub const setup_cmd: CommandT = .{
                         .name = "freq",
                         .valid_fn = struct{
                             pub fn valFreq(freq: usize, _: mem.Allocator) bool {
-                                return nl._80211.validateFreq(freq);
+                                return wifi.channels.validateFreq(freq);
                             }
                         }.valFreq,
                     }),
@@ -654,7 +655,7 @@ pub const connect_cmd: CommandT = .{
             .description = "Set the WiFi Secruity Protocol. (open, wep, or wpa2 | Default = wpa2)",
             .long_name = "security",
             .short_name = 's',
-            .val = .ofType(nl._80211.SecurityType, .{}),
+            .val = .ofType(wifi.SecurityType, .{}),
         },
         .{
             .name = "dhcp",
@@ -740,7 +741,7 @@ const channels_opt: OptionT = .{
         .max_entries = 50,
         .valid_fn = struct {
             pub fn valCh(ch: usize, _: mem.Allocator) bool {
-                return nl._80211.validateChannel(ch);
+                return wifi.channels.validateChannel(ch);
             }
         }.valCh,
     }),

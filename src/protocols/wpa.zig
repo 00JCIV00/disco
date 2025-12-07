@@ -26,12 +26,13 @@ const DecF = utils.SliceFormatter(u8, "{d}");
 
 const c = utils.toStruct;
 const l2 = netdata.l2;
+const wifi = l2.wifi;
 const MACF = netdata.address.MACFormatter;
 const SockReader = utils.SocketReader;
 const SockWriter = utils.SocketWriter;
 
 /// Calculate a WEP Key or WPA Pre-Shared Key (PSK) using MD5 or PBKDF2 with HMAC-SHA1.
-pub fn genKey(protocol: nl._80211.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
+pub fn genKey(protocol: wifi.SecurityType, ssid: []const u8, passphrase: []const u8) ![32]u8 {
     var key: [32]u8 = @splat(0);
     switch (protocol) {
         .wpa2 => {
@@ -65,7 +66,7 @@ pub fn genPTK(
     snonce: [32]u8,
     addr1: [6]u8,
     addr2: [6]u8,
-    security: nl._80211.SecurityType,
+    security: wifi.SecurityType,
 ) [48]u8 {
     const label = "Pairwise key expansion";
     const mac_len = 6;
@@ -441,7 +442,7 @@ pub const HandshakeHandler = struct {
     timeout: u64,
     pmk: [32]u8,
     m2_data: []const u8,
-    security: nl._80211.SecurityType,
+    security: wifi.SecurityType,
     snonce: [32]u8,
     ctx: Context,
 
@@ -471,7 +472,7 @@ pub const HandshakeHandler = struct {
         timeout: u64,
         pmk: [32]u8,
         m2_data: []const u8,
-        security: nl._80211.SecurityType,
+        security: wifi.SecurityType,
     ) !@This() {
         const hs_sock = try posix.socket(nl.AF.PACKET, posix.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).PAE));
         errdefer posix.close(hs_sock);
@@ -931,7 +932,7 @@ pub const HandshakeHandler = struct {
 //    if_index: i32,
 //    pmk: [32]u8,
 //    m2_data: []const u8,
-//    security: nl._80211.SecurityType,
+//    security: wifi.SecurityType,
 //) !nl._80211.EAPoLKeys {
 //    var state: HandshakeState = .start;
 //    log.debug("Starting 4WHS...", .{});

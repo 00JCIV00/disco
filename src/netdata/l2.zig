@@ -6,6 +6,9 @@ const mem = std.mem;
 const utils = @import("../utils.zig");
 const c = utils.toStruct;
 
+pub const information_elements = @import("l2/information_elements.zig");
+pub const wifi = @import("l2/wifi.zig");
+
 /// Ethernet Frame
 /// Reference: [Wikipedia - Ethernet Frame](https://en.wikipedia.org/wiki/Ethernet_frame#Header)
 pub const Eth = struct {

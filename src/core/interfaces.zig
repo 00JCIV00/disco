@@ -21,6 +21,8 @@ const zeit = @import("zeit");
 const core = @import("../core.zig");
 const netdata = @import("../netdata.zig");
 const address = netdata.address;
+const wifi = netdata.l2.wifi;
+const chs = wifi.channels;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const l2 = netdata.l2;
@@ -346,7 +348,7 @@ pub const Interface = struct {
                     core_ctx.alloc,
                     mod_req_ctx,
                     self.index,
-                    try nl._80211.freqFromChannel(channel.ch),
+                    try chs.freqFromChannel(channel.ch),
                     channel.width,
                 );
             },
@@ -498,22 +500,22 @@ pub const Interface = struct {
                 }
             );
         }
-        if (T == @This()) {
-            if (self.ips[0] != null) ips: {
-                try w.print("- {s}IPs{s}:\n", .{ ansi.fmt.underline, ansi.reset });
-                for (self.ips, self.cidrs) |_ip, _cidr| {
-                    const ip = _ip orelse break :ips;
-                    const cidr = _cidr orelse continue;
-                    w.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
-                }
+        if (T == @This()) ips: {
+            if (self.ips[0] == null)
+                break :ips;
+            try w.print("- {s}IPs{s}:\n", .{ ansi.fmt.underline, ansi.reset });
+            for (self.ips, self.cidrs) |_ip, _cidr| {
+                const ip = _ip orelse break :ips;
+                const cidr = _cidr orelse continue;
+                w.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
             }
         } //
-        else {
-            if (self.ips.len > 0) {
-                try w.print("- {s}IPs{s}:\n", .{ ansi.fmt.underline, ansi.reset });
-                for (self.ips, self.cidrs) |ip, cidr| {
-                    w.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
-                }
+        else ips: {
+            if (self.ips.len == 0)
+                break :ips;
+            try w.print("- {s}IPs{s}:\n", .{ ansi.fmt.underline, ansi.reset });
+            for (self.ips, self.cidrs) |ip, cidr| {
+                w.print("  - {f}/{d}\n", .{ IPF{ .bytes = ip[0..] }, cidr }) catch {};
             }
         }
         try w.print(
@@ -528,11 +530,11 @@ pub const Interface = struct {
         var chans_2G: u8 = 0;
         var chans_5G: u8 = 0;
         for (self.supported_freqs) |freq| {
-            if (mem.indexOfScalar(usize, nl._80211.Frequencies.band_2G, @intCast(freq))) |_| {
+            if (mem.indexOfScalar(usize, chs.Frequencies.band_2G, @intCast(freq))) |_| {
                 chans_2G += 1;
                 continue;
             }
-            if (mem.indexOfScalar(usize, nl._80211.Frequencies.band_5G, @intCast(freq))) |_| {
+            if (mem.indexOfScalar(usize, chs.Frequencies.band_5G, @intCast(freq))) |_| {
                 chans_5G += 1;
                 continue;
             }
@@ -878,7 +880,7 @@ pub const Context = struct {
                     };
                     const channel: ?u32 = channel: {
                         const freq = wifi_if.WIPHY_FREQ orelse break :channel null;
-                        break :channel @as(u32, @intCast(nl._80211.channelFromFreq(freq) catch break :channel null));
+                        break :channel @as(u32, @intCast(chs.channelFromFreq(freq) catch break :channel null));
                     };
                     const ch_width: ?nl._80211.CHANNEL_WIDTH = chWidth: {
                         const raw_width = wifi_if.CHANNEL_WIDTH orelse break :chWidth null;
