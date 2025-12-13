@@ -96,7 +96,7 @@ pub const Network = struct {
 
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
             alloc.free(self.ssid);
-            for (self.net_meta) |nm|
+            for (self.net_meta) |nm| //
                 nm.deinit(alloc);
             alloc.free(self.net_meta);
         }
@@ -152,7 +152,8 @@ pub const Network = struct {
         }
 
         pub fn calcRxQual(self: *const @This()) usize {
-            if (self.frame_nums.len < 2) return 0;
+            if (self.frame_nums.len < 2) //
+                return 0;
             const first = self.frame_nums[0];
             const last = self.frame_nums[self.frame_nums.len - 1];
             const total: usize = last - first;
@@ -181,7 +182,7 @@ pub const Network = struct {
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
         alloc.free(self.ssid);
         var meta_iter = self.net_meta.iterator();
-        while (meta_iter.next()) |meta_entry|
+        while (meta_iter.next()) |meta_entry| //
             meta_entry.value_ptr.deinit(alloc);
         self.net_meta.mutex.unlock();
         self.net_meta.deinit(alloc);
@@ -205,8 +206,8 @@ pub const Network = struct {
     ) Io.Writer.Error!void {
         // Setup Writer
         var filter_writer: ansi.FilterWriter = .init(writer);
-        const w: *Io.Writer =
-            if (use_ansi) writer
+        const w: *Io.Writer = //
+            if (use_ansi) writer //
             else &filter_writer.io_writer;
         // ANSI Resets
         try w.print("{s}", .{ ansi.reset });
@@ -277,11 +278,6 @@ pub const NetworkScanContext = union(enum) {
 
 /// Network Contextrtnetlink_handler
 pub const Context = struct {
-    /// Buffer
-    ///// TODO: Figure out StackFallback for this or a way to Stream through the data while parsing. (Or move back to Heap Allocation) 
-    //_buffer: [666_000]u8 = undefined,
-    ///// Fixed Buffer Allocator
-    //_arena_fba: *heap.FixedBufferAllocator,
     /// Arena
     _arena: *heap.ArenaAllocator,
     /// Arena Allocator
@@ -296,10 +292,7 @@ pub const Context = struct {
     /// Initialize all Maps.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
-        //self._arena_fba = core_ctx.alloc.create(heap.FixedBufferAllocator) catch @panic("OOM");
-        //self._arena_fba.* = .init(self._buffer[0..]);
         self._arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
-        //self._arena.* = .init(self._arena_fba.allocator());
         self._arena.* = .init(core_ctx.alloc);
         self._a_alloc = self._arena.allocator();
         self.global_scan_config = globalConf: {
@@ -308,7 +301,7 @@ pub const Context = struct {
                 var freqs_list: ArrayList(u32) = .empty;
                 errdefer freqs_list.deinit(core_ctx.alloc);
                 for (channels) |ch| {
-                    const freq = try chs.freqFromChannel(ch);
+                    const freq = try ch.toFreq();
                     freqs_list.append(core_ctx.alloc, @truncate(freq)) catch @panic("OOM");
                 }
                 break :freqs freqs_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
@@ -327,7 +320,7 @@ pub const Context = struct {
                 var freqs_list: ArrayList(u32) = .empty;
                 errdefer freqs_list.deinit(core_ctx.alloc);
                 for (channels) |ch| {
-                    const freq = try chs.freqFromChannel(ch);
+                    const freq = try ch.toFreq();
                     try freqs_list.append(core_ctx.alloc, @truncate(freq));
                 }
                 break :freqs try freqs_list.toOwnedSlice(core_ctx.alloc);
@@ -571,7 +564,12 @@ pub const Context = struct {
                                                         .security = sec_info.type,
                                                         .auth = sec_info.auth,
                                                         .freq = bss.FREQUENCY,
-                                                        .channel = @intCast(try chs.channelFromFreq(bss.FREQUENCY)),
+                                                        .channel = channel: {
+                                                            // TODO: Properly pull the Channel Width
+                                                            const bw: chs.Bandwidth = @enumFromInt(bss.CHAN_WIDTH orelse 20);
+                                                            const ch: chs.Channel = try .fromFreqBW(bss.FREQUENCY, bw);
+                                                            break :channel ch.pri;
+                                                        },
                                                         .net_meta = net_meta_map,
                                                         .scan_result = scanResult: {
                                                             if (old_network_entry) |entry| //
@@ -579,7 +577,7 @@ pub const Context = struct {
                                                             break :scanResult try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, result);
                                                         },
                                                     };
-                                                    //log.debug("{s}===================\n", .{ new_network });
+                                                    //log.debug("{f}===================\n", .{ new_network });
                                                     core_ctx.conn_ctx.configs.mutex.lock();
                                                     defer core_ctx.conn_ctx.configs.mutex.unlock();
                                                     confs: for (core_ctx.conn_ctx.configs.list.items) |conf| {

@@ -318,7 +318,8 @@ pub const Context = struct {
                     .bssid = network.bssid,
                     .ssid = network.ssid,
                     .conn_if = net_meta_entry.key_ptr.*,
-                    .channel = network.channel,
+                    //.channel = network.channel,
+                    .channel = try .fromCh(network.channel),
                     .config = config,
                     .network = network.bssid,
                 };
@@ -344,7 +345,7 @@ const Candidate = struct {
     bssid: [6]u8,
     ssid: []const u8,
     conn_if: [6]u8,
-    channel: u32,
+    channel: chs.Channel,
     config: Config,
     network: [6]u8,
 
@@ -361,7 +362,7 @@ const Candidate = struct {
             \\- Score:   {d}
             \\- BSSID:   {f}
             \\- Conn IF: {f}
-            \\- Channel: {d}
+            \\- Channel: {f}
             \\
             , .{
                 self.score,
@@ -418,7 +419,7 @@ pub const Connection = struct {
         // Interface
         if_mac: [6]u8,
         if_name: []const u8,
-        channel: ?u32,
+        channel: ?chs.Channel,
 
 
         /// Get a Simple Connection from the provided Connection (`from_conn`).
@@ -481,7 +482,7 @@ pub const Connection = struct {
                 \\ {s}{s}{s}
                 \\ {s}BSSID{s}:     {f}
                 \\ {s}Interface{s}: {s}
-                \\ {s}Channel{s}:   {?d} | {?d}MHz
+                \\ {s}Channel{s}:   {?f}
                 \\ {s}Connected{s}: {d}s
                 \\ {s}Inactive{s}:  {d}ms
                 \\ {s}Signal{s}:    {f} dBm
@@ -490,7 +491,7 @@ pub const Connection = struct {
                     ansi.fmt.bold, ssid, ansi.reset,
                     ansi.fmt.underline, ansi.fmt.reset, MACF{ .bytes = self.bssid[0..] },
                     ansi.fmt.underline, ansi.fmt.reset, self.if_name,
-                    ansi.fmt.underline, ansi.fmt.reset, self.channel, chs.freqFromChannel(self.channel orelse 0) catch null,
+                    ansi.fmt.underline, ansi.fmt.reset, self.channel,
                     ansi.fmt.underline, ansi.fmt.reset, self.connected_time orelse 0,
                     ansi.fmt.underline, ansi.fmt.reset, self.inactive_time orelse 99999,
                     ansi.fmt.underline, ansi.fmt.reset, RSSI{ .rssi = self.signal orelse -127 },
@@ -588,8 +589,9 @@ pub const Connection = struct {
                 return error.UnimplementedSecurityType;
             },
         };
-        const scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, network.scan_result);
-        errdefer nl.parse.freeBytes(core_ctx.alloc, nl._80211.ScanResults, scan_result);
+        //const scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, network.scan_result);
+        //errdefer nl.parse.freeBytes(core_ctx.alloc, nl._80211.ScanResults, scan_result);
+        const scan_result = network.scan_result;
         const rsn_bytes = rsnBytes: {
             const bss = scan_result.BSS orelse return error.MissingBSS;
             const bss_ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
@@ -657,8 +659,9 @@ pub const Connection = struct {
     pub fn deinit (self: *@This(), alloc: mem.Allocator) void {
         if (self._station) |sta|
             nl.parse.freeBytes(alloc, nl._80211.Station, sta);
-        nl.parse.freeBytes(alloc, nl._80211.ScanResults, self._scan_result);
-        if (self._rsn_bytes.len > 0) alloc.free(self._rsn_bytes);
+        //nl.parse.freeBytes(alloc, nl._80211.ScanResults, self._scan_result);
+        if (self._rsn_bytes.len > 0) //
+            alloc.free(self._rsn_bytes);
         switch (self._state) {
             .eapol => |*ctx| {
                 if (ctx.handler) |*handler| //
@@ -1464,14 +1467,14 @@ pub const Connection = struct {
                                     //    \\
                                     //    \\ SSID:      {s}
                                     //    \\ Interface: {s}
-                                    //    \\ Channel:   {d} | {d}MHz
+                                    //    \\ Channel:   {f}
                                     //    \\ Connected: {d}s
                                     //    \\ Inactive:  {d}ms
                                     //    \\ Signal:    {d}dBm
                                     //    , .{
                                     //        self.ssid,
                                     //        conn_if.name,
-                                    //        conn_if.channel.?, try nl._80211.freqFromChannel(conn_if.channel.?),
+                                    //        conn_if.channel.?,
                                     //        sta.STA_INFO.CONNECTED_TIME orelse 0,
                                     //        sta.STA_INFO.INACTIVE_TIME orelse 99999,
                                     //        @as(i16, sta.STA_INFO.SIGNAL orelse -999),

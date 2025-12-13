@@ -41,6 +41,7 @@ const wpa = proto.wpa;
 const address = netdata.address;
 const oui = netdata.oui;
 const wifi = netdata.l2.wifi;
+const chs = wifi.channels;
 const MACF = address.MACFormatter;
 const IPF = address.IPFormatter;
 const masks_map = core.profiles.Mask.map;
@@ -312,15 +313,26 @@ pub fn main() !void {
                 const ssids_opt = main_opts.get("ssids").?;
                 break :ssids try ssids_opt.val.getAllAs([]const u8);
             };
-            const channels: ?[]const usize = getChs: {
-                if (main_opts.get("channels")) |ch_opt|
-                    break :getChs try ch_opt.val.getAllAs(usize)
+            const channels: ?[]const chs.Channel = getChs: {
+                var ch_list: ArrayList(chs.Channel) = .empty;
+                errdefer ch_list.deinit(cova_alloc);
+                if (main_opts.get("channels")) |ch_opt| {
+                    const ch_nums = try ch_opt.val.getAllAs(usize);
+                    for (ch_nums) |ch_num| {
+                        const ch: chs.Channel = chs.Channel.fromCh(ch_num) catch {
+                            log.warn("Invalid Channel: '{d}'", .{ ch_num });
+                            continue;
+                        };
+                        try ch_list.append(cova_alloc, ch);
+                    }
+                    break :getChs try ch_list.toOwnedSlice(cova_alloc);
+                }
                 else if (main_opts.get("bands")) |band_opt| {
-                    var ch_list: ArrayList(usize) = .empty;
                     const bands = try band_opt.val.getAllAs(u8);
                     for (bands) |band| switch (band) {
-                        2 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_2G),
-                        5 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_5G),
+                        2 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_2G_20),
+                        5 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_5G_20),
+                        6 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_6G_20),
                         else => {},
                     };
                     break :getChs try ch_list.toOwnedSlice(cova_alloc);
@@ -400,8 +412,6 @@ pub fn main() !void {
                     .require_conflicts_ack = !main_cmd.checkFlag("no_conflict_pids"),
                 },
             };
-            if (main_opts.get("ui")) |ui_mode_opt| //
-                config.profile.ui_mode = try ui_mode_opt.val.getAs(ui.Mode);
             if (main_opts.get("config")) |config_opt| userConf: {
                 const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
                 defer config_file.close();
@@ -463,6 +473,8 @@ pub fn main() !void {
             }
             break :importConf config;
         };
+        if (main_opts.get("ui")) |ui_mode_opt| //
+            config.profile.ui_mode = try ui_mode_opt.val.getAs(ui.Mode);
         if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
             const connect_vals = try connect_cmd.getVals(.{});
             const id: core.networks.Network.ID = id: {
@@ -488,11 +500,17 @@ pub fn main() !void {
             };
             const freqs = freqs: {
                 const ch_opt = connect_opts.get("channels") orelse break :freqs null;
-                if (!ch_opt.val.isSet()) break :freqs null;
+                if (!ch_opt.val.isSet()) //
+                    break :freqs null;
                 const channels = try ch_opt.val.getAllAs(usize);
                 var freqs_buf = try ArrayList(u32).initCapacity(alloc, 1);
-                for (channels) |ch|
-                    try freqs_buf.append(alloc, @intCast(try wifi.channels.freqFromChannel(ch)));
+                for (channels) |ch| {
+                    const ch_info: chs.Channel = chs.Channel.fromCh(ch) catch {
+                        log.warn("Invalid Channel: {d}", .{ ch });
+                        continue;
+                    };
+                    try freqs_buf.append(alloc, @intCast(try ch_info.toFreq()));
+                }
                 break :freqs try freqs_buf.toOwnedSlice(alloc);
             };
             defer if (freqs) |_freqs| alloc.free(_freqs);
@@ -507,7 +525,7 @@ pub fn main() !void {
             };
             config.profile.require_conflicts_ack = false;
         }
-        if (if_names.len > 0)
+        if (if_names.len > 0) //
             config.avail_if_names = if_names;
         if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
             for (config.avail_if_names) |if_name| {
@@ -783,13 +801,29 @@ pub fn main() !void {
                 try stdout_log_ctx.print("Set the Mode for {s} to {t}.\n", .{ set_if.name, new_mode });
             }
             if (set_if_opts.get("channel")) |chan_opt| setChannel: {
-                const new_ch = chan_opt.val.getAs(usize) catch break :setChannel;
-                const new_ch_width = newChMain: {
-                    const new_ct_opt = set_if_opts.get("channel-width") orelse break :newChMain nl._80211.CHANNEL_WIDTH.@"20_NOHT";
-                    break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
+                const new_ch: chs.Channel = ch: {
+                    const new_pri = chan_opt.val.getAs(usize) catch break :setChannel;
+                    var new_ch: chs.Channel = chs.Channel.fromCh(new_pri) catch {
+                        log.err("The Channel: {d} is Invalid.", .{ new_pri });
+                        break :setChannel;
+                    };
+                    newChMain: {
+                        const raw_bw_opt = set_if_opts.get("channel-width") orelse break :newChMain;
+                        const raw_bw = raw_bw_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch break :newChMain;
+                        const new_bw = raw_bw.toBW() catch {
+                            log.err("The Channel Width {t} is not supported.", .{ raw_bw });
+                            break :setChannel;
+                        };
+                        new_ch.bw = new_bw;
+                    }
+                    if (!new_ch.validate()) {
+                        log.err("The Channel: {f} is Invalid.", .{ new_ch });
+                        break :setChannel;
+                    }
+                    break :ch new_ch;
                 };
                 try stdout_log_ctx.print("Setting the Channel for {s}...\n", .{ set_if.name });
-                nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
+                nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch {
                     log.warn("Unable to set the interface down.", .{});
                 };
                 Thread.sleep(100 * time.ns_per_ms);
@@ -798,7 +832,7 @@ pub fn main() !void {
                     log.warn("Unable to set the interface up.", .{});
                 };
                 Thread.sleep(100 * time.ns_per_ms);
-                nl._80211.setChannel(set_if.index, new_ch, new_ch_width) catch |err| switch (err) {
+                nl._80211.setChannel(set_if.index, new_ch) catch |err| switch (err) {
                     error.OutOfMemory => {
                         log.err("Out of Memory!", .{});
                         return err;
@@ -808,7 +842,7 @@ pub fn main() !void {
                         break :setChannel;
                     },
                     error.InvalidChannel, error.InvalidFrequency => {
-                        log.err("The channel '{d}' is invalid.", .{ new_ch });
+                        log.err("The channel '{f}' is invalid.", .{ new_ch });
                         break :setChannel;
                     },
                     else => {
@@ -816,7 +850,7 @@ pub fn main() !void {
                         return err;
                     },
                 };
-                try stdout_log_ctx.print("Set the Channel for {s} to {d}.\n", .{ set_if.name, new_ch });
+                try stdout_log_ctx.print("Set the Channel for {s} to {f}.\n", .{ set_if.name, new_ch });
             }
             if (set_if_opts.get("frequency")) |freq_opt| setFreq: {
                 const new_freq = freq_opt.val.getAs(usize) catch break :setFreq;

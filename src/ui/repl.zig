@@ -1288,11 +1288,14 @@ pub const CommandBar = struct {
             };
             const freqs = freqs: {
                 const ch_opt = connect_opts.get("channels") orelse break :freqs null;
-                if (!ch_opt.val.isSet()) break :freqs null;
+                if (!ch_opt.val.isSet()) //
+                    break :freqs null;
                 const channels = try ch_opt.val.getAllAs(usize);
-                var freqs_buf = try ArrayList(u32).initCapacity(core_ctx.alloc, 1);
-                for (channels) |ch|
-                    try freqs_buf.append(core_ctx.alloc, @intCast(try chs.freqFromChannel(ch)));
+                var freqs_buf: ArrayList(u32) = try .initCapacity(core_ctx.alloc, 1);
+                for (channels) |channel| {
+                    const ch: chs.Channel = try .fromCh(channel);
+                    try freqs_buf.append(core_ctx.alloc, @intCast(try ch.toFreq()));
+                }
                 break :freqs try freqs_buf.toOwnedSlice(core_ctx.alloc);
             };
             defer if (freqs) |_freqs| //

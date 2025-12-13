@@ -349,18 +349,20 @@ pub const Loop = struct {
                 //log.debug("Started monitoring Raw Socket for '{s}'.", .{ sock_if.name });
                 break :sockParser self.parsers.map.getEntry(raw_sock).?.value_ptr;
             };
-            if (//
+            if ( //
                 sock_parser.eth_list.items.len == 0 and //
                 sock_parser.wifi_list.items.len == 0 //
             ) continue;
             const eth_frames = try sock_parser.getEthFrames();
             defer {
-                for (eth_frames) |frame| core_ctx.alloc.free(frame);
+                for (eth_frames) |frame| //
+                    core_ctx.alloc.free(frame);
                 core_ctx.alloc.free(eth_frames);
             }
             const wifi_frames = try sock_parser.getWifiFrames();
             defer {
-                for (wifi_frames) |frame| core_ctx.alloc.free(frame);
+                for (wifi_frames) |frame| //
+                    core_ctx.alloc.free(frame);
                 core_ctx.alloc.free(wifi_frames);
             }
             //log.debug("Handling {d} Eth and {d} WiFi Frames for '{s}'", .{ eth_frames.len, wifi_frames.len, sock_if.name });

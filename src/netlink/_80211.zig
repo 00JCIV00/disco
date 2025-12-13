@@ -1452,7 +1452,7 @@ pub const CHANNEL_TYPE = enum(u32) {
         };
     }
 };
-/// Represents channel width definitions.
+/// Represents Channel Width definitions.
 /// These values are used with the `NL80211_ATTR_CHANNEL_WIDTH` attribute.
 pub const CHANNEL_WIDTH = enum(u32) {
     /// 20 MHz, non-HT channel.
@@ -1483,6 +1483,29 @@ pub const CHANNEL_WIDTH = enum(u32) {
     @"16",
     /// 320 MHz channel, requires `NL80211_ATTR_CENTER_FREQ1`.
     @"320",
+
+    /// Get a CHANNEL_WIDTH from the provided Bandwidth `bw`.
+    pub fn fromBW(bw: chs.Bandwidth) @This() {
+        return switch (bw) {
+            .bw20 => .@"20",
+            .bw40 => .@"40",
+            .bw80 => .@"80",
+            .bw160 => .@"160",
+            .bw320 => .@"320",
+        };
+    }
+
+    /// Convert this CHANNEL_WIDTH to its corresponding Bandwidth.
+    pub fn toBW(self: @This()) error{ NoMatch }!chs.Bandwidth {
+        return switch (self) {
+            .@"20" => .bw20,
+            .@"40" => .bw40,
+            .@"80" => .bw80,
+            .@"160" => .bw160,
+            .@"320" => .bw320,
+            else => error.NoMatch,
+        };
+    }
 };
 
 // FUNCTIONS
@@ -1492,14 +1515,16 @@ pub fn requestSetFreq(
     alloc: mem.Allocator,
     req_ctx: *nl.io.RequestContext,
     if_index: i32,
-    freq: usize, 
+    freq: usize,
     ch_width: CHANNEL_WIDTH,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    if (!chs.validateFreq(freq)) return error.InvalidFrequency;
+    if (!chs.validateFreq(freq)) //
+        return error.InvalidFrequency;
     const freq_bytes = mem.toBytes(@as(u32, @intCast(freq)))[0..];
     const width_bytes = mem.toBytes(@intFromEnum(ch_width))[0..];
-    const type_bytes = mem.toBytes(@intFromEnum(CHANNEL_TYPE.fromWidth(ch_width, try chs.channelFromFreq(freq))))[0..];
+    const channel: chs.Channel = try .fromFreqBW(freq, try ch_width.toBW());
+    const type_bytes = mem.toBytes(@intFromEnum(CHANNEL_TYPE.fromWidth(ch_width, channel.pri)))[0..];
     try nl.io.request(
         alloc,
         nl.generic.Request,
@@ -1539,8 +1564,8 @@ pub fn setFreq(if_index: i32, freq: usize, ch_width: CHANNEL_WIDTH) !void {
     try nl.parse.handleAckSock(req_ctx.sock);
 }
 /// Set the `channel` for the provided Interface (`if_index`)
-pub fn setChannel(if_index: i32, channel: usize, ch_width: CHANNEL_WIDTH) !void {
-    setFreq(if_index, try chs.freqFromChannel(channel), ch_width) catch |err| switch (err) {
+pub fn setChannel(if_index: i32, channel: chs.Channel) !void {
+    setFreq(if_index, channel.pri, .fromBW(channel.bw)) catch |err| switch (err) {
         error.InvalidFrequency => return error.InvalidChannel,
         else => return err,
     };
@@ -1587,8 +1612,8 @@ pub fn takeOwnership(req_ctx: *nl.io.RequestContext, if_index: i32) !void {
 pub fn requestSetMode(
     alloc: mem.Allocator,
     req_ctx: *nl.io.RequestContext,
-    if_index: i32, 
-    mode: u32, 
+    if_index: i32,
+    mode: u32,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     try nl.io.request(
@@ -1889,71 +1914,9 @@ pub fn getWIPHY(alloc: mem.Allocator, if_index: i32, phy_index: u32) !Wiphy {
     );
     defer posix.close(req_ctx.sock);
     const wiphy_slice = try handleWIPHYSock(alloc, req_ctx.sock)[0];
-    if (wiphy_slice.len == 0) 
+    if (wiphy_slice.len == 0) //
         return error.NoResultForWIPHY;
     return wiphy_slice[0];
-    //for (0..3) |_| {
-    //    defer posix.close(nl_sock);
-    //    var first_msg = true;
-    //    var resp_multi = false;
-    //    respLoop: while (first_msg or resp_multi) {
-    //        first_msg = false;
-    //        var resp_buf: [64_000]u8 = undefined;
-    //        const resp_len = try posix.recv(
-    //            nl_sock,
-    //            resp_buf[0..],
-    //            0,
-    //        );
-    //        var offset: usize = 0;
-    //        var inner_count: usize = 1;
-    //        while (offset < resp_len) : (inner_count += 1) {
-    //            //log.debug("\n------------------------------\nInner Message: {d} | Offest: {d}B", .{ inner_count, offset });
-    //            // Netlink Header
-    //            var start: usize = offset;
-    //            var end: usize = offset + @sizeOf(nl.MessageHeader);
-    //            const nl_resp_hdr = mem.bytesToValue(nl.MessageHeader, resp_buf[start..end]);
-    //            //log.debug("- Message Len: {d}B", .{ nl_resp_hdr.len });
-    //            if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
-    //                return error.InvalidMessage;
-    //            if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
-    //                start = end;
-    //                end += @sizeOf(nl.ErrorHeader);
-    //                const nl_err = mem.bytesToValue(nl.ErrorHeader, resp_buf[start..end]);
-    //                switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
-    //                    .SUCCESS => {},
-    //                    .BUSY => return error.BUSY,
-    //                    else => |err| {
-    //                        log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
-    //                        return error.OSError;
-    //                    },
-    //                }
-    //            }
-    //            resp_multi = nl_resp_hdr.flags & c(nl.NLM_F).MULTI == c(nl.NLM_F).MULTI;
-    //            if (resp_multi) //log.debug("Multi Part Message", .{});
-    //            if (nl_resp_hdr.type == c(nl.NLMSG).DONE) {
-    //                //log.debug("Done w/ Multi Part Message.", .{});
-    //                resp_multi = false;
-    //            };
-    //            // General Header
-    //            start = end;
-    //            end += @sizeOf(nl.generic.Header);
-    //            const gen_hdr = mem.bytesToValue(nl.generic.Header, resp_buf[start..end]);
-    //            if (gen_hdr.cmd != c(CMD).NEW_WIPHY) {
-    //                //log.debug("Not a WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-    //                continue :respLoop;
-    //            }
-    //            //log.debug("Received New WIPHY. Command: {s}", .{ @tagName(@as(CMD, @enumFromInt(gen_hdr.cmd))) });
-    //            // WIPHY 
-    //            start = end;
-    //            end += nl_resp_hdr.len - @sizeOf(nl.MessageHeader);
-    //            const wiphy = try nl.parse.fromBytes(alloc, Wiphy, resp_buf[start..end]);
-    //            errdefer nl.parse.freeBytes(alloc, Wiphy, wiphy);
-    //            if (wiphy.WIPHY == phy_index) return wiphy;
-    //            nl.parse.freeBytes(alloc, Wiphy, wiphy);
-    //            offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
-    //        }
-    //    }
-    //}
 }
 
 /// Get details for all Wireless Physical Devices (WIPHYs).
@@ -2769,7 +2732,8 @@ pub fn deriveAssocHTCapes(bss: BasicServiceSet, wiphy: Wiphy) !struct{ ?[26]u8, 
             return .{ ht, vht };
         }
     }
-    if (missing_freqs) return error.MissingFreqs;
+    if (missing_freqs)
+        return error.MissingFreqs;
     return .{ null, null };
 }
 
@@ -2942,12 +2906,14 @@ pub fn requestAssociate(
     scan_results: ScanResults,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    log.debug("Before WIPHY.", .{});
     const op_classes = try ies.InformationElements.OperatingClass.bytesFromWIPHY(alloc, wiphy);
+    log.debug("After WIPHY.", .{});
     defer if (op_classes) |ocs| //
         alloc.free(ocs);
     const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY;
-    log.debug("Ch: {d}, Freq: {d}MHz", .{ try chs.channelFromFreq(wiphy_freq), wiphy_freq });
+    log.debug("Ch: {f}, Freq: {d}MHz", .{ try chs.Channel.fromFreqBW(wiphy_freq, .bw20), wiphy_freq });
     const bssid = bss.BSSID;
     const ht_attr, const vht_attr = try deriveAssocHTCapes(bss, wiphy);
     var attr_list: ArrayList(nl.Attribute) = .empty;

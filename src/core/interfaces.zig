@@ -59,8 +59,7 @@ pub const Interface = struct {
     ips: [10]?[4]u8 = @splat(null),
     cidrs: [10]?u8 = @splat(null),
     mode: u32,
-    channel: ?u32 = null,
-    ch_width: ?nl._80211.CHANNEL_WIDTH = null,
+    channel: ?chs.Channel = null,
     ssid: ?[]const u8 = null,
     supported_freqs: []const u32 = &.{},
     // Netlink
@@ -85,7 +84,7 @@ pub const Interface = struct {
         add_ip: struct { addr: [4]u8, cidr: u8 },
         del_ip: struct { addr: [4]u8, cidr: u8 },
         mode: u32,
-        channel: struct { ch: usize, width: nl._80211.CHANNEL_WIDTH },
+        channel: chs.Channel,
     };
 
     /// Modify Context
@@ -101,14 +100,15 @@ pub const Interface = struct {
         pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             for (meta.tags(nl.route.IFF)) |tag| {
                 const flag: u32 = @intFromEnum(tag);
-                if (flag == 0) continue;
+                if (flag == 0) //
+                    continue;
                 if (flag == 1) {
                     const state = if (self.flags & 1 == 1) "UP" else "DOWN";
                     try writer.print("{s}", .{ state });
                     continue;
                 }
-                if (self.flags & flag == flag)
-                try writer.print(", {t}", .{ tag });
+                if (self.flags & flag == flag) //
+                    try writer.print(", {t}", .{ tag });
             }
         }
     };
@@ -127,8 +127,7 @@ pub const Interface = struct {
         ips: []const [4]u8,
         cidrs: []const u8,
         mode: u32,
-        channel: ?u32 = null,
-        ch_width: ?nl._80211.CHANNEL_WIDTH = null,
+        channel: ?chs.Channel = null,
         ssid: []const u8,
         supported_freqs: []const u32,
 
@@ -160,9 +159,7 @@ pub const Interface = struct {
                     break :cidrs cidr_list.toOwnedSlice(alloc) catch @panic("OOM");
                 },
                 .mode = from_if.mode,
-                .channel = from_if.channel orelse 0,
-                // TODO: Properly handle Channel Widths
-                .ch_width = from_if.ch_width orelse nl._80211.CHANNEL_WIDTH.@"20",
+                .channel = from_if.channel,
                 .ssid = ssid: {
                     if (from_if.ssid) |ssid| {
                         if (ssid.len > 0) //
@@ -348,8 +345,8 @@ pub const Interface = struct {
                     core_ctx.alloc,
                     mod_req_ctx,
                     self.index,
-                    try chs.freqFromChannel(channel.ch),
-                    channel.width,
+                    try channel.toFreq(),
+                    nl._80211.CHANNEL_WIDTH.fromBW(channel.bw),
                 );
             },
         }
@@ -494,9 +491,8 @@ pub const Interface = struct {
                 .{
                     ansi.fmt.underline,
                     ansi.reset,
-                    ch,
-                    if (self.ch_width) |width| @tagName(width) //
-                    else "-",
+                    ch.pri,
+                    @tagName(ch.bw),
                 }
             );
         }
@@ -530,11 +526,11 @@ pub const Interface = struct {
         var chans_2G: u8 = 0;
         var chans_5G: u8 = 0;
         for (self.supported_freqs) |freq| {
-            if (mem.indexOfScalar(usize, chs.Frequencies.band_2G, @intCast(freq))) |_| {
+            if (mem.indexOfScalar(usize, chs.Frequencies.band_2G_20, @intCast(freq))) |_| {
                 chans_2G += 1;
                 continue;
             }
-            if (mem.indexOfScalar(usize, chs.Frequencies.band_5G, @intCast(freq))) |_| {
+            if (mem.indexOfScalar(usize, chs.Frequencies.band_5G_20, @intCast(freq))) |_| {
                 chans_5G += 1;
                 continue;
             }
@@ -555,49 +551,47 @@ pub const Interface = struct {
     }
 };
 
-/// External Interface
-pub const ExternalInterface = extern struct {
-    index: i32,
-    name: CSlice(u8),
-    phy_index: u32,
-    phy_name: CSlice(u8),
-    og_mac: [6]u8,
-    mac: [6]u8,
-    state: u32,
-    mtu: usize,
-    ips: CSlice([4]u8),
-    cidrs: CSlice([4]u8),
-    mode: u32,
-    channel: u32 = 0,
-    ch_width: nl._80211.CHANNEL_WIDTH,
-    ssid: CSlice(u8),
-    supported_freqs: CSlice(u32),
-
-    pub fn from(alloc: mem.Allocator, from_if: Interface) @This() {
-        return .{
-            .index = from_if.index,
-            .name = .init(alloc, from_if.name) catch @panic("OOM"),
-            .phy_index = from_if.phy_index,
-            .og_mac = from_if.og_mac,
-            .mac = from_if.mac,
-            .state = from_if.state,
-            .mtu = from_if.mtu,
-            .ips = ips: {
-                const len = mem.indexOfScalar(?[4]u8, from_if.ips, null) orelse 0;
-                break :ips .init(alloc, from_if.ips[0..len]) catch @panic("OOM");
-            },
-            .cidrs = cidrs: {
-                const len = mem.indexOfScalar(?[4]u8, from_if.cidrs, null) orelse 0;
-                break :cidrs .init(alloc, from_if.cidrs[0..len]) catch @panic("OOM");
-            },
-            .mode = from_if.mode,
-            .channel = from_if.channel orelse 0,
-            .ch_width = nl._80211.CHANNEL_WIDTH,
-            .ssid = .init(alloc, from_if.ssid) catch @panic("OOM"),
-            .supported_freqs = .init(alloc, from_if.supported_freqs) catch @panic("OOM"),
-        };
-    }
-};
+///// External Interface
+//pub const ExternalInterface = extern struct {
+//    index: i32,
+//    name: CSlice(u8),
+//    phy_index: u32,
+//    phy_name: CSlice(u8),
+//    og_mac: [6]u8,
+//    mac: [6]u8,
+//    state: u32,
+//    mtu: usize,
+//    ips: CSlice([4]u8),
+//    cidrs: CSlice([4]u8),
+//    mode: u32,
+//    channel: chs.Channel = 0,
+//    ssid: CSlice(u8),
+//    supported_freqs: CSlice(u32),
+//
+//    pub fn from(alloc: mem.Allocator, from_if: Interface) @This() {
+//        return .{
+//            .index = from_if.index,
+//            .name = .init(alloc, from_if.name) catch @panic("OOM"),
+//            .phy_index = from_if.phy_index,
+//            .og_mac = from_if.og_mac,
+//            .mac = from_if.mac,
+//            .state = from_if.state,
+//            .mtu = from_if.mtu,
+//            .ips = ips: {
+//                const len = mem.indexOfScalar(?[4]u8, from_if.ips, null) orelse 0;
+//                break :ips .init(alloc, from_if.ips[0..len]) catch @panic("OOM");
+//            },
+//            .cidrs = cidrs: {
+//                const len = mem.indexOfScalar(?[4]u8, from_if.cidrs, null) orelse 0;
+//                break :cidrs .init(alloc, from_if.cidrs[0..len]) catch @panic("OOM");
+//            },
+//            .mode = from_if.mode,
+//            .channel = from_if.channel,
+//            .ssid = .init(alloc, from_if.ssid) catch @panic("OOM"),
+//            .supported_freqs = .init(alloc, from_if.supported_freqs) catch @panic("OOM"),
+//        };
+//    }
+//};
 
 /// Interfaces Context
 pub const Context = struct {
@@ -869,7 +863,8 @@ pub const Context = struct {
                         var cidrs: [10]?u8 = @splat(null);
                         var idx: u8 = 0;
                         for (nl_addrs) |addr| {
-                            if (addr.info.index != wifi_if_idx) continue;
+                            if (addr.info.index != wifi_if_idx) //
+                                continue;
                             const ip = addr.addr.ADDRESS orelse continue;
                             const cidr = addr.info.prefix_len;
                             ips[idx] = ip;
@@ -878,13 +873,11 @@ pub const Context = struct {
                         }
                         break :ipAddrs .{ ips, cidrs };
                     };
-                    const channel: ?u32 = channel: {
+                    const channel: ?chs.Channel = channel: {
                         const freq = wifi_if.WIPHY_FREQ orelse break :channel null;
-                        break :channel @as(u32, @intCast(chs.channelFromFreq(freq) catch break :channel null));
-                    };
-                    const ch_width: ?nl._80211.CHANNEL_WIDTH = chWidth: {
-                        const raw_width = wifi_if.CHANNEL_WIDTH orelse break :chWidth null;
-                        break :chWidth @enumFromInt(raw_width);
+                        const raw_width: nl._80211.CHANNEL_WIDTH = @enumFromInt(wifi_if.CHANNEL_WIDTH orelse break :channel null);
+                        const bw = raw_width.toBW() catch break :channel null;
+                        break :channel chs.Channel.fromFreqBW(freq, bw) catch null;
                     };
                     //const wiphy_clone = nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy) catch |err| {
                     //    log.debug("Couldn't clone `wiphy`: {t}", .{ err });
@@ -896,7 +889,6 @@ pub const Context = struct {
                         .mac = wifi_if.MAC,
                         .mode = wifi_if.IFTYPE orelse continue :updateIfs,
                         .channel = channel,
-                        .ch_width = ch_width,
                         .phy_index = wifi_if.WIPHY,
                         .phy_name = phy_name,
                         .og_mac = link.link.PERM_ADDRESS orelse continue :updateIfs,
@@ -1087,7 +1079,7 @@ pub const Context = struct {
                     },
                     .channel => |ch| {
                         if (mod_resp) |_| //
-                            log.info("Changed Channel of '{s}' to '{d} | {t}'", .{ net_if.name, ch.ch, ch.width }) //
+                            log.info("Changed Channel of '{s}' to '{f}'", .{ net_if.name, ch }) //
                         else |err| //
                             log.warn("Unable to change channel of '{s}': {t}", .{ net_if.name, err });
                     },

@@ -20,6 +20,8 @@ const zeit = @import("zeit");
 const dbus = @import("dbus.zig");
 const netdata = @import("netdata.zig");
 const oui = netdata.oui;
+const wifi = netdata.l2.wifi;
+const chs = wifi.channels;
 const nl = @import("netlink.zig");
 const sys = @import("sys.zig");
 const ui = @import("ui.zig");
@@ -67,13 +69,13 @@ pub const Core = struct {
 
         pub const GlobalScanConfig = struct {
             ssids: ?[]const []const u8 = null,
-            channels: ?[]const usize = null,
+            channels: ?[]const chs.Channel = null,
         };
 
         pub const ScanConfig = struct {
             if_name: []const u8,
             ssids: ?[]const []const u8 = null,
-            channels: ?[]const usize = null,
+            channels: ?[]const chs.Channel = null,
         };
     };
 
@@ -269,7 +271,7 @@ pub const Core = struct {
         log.info("{s}{s}Started DisCo Core.{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         self._timer.reset();
         while (self.active.load(.acquire)) {
-            defer log.debug("Core Loop: {d}ms", .{ self._timer.lap() / time.ns_per_ms });
+            //defer log.debug("Core Loop: {d}ms", .{ self._timer.lap() / time.ns_per_ms });
             //log.debug("Core Update", .{});
             defer Thread.sleep(10 * time.ns_per_ms);
             // Interface Tracking

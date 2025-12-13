@@ -1,6 +1,7 @@
 //! Information Elements
 
 const std = @import("std");
+const log = std.log.scoped(.ies);
 const mem = std.mem;
 const meta = std.meta;
 const ArrayList = std.ArrayList;
@@ -290,7 +291,7 @@ pub const InformationElements = struct {
             //{
             //    const rsn_str = try json.stringifyAlloc(alloc, rsn, .{ .whitespace = .indent_4, .emit_null_optional_fields = false });
             //    defer alloc.free(rsn_str);
-            //    log.debug("RSN:\n{s}", .{ rsn_str });
+            //    //log.debug("RSN:\n{s}", .{ rsn_str });
             //}
             return rsn;
         }
@@ -462,60 +463,65 @@ pub const InformationElements = struct {
         Class134 = 134,
 
         pub fn getClass(freq_mhz: u32, channel_width_mhz: u32) ?@This() {
-            const channel = wifi.channels.channelFromFreq(freq_mhz) catch return null;
-            //log.debug("Ch: {d}", .{ channel });
-
+            //log.debug("Freq: {d}, Ch Width: {d}", .{ freq_mhz, channel_width_mhz });
+            const ch_info = wifi.channels.Channel.fromFreqBW(freq_mhz, @enumFromInt(channel_width_mhz)) catch return null;
+            //log.debug("Ch Info: {f}", .{ ch_info });
+            const channel = ch_info.pri;
+            ////log.debug("Ch: {d}", .{ channel });
             // 2.4 GHz Band
             if (freq_mhz >= 2400 and freq_mhz < 2500) {
-                switch (channel_width_mhz) {
-                    20 => {
-                        if (channel >= 1 and channel <= 13) return .Class81;
-                        if (channel == 14) return .Class82;
+                return switch (channel_width_mhz) {
+                    20 => switch (channel) {
+                        1...13 => .Class81,
+                        14 => .Class82,
+                        else => null,
                     },
-                    40 => {
-                        return switch (channel) {
-                            3...11 => .Class83,
-                            else => null,
-                        };
+                    40 => switch (channel) {
+                        3...11 => .Class83,
+                        else => null,
                     },
-                    else => return null,
-                }
+                    else => null,
+                };
             }
             // 5 GHz Band
             else if (freq_mhz >= 5000 and freq_mhz < 5925) {
-                switch (channel_width_mhz) {
-                    20 => {
-                        if (channel >= 36 and channel <= 48) return .Class115;
-                        if (channel >= 52 and channel <= 64) return .Class116;
-                        if (channel >= 100 and channel <= 140) return .Class117;
+                return switch (channel_width_mhz) {
+                    20 => switch (channel) {
+                        36...48 => .Class115,
+                        52...64 => .Class116,
+                        100...140 => .Class117,
+                        else => null,
                     },
-                    40 => {
-                        if (channel == 38 or channel == 46) return .Class118;
-                        if (channel == 54 or channel == 62) return .Class119;
-                        if (channel >= 102 and channel <= 134) return .Class120;
+                    40 => switch (channel) {
+                        38, 46 => .Class118,
+                        54, 62 => .Class119,
+                        102...134 => .Class120,
+                        else => null,
                     },
-                    80 => {
-                        if (channel == 42) return .Class121;
-                        if (channel == 58) return .Class122;
-                        if (channel == 106 or channel == 122) return .Class123;
-                        if (channel == 138) return .Class124;
+                    80 => switch (channel) {
+                        42 => .Class121,
+                        58 => .Class122,
+                        106, 122 => .Class123,
+                        138 => .Class124,
+                        else => null,
                     },
-                    160 => {
-                        if (channel == 50) return .Class125;
-                        if (channel == 114 or channel == 142) return .Class126;
+                    160 => switch (channel) {
+                        50 => .Class125,
+                        114, 142 => .Class126,
+                        else => null,
                     },
-                    else => return null,
-                }
+                    else =>  null,
+                };
             }
             // 6 GHz Band
             else if (freq_mhz >= 5925 and freq_mhz <= 7125) {
-                switch (channel_width_mhz) {
-                    20 => return .Class131,
-                    40 => return .Class132,
-                    80 => return .Class133,
-                    160 => return .Class134,
-                    else => return null,
-                }
+                return switch (channel_width_mhz) {
+                    20 => .Class131,
+                    40 => .Class132,
+                    80 => .Class133,
+                    160 => .Class134,
+                    else => null,
+                };
             }
             return null;
         }
@@ -524,42 +530,58 @@ pub const InformationElements = struct {
         const ClassesF = utils.SliceFormatter(u8, "{d}");
         /// Get a slice of Operating Classes as allocated bytes from the provided `wiphy`.
         pub fn bytesFromWIPHY(alloc: mem.Allocator, wiphy: nl._80211.Wiphy) !?[]u8 {
+            //log.debug("Getting Op Class Slice...", .{});
             const bands = wiphy.WIPHY_BANDS orelse return null;
+            //log.debug("Bands good.", .{});
             //const ht_40: u32 = 0b0001;
             //const vht_160: u32 = 0b0010;
             var class_buf: ArrayList(u8) = .empty;
             errdefer class_buf.deinit(alloc);
             for (bands) |band| {
                 const freqs = band.FREQS orelse continue;
+                //log.debug("New Freq Group", .{});
                 for (freqs) |freq| {
                     const mhz = freq.FREQ;// orelse continue;
+                    //log.debug("Freq {d}...", .{ mhz });
                     var class: u8 = 0;
                     _20: {
-                        //log.debug("Width: 20MHz", .{});
+                        //log.debug("Throughput: 20MHz", .{});
                         class = @intFromEnum(getClass(mhz, 20) orelse continue);
-                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :_20;
+                        //log.debug("20 - Class {d}", .{ class });
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) //
+                            break :_20;
                         try class_buf.append(alloc, class);
                     }
                     HT: {
+                        //log.debug("Throughput: High", .{});
                         //if (ht & ht_40 != ht_40) break :HT;
                         //if (band.HT_CAPA & ht_40 != ht_40) break :HT;
                         class = @intFromEnum(getClass(mhz, 40) orelse break :HT);
-                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :HT;
+                        //log.debug("HT - Class {d}", .{ class });
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) //
+                            break :HT;
                         try class_buf.append(alloc, class);
                     }
                     //if (band.VHT_CAPA) |vht| VHT: {
                     VHT: {
+                        //log.debug("Throughput: Very High", .{});
                         class = @intFromEnum(getClass(mhz, 80) orelse break :VHT);
-                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :VHT;
+                        //log.debug("VHT - Class {d}", .{ class });
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) // 
+                            break :VHT;
                         try class_buf.append(alloc, class);
                         //if (vht & vht_160 != vht_160) break :VHT;
                         class = @intFromEnum(getClass(mhz, 160) orelse break :VHT);
-                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) break :VHT;
+                        if (mem.indexOfScalar(u8, class_buf.items, class) != null) //
+                            break :VHT;
                         try class_buf.append(alloc, class);
                     }
+                    //log.debug("Freq {d}.", .{ mhz });
                 }
             }
-            if (class_buf.items.len == 0) return null;
+            //log.debug("All Freqs good.", .{});
+            if (class_buf.items.len == 0) //
+                return null;
             //log.debug("Op Classes: {f}", .{ ClassesF{ .slice = class_buf.items } });
             return try class_buf.toOwnedSlice(alloc);
         }

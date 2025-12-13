@@ -174,7 +174,7 @@ pub const setup_cmd: CommandT = .{
         bands_opt,
         .{
             .name = "connect_info",
-            .description = 
+            .description =
                 \\Provide Connection Info for a specific Network in JSON format. 
                 \\            Ex: '{ "ssid": "SomeNetwork", "passphrase": "somepassphrase1" }'
                 \\            A list of fields can be viewed w/ `list --config` under "Connect".
@@ -221,7 +221,8 @@ pub const setup_cmd: CommandT = .{
                         const name = mem.trim(u8, ascii.lowerString(lower_buf[0..], raw_name), ascii.whitespace[0..]);
                         return map.get(name) orelse getClosest: {
                             for (map.keys()) |key| {
-                                if (mem.indexOf(u8, key, name) == null) continue;
+                                if (mem.indexOf(u8, key, name) == null) //
+                                    continue;
                                 break :getClosest map.get(key).?;
                             }
                             break :getClosest error.NoMatchingProfileMask;
@@ -244,9 +245,9 @@ pub const setup_cmd: CommandT = .{
             .val = .ofType([3]u8, .{
                 .parse_fn = struct {
                     pub fn parseOUI(oui_arg: []const u8, alloc: mem.Allocator) ![3]u8 {
-                        return
-                            getOUI(oui_arg, alloc) catch
-                            oui.getOUI(oui_arg) catch
+                        return //
+                            getOUI(oui_arg, alloc) catch //
+                            oui.getOUI(oui_arg) catch //
                             address.getRandomMAC(.ll)[0..3].*;
                     }
                 }.parseOUI,
@@ -423,7 +424,7 @@ pub const setup_cmd: CommandT = .{
                 },
                 .{
                     .name = "frequency",
-                    .description = "Set the frequency (in MHz) of the given Interface. (Note, this will set the card to Up in Monitor mode)",
+                    .description = "Set the frequency (in MHz) of the given Interface. (Note, this will set the interface to Up in Monitor mode)",
                     .opt_group = "CHANNEL",
                     .long_name = "frequency",
                     .short_name = 'f',
@@ -480,7 +481,8 @@ pub const setup_cmd: CommandT = .{
                         .parse_fn = struct {
                             pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl.route.IFF {
                                 var state_buf: [12]u8 = undefined;
-                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl.route.IFF, arg) orelse error.InvalidState;
+                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) //
+                                    return meta.stringToEnum(nl.route.IFF, arg) orelse error.InvalidState;
                                 const state = ascii.upperString(state_buf[0..], arg[0..@min(arg.len, 12)]);
                                 return meta.stringToEnum(nl.route.IFF, state) orelse error.InvalidState;
                             }
@@ -497,7 +499,8 @@ pub const setup_cmd: CommandT = .{
                         .parse_fn = struct {
                             pub fn parseIFF(arg: []const u8, _: mem.Allocator) !nl._80211.IFTYPE {
                                 var mode_buf: [12]u8 = undefined;
-                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) return meta.stringToEnum(nl._80211.IFTYPE, arg) orelse error.InvalidMode;
+                                if (ascii.isUpper(arg[0]) and ascii.isUpper(arg[1])) //
+                                    return meta.stringToEnum(nl._80211.IFTYPE, arg) orelse error.InvalidMode;
                                 const mode = ascii.upperString(mode_buf[0..], arg[0..@min(arg.len, 12)]);
                                 return meta.stringToEnum(nl._80211.IFTYPE, mode) orelse error.InvalidMode;
                             }
