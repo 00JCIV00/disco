@@ -485,9 +485,12 @@ pub const Handler = struct {
             const resp_data: anyerror![]const u8 = switch (msg.hdr.type) {
                 c(nl.NLMSG).ERROR => nlError: {
                     const nl_err = mem.bytesAsValue(nl.ErrorHeader, msg.data[0..@sizeOf(nl.ErrorHeader)]);
+                    const errno: linux.E = @enumFromInt(@as(u16, @intCast(-nl_err.err)));
+                    log.debug("NL Response ({d}): {d} ({t})", .{ msg.hdr.seq, nl_err.err, errno });
                     var valid: bool = false;
-                    defer if (!valid) self._alloc.free(resp_bytes);
-                    break :nlError switch (posix.errno(@as(isize, @intCast(nl_err.err)))) {
+                    defer if (!valid) //
+                        self._alloc.free(resp_bytes);
+                    break :nlError switch (errno) {
                         .SUCCESS => success: {
                             valid = true;
                             break :success resp_bytes;
@@ -501,6 +504,7 @@ pub const Handler = struct {
                         .NETUNREACH => error.NETUNREACH,
                         .INPROGRESS => error.INPROGRESS,
                         .NODEV => error.NODEV,
+                        .OPNOTSUPP => error.OPNOTSUPP,
                         else => error.OSError,
                     };
                 },
