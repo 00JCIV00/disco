@@ -23,9 +23,10 @@ pub fn handleAckBuf(msg_buf: []const u8) !void {
     var start: usize = 0;
     var end: usize = (start + @sizeOf(nl.MessageHeader));
     const nl_resp_hdr: nl.MessageHeader = mem.bytesToValue(nl.MessageHeader, msg_buf[start..end]);
-    if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+    if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader)) //
         return error.InvalidMessage;
-    if (nl_resp_hdr.type > 4) return;
+    if (nl_resp_hdr.type > 4) //
+        return;
     if (@as(nl.NLMSG, @enumFromInt(nl_resp_hdr.type)) == .ERROR) {
         start = end;
         end += @sizeOf(nl.ErrorHeader);
@@ -98,7 +99,8 @@ pub fn handleTypeBuf(
 ) ![]const ResponseT {
     const FamHdrT = comptime famHdrT: {
         for (meta.fields(ResponseHdrT)) |field| {
-            if (mem.eql(u8, field.name, "msg")) break :famHdrT field.type;
+            if (mem.eql(u8, field.name, "msg")) //
+                break :famHdrT field.type;
         }
         else @compileError(fmt.comptimePrint("The Type `{s}` is not a `Request` Type.", .{ @typeName(ResponseHdrT) }));
     };
@@ -127,7 +129,8 @@ pub fn handleTypeBuf(
             log.err("The Generic Family Command '{d}' was provided for the non-Generic Header '{s}'", .{ cmd, @typeName(FamHdrT) });
             return error.GenericHeaderRequired;
         };
-        if (!(match_hdr and match_cmd)) continue;
+        if (!(match_hdr and match_cmd)) //
+            continue;
         const next_instance = parseFn(alloc, msg.data) catch |err| {
             if (ctx.config.warn_parse_err) //
                 log.warn("Parsing Error: {s}", .{ @errorName(err) });
@@ -144,15 +147,15 @@ pub fn handleTypeBuf(
             };
             const fields = meta.fields(ResponseT);
             var same_instance: bool = false;
-            inline for (fields) |field| {
-                if (mem.eql(u8, split, field.name)) {
-                    same_instance = switch (@typeInfo(field.type)) {
-                        .int, .float => @field(instance.*, field.name) == @field(next_instance, field.name),
-                        .pointer => |ptr_info| //
-                            ptr_info.size == .slice and mem.eql(ptr_info.child, @field(instance.*, field.name), @field(next_instance, field.name)),
-                        else => return error.IncompatibleSplitID,
-                    };
-                }
+            inline for (fields) |field| cont: {
+                if (!mem.eql(u8, split, field.name)) //
+                    break :cont;
+                same_instance = switch (@typeInfo(field.type)) {
+                    .int, .float => @field(instance.*, field.name) == @field(next_instance, field.name),
+                    .pointer => |ptr_info| //
+                        ptr_info.size == .slice and mem.eql(ptr_info.child, @field(instance.*, field.name), @field(next_instance, field.name)),
+                    else => return error.IncompatibleSplitID,
+                };
             }
             if (!same_instance) {
                 try resp_list.append(alloc, base_instance.?);
@@ -162,14 +165,16 @@ pub fn handleTypeBuf(
             inline for (fields) |field| {
                 const non_repeat = nonRepeat: {
                     for (ctx.config.repeated_fields) |r_field| {
-                        if (mem.eql(u8, field.name, r_field)) break :nonRepeat false;
+                        if (mem.eql(u8, field.name, r_field)) //
+                            break :nonRepeat false;
                     }
                     break :nonRepeat true;
                 };
                 if (non_repeat) nonRepeat: {
                     const is_slice = isSlice: {
                         for (ctx.config.slice_fields) |slice_field| {
-                            if (mem.eql(u8, field.name, slice_field)) break :isSlice true;
+                            if (mem.eql(u8, field.name, slice_field)) //
+                                break :isSlice true;
                         }
                         break :isSlice false;
                     };
@@ -196,6 +201,8 @@ pub fn handleTypeBuf(
                             break :nonRepeat;
                         }
                     }
+                    if (@typeInfo(field.type) != .optional or @field(next_instance, field.name) == null)
+                        break :nonRepeat;
                     @field(instance, field.name) = @field(next_instance, field.name);
                 } //
                 else //
@@ -248,7 +255,8 @@ pub fn handleTypeSock(
             resp_buf[0..],
             0,
         );
-        if (resp_len == 0) break :multiPart;
+        if (resp_len == 0) //
+            break :multiPart;
         // Handle Dump
         const resp_slice: []const ResponseT = try handleTypeBuf(
             alloc,
@@ -265,7 +273,8 @@ pub fn handleTypeSock(
 
 /// Get an Instance of a Primitive Type (`T`) from the given `bytes`.
 pub fn primFromBytes(T: type, bytes: []const u8) !T {
-    if (T == []const u8) return bytes;
+    if (T == []const u8) //
+        return bytes;
     return switch (@typeInfo(T)) {
         .array => |ary| bytes[0..ary.len].*,
         .optional => |optl| try primFromBytes(bytes, optl.child),
@@ -280,9 +289,11 @@ pub fn primFromBytes(T: type, bytes: []const u8) !T {
 /// Get an Instance of a Pointer Type (`T`) from the given `bytes`.
 /// Note, Slices also return a single instance of the underlying Child Type. This is meant to be used w/ `setPtrFromBytes()`.
 pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
-    if (T == []const u8) return try alloc.dupe(u8, bytes);
+    if (T == []const u8) //
+        return try alloc.dupe(u8, bytes);
     const raw_info = @typeInfo(T);
-    if (raw_info != .pointer) return error.NotAPointer;
+    if (raw_info != .pointer) //
+        return error.NotAPointer;
     const info = raw_info.pointer;
     switch (info.size) {
         .one => {
@@ -299,15 +310,18 @@ pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
         .slice => {
             const child_info = @typeInfo(info.child);
             if (grouped: {
-                if (child_info != .@"struct") break :grouped false;
+                if (child_info != .@"struct") //
+                    break :grouped false;
                 for (child_info.@"struct".decls) |decl| {
-                    if (mem.eql(u8, decl.name, "_grouped_attr")) break :grouped true;
+                    if (mem.eql(u8, decl.name, "_grouped_attr")) //
+                        break :grouped true;
                 }
                 break :grouped false;
             }) {
                 //log.debug("*****Handling grouped slice!", .{});
                 const HdrT: type = inline for (child_info.@"struct".decls) |decl| {
-                    comptime if (mem.eql(u8, decl.name, "AttrHdrT")) break @field(info.child, "AttrHdrT");
+                    comptime if (mem.eql(u8, decl.name, "AttrHdrT")) //
+                        break @field(info.child, "AttrHdrT");
                 } else nl.AttributeHeader;
                 const hdr_len = @sizeOf(HdrT);
                 var group_buf: ArrayList(info.child) = .empty;
@@ -406,16 +420,18 @@ pub fn setOptFromBytes(
     const child_info = @typeInfo(info.child);
     //errdefer freeOptBytes(alloc, T, instance.*);
     if (instance.*) |*_instance| {
-        if (child_info == .pointer and child_info.pointer.size == .slice)
-            return try setPtrFromBytes(alloc, info.child, _instance, bytes)
-        else return;
+        if (child_info == .pointer and child_info.pointer.size == .slice) //
+            return try setPtrFromBytes(alloc, info.child, _instance, bytes) //
+        else //
+            return;
     }
     switch (child_info) {
         .optional => try setOptFromBytes(alloc, info.child, instance, bytes),
         .pointer => {
-            if (instance.*) |*_instance|
-                try setPtrFromBytes(alloc, info.child, _instance, bytes)
-            else instance.* = try ptrFromBytes(alloc, info.child, bytes);
+            if (instance.*) |*_instance| //
+                try setPtrFromBytes(alloc, info.child, _instance, bytes) //
+            else //
+                instance.* = try ptrFromBytes(alloc, info.child, bytes);
         },
         .@"struct" => instance.* = try fromBytes(alloc, info.child, bytes),
         else => instance.* = try primFromBytes(info.child, bytes),
@@ -443,9 +459,11 @@ pub fn fromBytes(
     errdefer freeBytes(alloc, T, instance);
     inline for (meta.fields(T)) |field| {
         const field_info = @typeInfo(field.type);
-        if (field_info == .optional) @field(instance, field.name) = null;
-        if (field.default_value_ptr) |val| @field(instance, field.name) = mem.bytesToValue(field.type, val);
-        if (field_info == .pointer and field_info.pointer.size == .slice)
+        if (field_info == .optional) //
+            @field(instance, field.name) = null;
+        if (field.default_value_ptr) |val| //
+            @field(instance, field.name) = mem.bytesToValue(field.type, val);
+        if (field_info == .pointer and field_info.pointer.size == .slice) //
             @field(instance, field.name) = &.{};
     }
     return try baseFromBytes(alloc, T, bytes, instance);
@@ -455,7 +473,7 @@ pub fn fromBytes(
 /// Note, the resulting instance should be freed using `freeBytes()`.
 pub fn updFromBytes(
     alloc: mem.Allocator,
-    T: type, 
+    T: type,
     bytes: []const u8,
     instance: *T,
 ) !void {
@@ -648,9 +666,10 @@ pub fn rawToBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
 
 /// Write the provided `instance` to Netlink Bytes using the provided Allocator `alloc`.
 pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
-    if (meta.hasMethod(T, "toBytes")) return try instance.toBytes(alloc);
+    if (meta.hasMethod(T, "toBytes")) //
+        return try instance.toBytes(alloc);
     const info = @typeInfo(T);
-    if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed"))
+    if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed")) //
         return try rawToBytes(alloc, T, instance);
     var buf: ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
@@ -659,19 +678,22 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
         var E: ?type = null;
         var HdrT: ?type = null;
         for (@typeInfo(T).@"struct".decls) |decl| {
-            if (mem.eql(u8, decl.name, "AttrE")) E = @field(T, "AttrE");
-            if (mem.eql(u8, decl.name, "AttrHdrT")) HdrT = @field(T, "AttrHdrT");
+            if (mem.eql(u8, decl.name, "AttrE")) //
+                E = @field(T, "AttrE");
+            if (mem.eql(u8, decl.name, "AttrHdrT")) //
+                HdrT = @field(T, "AttrHdrT");
         }
         break :consts .{
             E orelse @compileError(fmt.comptimePrint("Type `{s}` is missing Attribute Enum Declaration (`AttrE`)", .{ @typeName(T) })),
             HdrT orelse nl.AttributeHeader,
         };
     };
-
     inline for (meta.fields(T)) |field| cont: {
         //@compileLog("E: " ++ @typeName(E));
         var hdr: HdrT = .{
-            .len = if (HdrT.full_len) @sizeOf(HdrT) else 0,
+            .len = //
+                if (HdrT.full_len) @sizeOf(HdrT) //
+                else 0,
             .type = @intFromEnum(meta.stringToEnum(E, field.name) orelse {
                 log.debug("Unknown Tag '{s}' for Enum '{s}'", .{ field.name, @typeName(E) });
                 return error.UnknownEnum;
@@ -689,17 +711,22 @@ pub fn toBytes(alloc: mem.Allocator, T: type, instance: T) ![]u8 {
         hdr.len +|= @truncate(bytes.len);
         const add_hdr = addHdr: {
             const hdr_child,
-            const hdr_info =
-                if (field_info == .optional) .{ field_info.optional.child, @typeInfo(field_info.optional.child) } 
+            const hdr_info = //
+                if (field_info == .optional) .{ field_info.optional.child, @typeInfo(field_info.optional.child) } //
                 else .{ field.type, field_info };
-            if (hdr_child == []const u8 or hdr_info != .pointer) break :addHdr true;
-            if (hdr_info.pointer.size != .slice) break :addHdr true;
+            if ( //
+                hdr_child == []const u8 or //
+                hdr_info != .pointer or //
+                hdr_info.pointer.size != .slice //
+            ) //
+                break :addHdr true;
             break :addHdr false;
         };
-        if (add_hdr)
+        if (add_hdr) //
             try buf.appendSlice(alloc, mem.toBytes(hdr)[0..]);
         try buf.appendSlice(alloc, bytes);
-        if (HdrT.nl_align) try buf.appendNTimes(alloc, 0, (mem.alignForward(usize, buf.items.len, 4) - buf.items.len));
+        if (HdrT.nl_align) //
+            try buf.appendNTimes(alloc, 0, (mem.alignForward(usize, buf.items.len, 4) - buf.items.len));
     }
     return try buf.toOwnedSlice(alloc);
 }
