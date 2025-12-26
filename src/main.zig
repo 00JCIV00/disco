@@ -166,7 +166,8 @@ pub fn main() !void {
             .wep => 13,
             else => 0,
         };
-        for (key[0..end], 0..) |byte, idx| _ = try fmt.bufPrint(key_buf[(idx * 2)..(idx * 2 + 2)], "{X:0<2}", .{ byte });
+        for (key[0..end], 0..) |byte, idx| //
+            _ = try fmt.bufPrint(key_buf[(idx * 2)..(idx * 2 + 2)], "{X:0<2}", .{ byte });
         try stdout_log_ctx.print(
             \\Generated Key:
             \\ - Protocol:   {s}
@@ -301,104 +302,43 @@ pub fn main() !void {
         return;
     }
 
-    const cova_alloc = main_cmd._alloc orelse return error.CovaCommandUninitialized;
+    var config_arena: heap.ArenaAllocator = .init(alloc);
+    defer config_arena.deinit();
+    const config_alloc = config_arena.allocator();
     const main_opts = try main_cmd.getOpts(.{});
     // Set up Core Data
-    var core_global_scan_conf: core.Core.Config.GlobalScanConfig = .{};
-    var core_scan_confs: ArrayList(core.Core.Config.ScanConfig) = .empty;
-    defer core_scan_confs.deinit(alloc);
-    const if_names: []const []const u8 = ifOpt: {
-        if (main_opts.get("interfaces")) |if_opt| {
-            const ssids = ssids: {
-                const ssids_opt = main_opts.get("ssids").?;
-                break :ssids try ssids_opt.val.getAllAs([]const u8);
-            };
-            const channels: ?[]const chs.Channel = getChs: {
-                var ch_list: ArrayList(chs.Channel) = .empty;
-                errdefer ch_list.deinit(cova_alloc);
-                if (main_opts.get("channels")) |ch_opt| {
-                    const ch_nums = try ch_opt.val.getAllAs(usize);
-                    for (ch_nums) |ch_num| {
-                        const ch: chs.Channel = chs.Channel.fromCh(ch_num) catch {
-                            log.warn("Invalid Channel: '{d}'", .{ ch_num });
-                            continue;
-                        };
-                        try ch_list.append(cova_alloc, ch);
-                    }
-                    break :getChs try ch_list.toOwnedSlice(cova_alloc);
-                }
-                else if (main_opts.get("bands")) |band_opt| {
-                    const bands = try band_opt.val.getAllAs(u8);
-                    for (bands) |band| switch (band) {
-                        2 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_2G_20),
-                        5 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_5G_20),
-                        6 => try ch_list.appendSlice(cova_alloc, wifi.channels.Channels.band_6G_20),
-                        else => {},
+    const core_global_scan_conf: core.Core.Config.GlobalScanConfig = .{
+        .ssids = ssids: {
+            const ssids_opt = main_opts.get("ssids") orelse break :ssids null;
+            break :ssids try ssids_opt.val.getAllAs([]const u8);
+        },
+        .channels = channels: {
+            var ch_list: ArrayList(chs.Channel) = .empty;
+            errdefer ch_list.deinit(config_alloc);
+            if (main_opts.get("channels")) |ch_opt| {
+                const ch_nums = try ch_opt.val.getAllAs(usize);
+                for (ch_nums) |ch_num| {
+                    const ch: chs.Channel = chs.Channel.fromCh(ch_num) catch {
+                        log.warn("Invalid Channel: '{d}'", .{ ch_num });
+                        continue;
                     };
-                    break :getChs try ch_list.toOwnedSlice(cova_alloc);
+                    try ch_list.append(config_alloc, ch);
+                    log.debug("Added Channel: {f}", .{ ch });
                 }
-                break :getChs null;
-            };
-            core_global_scan_conf = .{
-                .ssids = ssids,
-                .channels = channels,
-            };
-            const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt &.{};
-            for (if_names) |if_name| {
-                try core_scan_confs.append(alloc, .{ 
-                    .if_name = if_name,
-                    .ssids = ssids,
-                    .channels = channels,
-                });
+                break :channels try ch_list.toOwnedSlice(config_alloc);
             }
-            break :ifOpt if_names;
-        }
-        else break :ifOpt &.{};
-    };
-    const profile_mask: ?core.profiles.Mask = getMask: {
-        if (main_cmd.checkArgGroup(.Command, "INTERFACE")) {
-            var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
-            var mask = masks_map.get("intel windows 11 pc").?;
-            mask.hostname = try posix.gethostname(hn_buf[0..]);
-            break :getMask mask;
-        }
-        if (!main_cmd.checkArgGroup(.Option, "MASK") or main_cmd.checkFlag("no_mask")) break :getMask null;
-        if (main_opts.get("mask")) |mask_opt| {
-            const mask = try mask_opt.val.getAs(core.profiles.Mask);
-            log.info("Using the provided '{s}' Profile Mask:\n{f}", .{
-                try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
-                mask,
-            });
-            break :getMask mask;
-        }
-        const mask: core.profiles.Mask = .{
-            .oui = getOUI: {
-                if (main_opts.get("mask_oui")) |oui_opt| 
-                    break :getOUI try oui_opt.val.getAs([3]u8);
-                break :getOUI try oui.getOUI("Intel");
-            },
-            .hostname = getHN: {
-                if (main_opts.get("mask_hostname")) |hn_opt|
-                    break :getHN try hn_opt.val.getAs([]const u8);
-                break :getHN "localhost";
-            },
-            .ttl = getTTL: {
-                if (main_opts.get("mask_ttl")) |ttl_opt|
-                    break :getTTL try ttl_opt.val.getAs(u8);
-                break :getTTL 64;
-            },
-            .ua_str = getUA: {
-                if (main_opts.get("mask_ua")) |ua_opt|
-                    break :getUA try ua_opt.val.getAs([]const u8);
-                break :getUA "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-            },
-        };
-        log.info("Using your Custom Profile Mask:\n{f}", .{ mask });
-        break :getMask mask;
-    };
-    const core_conn_confs: []core.connections.Config = connConfs: {
-        const conn_opt = main_opts.get("connect_info") orelse break :connConfs &.{};
-        break :connConfs conn_opt.val.getAllAs(core.connections.Config) catch &.{};
+            else if (main_opts.get("bands")) |band_opt| {
+                const bands = try band_opt.val.getAllAs(u8);
+                for (bands) |band| switch (band) {
+                    2 => try ch_list.appendSlice(config_alloc, wifi.channels.Channels.band_2G_20),
+                    5 => try ch_list.appendSlice(config_alloc, wifi.channels.Channels.band_5G_20),
+                    6 => try ch_list.appendSlice(config_alloc, wifi.channels.Channels.band_6G_20),
+                    else => {},
+                };
+                break :channels try ch_list.toOwnedSlice(config_alloc);
+            }
+            break :channels &.{};
+        },
     };
     if (main_cmd.checkFlag("no_conflict_pids")) //
         log.info("Skipping Conflict PIDs check.", .{});
@@ -406,7 +346,7 @@ pub fn main() !void {
     var core_config: core.Core.Config = config: {
         var config: core.Core.Config = importConf: {
             var config: core.Core.Config = .{
-                .avail_if_names = if_names,
+                .avail_if_names = &.{},
                 .global_scan_config = core_global_scan_conf,
                 .profile = .{
                     .require_conflicts_ack = !main_cmd.checkFlag("no_conflict_pids"),
@@ -415,10 +355,10 @@ pub fn main() !void {
             if (main_opts.get("config")) |config_opt| userConf: {
                 const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
                 defer config_file.close();
-                const config_bytes = config_file.readToEndAlloc(cova_alloc, 1_000_000) catch break :userConf;
+                const config_bytes = config_file.readToEndAlloc(config_alloc, 1_000_000) catch break :userConf;
                 config = json.parseFromSliceLeaky(
                     core.Core.Config,
-                    cova_alloc,
+                    config_alloc,
                     config_bytes,
                     .{
                         .duplicate_field_behavior = .use_first,
@@ -452,10 +392,10 @@ pub fn main() !void {
                         log.info("No Default Config found at: '{s}'", .{ default_conf_path });
                         continue;
                     };
-                    const config_bytes = default_conf.readToEndAlloc(cova_alloc, 1_000_000) catch break :defaultConf;
+                    const config_bytes = default_conf.readToEndAlloc(config_alloc, 1_000_000) catch break :defaultConf;
                     config = json.parseFromSliceLeaky(
                         core.Core.Config,
-                        cova_alloc,
+                        config_alloc,
                         config_bytes,
                         .{
                             .duplicate_field_behavior = .use_first,
@@ -473,8 +413,17 @@ pub fn main() !void {
             }
             break :importConf config;
         };
+        // User Arguments to override Config
+        // - UI Mode
         if (main_opts.get("ui")) |ui_mode_opt| //
             config.profile.ui_mode = try ui_mode_opt.val.getAs(ui.Mode);
+        // - Channels / Bands
+        if (main_cmd.checkOpts(&.{ "channels", "bands" }, .{})) //
+            config.global_scan_config.channels = core_global_scan_conf.channels;
+        // - SSIDs
+        if (main_cmd.checkFlag("ssids")) //
+            config.global_scan_config.ssids = core_global_scan_conf.ssids;
+        // - Connection
         if (main_cmd.matchSubCmd("connect")) |connect_cmd| {
             const connect_vals = try connect_cmd.getVals(.{});
             const id: core.networks.Network.ID = id: {
@@ -525,22 +474,10 @@ pub fn main() !void {
             };
             config.profile.require_conflicts_ack = false;
         }
-        if (if_names.len > 0) //
-            config.avail_if_names = if_names;
-        if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
-            for (config.avail_if_names) |if_name| {
-                try core_scan_confs.append(alloc, .{
-                    .if_name = if_name,
-                    .ssids = &.{},
-                    .channels = &.{},
-                });
-            }
-        }
-        if (core_scan_confs.items.len > 0)
-            config.scan_configs = core_scan_confs.items;
-        if (profile_mask) |pro_mask|
-            config.profile.mask = pro_mask;
-        config.profile.use_random_mask = !main_cmd.checkFlag("no_mask");
+        const core_conn_confs: []core.connections.Config = connConfs: {
+            const conn_opt = main_opts.get("connect_info") orelse break :connConfs &.{};
+            break :connConfs conn_opt.val.getAllAs(core.connections.Config) catch &.{};
+        };
         for (core_conn_confs) |*conn_conf| {
             if (main_cmd.checkOpts(&.{ "gateway" }, .{}))
                 conn_conf.add_gw = true;
@@ -554,6 +491,83 @@ pub fn main() !void {
         }
         if (core_conn_confs.len > 0)
             config.connect_configs = core_conn_confs;
+        // - Scanning / Interfaces
+        var core_scan_confs: ArrayList(core.Core.Config.ScanConfig) = .empty;
+        //defer core_scan_confs.deinit(alloc);
+        const if_names: []const []const u8 = ifOpt: {
+            if (main_opts.get("interfaces")) |if_opt| {
+                const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt &.{};
+                for (if_names) |if_name| {
+                    try core_scan_confs.append(config_alloc, .{
+                        .if_name = if_name,
+                        .ssids = core_global_scan_conf.ssids,
+                        .channels = core_global_scan_conf.channels,
+                    });
+                }
+                break :ifOpt if_names;
+            } //
+            else //
+                break :ifOpt &.{};
+        };
+        if (if_names.len > 0) //
+            config.avail_if_names = if_names;
+        if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
+            for (config.avail_if_names) |if_name| {
+                try core_scan_confs.append(config_alloc, .{
+                    .if_name = if_name,
+                    .ssids = &.{},
+                    .channels = &.{},
+                });
+            }
+        }
+        if (core_scan_confs.items.len > 0) //
+            config.scan_configs = core_scan_confs.items;
+        // - Profile Mask
+        const profile_mask: ?core.profiles.Mask = getMask: {
+            if (main_cmd.checkArgGroup(.Command, "INTERFACE")) {
+                var hn_buf: [posix.HOST_NAME_MAX]u8 = undefined;
+                var mask = masks_map.get("intel windows 11 pc").?;
+                mask.hostname = try posix.gethostname(hn_buf[0..]);
+                break :getMask mask;
+            }
+            if (!main_cmd.checkArgGroup(.Option, "MASK") or main_cmd.checkFlag("no_mask")) break :getMask null;
+            if (main_opts.get("mask")) |mask_opt| {
+                const mask = try mask_opt.val.getAs(core.profiles.Mask);
+                log.info("Using the provided '{s}' Profile Mask:\n{f}", .{
+                    try oui.findOUI(.long, mask.oui.? ++ .{ 0, 0, 0 }),
+                    mask,
+                });
+                break :getMask mask;
+            }
+            const mask: core.profiles.Mask = .{
+                .oui = getOUI: {
+                    if (main_opts.get("mask_oui")) |oui_opt| 
+                        break :getOUI try oui_opt.val.getAs([3]u8);
+                    break :getOUI try oui.getOUI("Intel");
+                },
+                .hostname = getHN: {
+                    if (main_opts.get("mask_hostname")) |hn_opt|
+                        break :getHN try hn_opt.val.getAs([]const u8);
+                    break :getHN "localhost";
+                },
+                .ttl = getTTL: {
+                    if (main_opts.get("mask_ttl")) |ttl_opt|
+                        break :getTTL try ttl_opt.val.getAs(u8);
+                    break :getTTL 64;
+                },
+                .ua_str = getUA: {
+                    if (main_opts.get("mask_ua")) |ua_opt|
+                        break :getUA try ua_opt.val.getAs([]const u8);
+                    break :getUA "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+                },
+            };
+            log.info("Using your Custom Profile Mask:\n{f}", .{ mask });
+            break :getMask mask;
+        };
+        if (profile_mask) |pro_mask| //
+            config.profile.mask = pro_mask;
+        config.profile.use_random_mask = !main_cmd.checkFlag("no_mask");
+        // Finalize Config
         break :config config;
     };
     // Time Zone
@@ -597,7 +611,7 @@ pub fn main() !void {
                     else => return err,
                 };
             };
-            var fn_w: Io.Writer.Allocating = .init(cova_alloc);
+            var fn_w: Io.Writer.Allocating = .init(config_alloc);
             var fn_writer = &fn_w.writer;
             errdefer fn_w.deinit();
             const basename = baseName: {
@@ -611,7 +625,7 @@ pub fn main() !void {
                 log_config.suffix,
             });
             const filename = try fn_w.toOwnedSlice();
-            errdefer cova_alloc.free(filename);
+            errdefer config_alloc.free(filename);
             break :logConfig .{ log_dir, try log_dir.createFile(filename, .{ .read = true }), log_config };
         }
         break :logConfig .{ null, null, null };
@@ -776,8 +790,8 @@ pub fn main() !void {
             }
             if (set_if_opts.get("mode")) |mode_opt| setMode: {
                 const new_mode = mode_opt.val.getAs(nl._80211.IFTYPE) catch break :setMode;
-                try stdout_log_ctx.print("Setting the Mode for {s}...\n", .{ set_if.name });
-                nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch { 
+                try stdout_log_ctx.print("Setting the Mode of '{s}'...\n", .{ set_if.name });
+                nl.route.setState(set_if.index, c(nl.route.IFF).DOWN) catch {
                     log.warn("Unable to set the interface down.", .{});
                 };
                 defer nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
@@ -794,11 +808,11 @@ pub fn main() !void {
                         break :setMode;
                     },
                     else => {
-                        log.err("Netlink request error. The Mode for interface '{s}' could not be set.", .{ set_if.name });
-                        return;
+                        log.err("Netlink request error. The Mode of interface '{s}' could not be set.", .{ set_if.name });
+                        return err;
                     },
                 };
-                try stdout_log_ctx.print("Set the Mode for {s} to {t}.\n", .{ set_if.name, new_mode });
+                try stdout_log_ctx.print("Set the Mode of '{s}' to {t}.\n", .{ set_if.name, new_mode });
             }
             if (set_if_opts.get("channel")) |chan_opt| setChannel: {
                 const new_ch: chs.Channel = ch: {
