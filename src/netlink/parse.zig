@@ -345,15 +345,28 @@ pub fn ptrFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
                 }
                 return try group_buf.toOwnedSlice(alloc);
             }
-            const new = try alloc.alloc(info.child, 1);
-            errdefer alloc.free(new);
-            new[0] = switch (@typeInfo(info.child)) {
-                .pointer => try ptrFromBytes(alloc, info.child, bytes),
-                .optional => try optFromBytes(alloc, info.child, bytes),
-                .@"struct" => try fromBytes(alloc, info.child, bytes),
-                else => try primFromBytes(info.child, bytes),
-            };
-            return new;
+            //const new = try alloc.alloc(info.child, 1);
+            //errdefer alloc.free(new);
+            //new[0] = switch (@typeInfo(info.child)) {
+            //    .pointer => try ptrFromBytes(alloc, info.child, bytes),
+            //    .optional => try optFromBytes(alloc, info.child, bytes),
+            //    .@"struct" => try fromBytes(alloc, info.child, bytes),
+            //    else => try primFromBytes(info.child, bytes),
+            //};
+            // return new;
+            // TODO: Better check for alignment
+            const num_items = @divFloor(bytes.len, @sizeOf(info.child));
+            var new_list: ArrayList(info.child) = .empty;
+            switch (@typeInfo(info.child)) {
+                .pointer => try new_list.append(alloc, try ptrFromBytes(alloc, info.child, bytes)),
+                .optional => try new_list.append(alloc, try optFromBytes(alloc, info.child, bytes)),
+                .@"struct" => try new_list.append(alloc, try fromBytes(alloc, info.child, bytes)),
+                else => for (0..num_items) |i| {
+                    const item_bytes = bytes[(i * @sizeOf(info.child))..((i + 1) * @sizeOf(info.child))];
+                    try new_list.append(alloc, try primFromBytes(info.child, item_bytes));
+                },
+            }
+            return try new_list.toOwnedSlice(alloc);
         },
         else => {
             log.err("Unsupported Type: {s}", .{ @typeName(T) });
@@ -381,8 +394,8 @@ pub fn setPtrFromBytes(
             }
             const add = try ptrFromBytes(alloc, T, bytes);
             errdefer freePtrBytes(alloc, T, add);
-            const new = 
-                if (instance.*.len == 0) add
+            const new = //
+                if (instance.*.len == 0) add //
                 else new: {
                     defer alloc.free(instance.*);
                     break :new try mem.concat(alloc, info.child, &.{ instance.*, add });
@@ -397,7 +410,8 @@ pub fn setPtrFromBytes(
 /// Get an Instance of an Optional Type (`T`) from the given `bytes`.
 pub fn optFromBytes(alloc: mem.Allocator, T: type, bytes: []const u8) !T {
     const raw_info = @typeInfo(T);
-    if (raw_info != .optional) return error.NotAnOptional;
+    if (raw_info != .optional) //
+        return error.NotAnOptional;
     const info = raw_info.optional;
     return switch (@typeInfo(info.child)) {
         .optional => try optFromBytes(alloc, T, bytes),
@@ -451,8 +465,8 @@ pub fn rawFromBytes(T: type, bytes: []const u8) !T {
 /// Get an Instance of a Type (`T`) from the given `bytes`.
 /// Note, the resulting instance should be freed using `freeBytes()`.
 pub fn fromBytes(
-    alloc: mem.Allocator, 
-    T: type, 
+    alloc: mem.Allocator,
+    T: type,
     bytes: []const u8,
 ) !T {
     var instance: T = undefined;
@@ -488,24 +502,28 @@ pub fn baseFromBytes(
     bytes: []const u8,
     base_instance: T,
 ) !T {
-    if (meta.hasFn(T, "fromBytes")) return try T.fromBytes(alloc, bytes);
+    if (meta.hasFn(T, "fromBytes")) //
+        return try T.fromBytes(alloc, bytes);
     const info = @typeInfo(T);
-    if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed"))
+    if (info == .@"struct" and (info.@"struct".layout == .@"extern" or info.@"struct".layout == .@"packed")) //
         return try rawFromBytes(T, bytes);
     var instance = base_instance;
     //errdefer freeBytes(alloc, T, instance);
     comptime var req_fields = 0;
     inline for (meta.fields(T)) |field| {
         const field_info = @typeInfo(field.type);
-        if (field_info != .optional and field.default_value_ptr == null) req_fields += 1;
+        if (field_info != .optional and field.default_value_ptr == null) //
+            req_fields += 1;
     }
     const E, 
     const HdrT = comptime consts: {
         var E: ?type = null;
         var HdrT: ?type = null;
         for (@typeInfo(T).@"struct".decls) |decl| {
-            if (mem.eql(u8, decl.name, "AttrE")) E = @field(T, "AttrE");
-            if (mem.eql(u8, decl.name, "AttrHdrT")) HdrT = @field(T, "AttrHdrT");
+            if (mem.eql(u8, decl.name, "AttrE")) //
+                E = @field(T, "AttrE");
+            if (mem.eql(u8, decl.name, "AttrHdrT")) //
+                HdrT = @field(T, "AttrHdrT");
         }
         break :consts .{
             E orelse @compileError("Missing Attribute Enum Declaration (`AttrE`)"),
@@ -530,7 +548,9 @@ pub fn baseFromBytes(
             //@panic("Debug Panic");
         };
         //log.debug("{t}", .{ tag });
-        const diff = if (HdrT.full_len) hdr.len -| hdr_len else hdr.len;
+        const diff = //
+            if (HdrT.full_len) hdr.len -| hdr_len //
+            else hdr.len;
         //log.debug("Len: {d: <5} Num: {d: <5} Type: {t}", .{ hdr.len, hdr.type, tag });
         //log.debug(" - Start: {d}B, End: {d}B", .{ start, end + diff });
         start = end;
@@ -545,9 +565,9 @@ pub fn baseFromBytes(
         }
         inline for (meta.fields(T)) |field| cont: {
             //if (!mem.eql(u8, field.name, @tagName(tag)) or diff == 0) break :cont;
-            if (!mem.eql(u8, field.name, @tagName(tag)))
+            if (!mem.eql(u8, field.name, @tagName(tag))) //
                 break :cont;
-            if (parsed_fields.get(field.name)) |_|
+            if (parsed_fields.get(field.name)) |_| //
                 break :cont;
             // TODO: Figure out the potential segfault here. Does allocating the field name solve it?
             const field_name = try alloc.dupe(u8, field.name);
@@ -564,7 +584,7 @@ pub fn baseFromBytes(
                 else => in_field.* = try primFromBytes(field.type, bytes[start..end]),
             }
         }
-        if (HdrT.nl_align) 
+        if (HdrT.nl_align) //
             end = mem.alignForward(usize, end, 4);
         start = end;
         end += hdr_len;
@@ -593,7 +613,8 @@ pub fn freePtrBytes(alloc: mem.Allocator, T: type, instance: T) void {
         return;
     }
     const raw_info = @typeInfo(T);
-    if (raw_info != .pointer) return;
+    if (raw_info != .pointer) //
+        return;
     const info = raw_info.pointer;
     const child_info = @typeInfo(info.child);
     switch (info.size) {
@@ -624,7 +645,8 @@ pub fn freePtrBytes(alloc: mem.Allocator, T: type, instance: T) void {
 /// TODO: Revise this to always call `freeBytes()` on the unwrapped instance.
 pub fn freeOptBytes(alloc: mem.Allocator, T: type, instance: T) void {
     const raw_info = @typeInfo(T);
-    if (raw_info != .optional) return;
+    if (raw_info != .optional) //
+        return;
     const info = raw_info.optional;
     const child_info = @typeInfo(info.child);
     const _instance = instance orelse return;
@@ -855,11 +877,11 @@ pub fn validateIndexes(
 /// Clone an `instance` of Netlink Type (`T`) using the provided Allocator (`alloc`).
 /// TODO: Make this less wasteful with Allocations
 pub fn clone(alloc: mem.Allocator, T: type, instance: T) !T {
-    var buf: [64_000]u8 = undefined;
-    var fba: heap.FixedBufferAllocator = .init(buf[0..]);
-    const bytes = try toBytes(fba.allocator(), T, instance);
-    //const bytes = try toBytes(alloc, T, instance);
-    //defer alloc.free(bytes);
+    //var buf: [64_000]u8 = undefined;
+    //var fba: heap.FixedBufferAllocator = .init(buf[0..]);
+    //const bytes = try toBytes(fba.allocator(), T, instance);
+    const bytes = try toBytes(alloc, T, instance);
+    defer alloc.free(bytes);
     //log.debug("Clone: {d}B\n{s}", .{ bytes.len, HexF{ .bytes = bytes } });
     return try fromBytes(alloc, T, bytes);
 }
