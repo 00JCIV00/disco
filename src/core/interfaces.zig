@@ -244,7 +244,7 @@ pub const Interface = struct {
     /// Check if this Interface supports a specific `command`
     pub fn checkCommand(self: *const @This(), command: nl._80211.CMD) bool {
         const commands = self.wiphy.SUPPORTED_COMMANDS orelse return false;
-        return commands & @intFromEnum(command) == @intFromEnum(command);
+        return mem.indexOfScalar(u32, commands, @intFromEnum(command)) != null;
     }
 
     /// Check if this Interface has a specific `feature`
@@ -604,9 +604,12 @@ pub const Interface = struct {
                     try w.print("    - None Reported", .{});
                     break :commands;
                 }
+                //try w.print("    - Command Count: {d}\n", .{ self.wiphy.SUPPORTED_COMMANDS.?.len });
                 inline for (&.{
                     nl._80211.CMD.REMAIN_ON_CHANNEL,
                     nl._80211.CMD.START_SCHED_SCAN,
+                    nl._80211.CMD.ROAM,
+                    nl._80211.CMD.ADD_LINK,
                 }) |command| {
                     const has_command = self.checkCommand(command);
                     try w.print("    - {t}: {}\n", .{ command, has_command });

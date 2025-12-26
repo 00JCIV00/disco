@@ -702,7 +702,7 @@ pub const Wiphy = struct {
     /// Supported frequency bands for the WIPHY
     WIPHY_BANDS: ?[]const Band = null,
     /// Supported commands for the WIPHY
-    SUPPORTED_COMMANDS: ?u32 = null,
+    SUPPORTED_COMMANDS: ?[]const u32 = null,
     /// Maximum duration for remain-on-channel operations
     MAX_REMAIN_ON_CHANNEL_DURATION: ?u32 = null,
     /// Indicates support for off-channel transmissions
