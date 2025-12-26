@@ -11,6 +11,7 @@ const posix = std.posix;
 const time = std.time;
 const ArrayList = std.ArrayList;
 const HashMap = std.AutoHashMapUnmanaged;
+const Io = std.Io;
 const Thread = std.Thread;
 
 const nl = @import("../netlink.zig");
@@ -163,13 +164,15 @@ pub fn request(
     const req_len = mem.alignForward(u32, @sizeOf(RequestT), 4);
     const attrs,
     const attrs_len: usize = attrsLen: {
-        if (attrs_raw.len == 0) break :attrsLen .{ &.{}, 0 };
+        if (attrs_raw.len == 0) //
+            break :attrsLen .{ &.{}, 0 };
         var attrs_buf: ArrayList(nl.Attribute) = try .initCapacity(alloc, attrs_raw.len);
         var len: usize = 0;
         for (attrs_raw[0..], 0..) |raw_attr, idx| {
             attrs_buf.appendAssumeCapacity(raw_attr);
             var attr = &attrs_buf.items[idx];
-            if (attr.hdr.len == 0) attr.hdr.len = mem.alignForward(u16, @intCast(nl.attr_hdr_len + attr.data.len), 4);
+            if (attr.hdr.len == 0) //
+                attr.hdr.len = mem.alignForward(u16, @intCast(nl.attr_hdr_len + attr.data.len), 4);
             len += mem.alignForward(u16, attr.hdr.len, 4);
         }
         break :attrsLen .{
@@ -177,36 +180,40 @@ pub fn request(
             mem.alignForward(usize, len, 4),
         };
     };
-    defer if (attrs.len > 0) alloc.free(@as([]align(8) const nl.Attribute, @alignCast(attrs)));
+    defer if (attrs.len > 0) //
+        alloc.free(@as([]align(8) const nl.Attribute, @alignCast(attrs)));
     var req = raw_req;
     const msg_len = mem.alignForward(u32, @intCast(req_len + attrs_len), 4);
     var sock_info: posix.sockaddr.nl = undefined;
     var sock_size: u32 = @sizeOf(posix.sockaddr.nl);
     try posix.getsockname(ctx.sock, @ptrCast(&sock_info), &sock_size);
-    if (req.nlh.pid == 0) req.nlh.pid = sock_info.pid;
+    if (req.nlh.pid == 0) //
+        req.nlh.pid = sock_info.pid;
     //log.debug("PID: {d}", .{ nl_req.nlh.pid });
-    if (req.nlh.seq == 0) req.nlh.seq = ctx.seq_id;
+    if (req.nlh.seq == 0) //
+        req.nlh.seq = ctx.seq_id;
     //log.debug("SID: {d}", .{ nl_req.nlh.seq });
     req.nlh.len = msg_len;
-    var req_buf: ArrayList(u8) = try .initCapacity(alloc, msg_len);
-    defer req_buf.deinit(alloc);
-    try req_buf.appendSlice(alloc, mem.toBytes(req)[0..]);
+    var req_writer: Io.Writer.Allocating = try .initCapacity(alloc, msg_len);
+    defer req_writer.deinit();
+    const req_w = &req_writer.writer;
+    try req_w.writeStruct(req, .little);
     if (attrs.len > 0) {
         for (attrs[0..]) |attr| {
-            try req_buf.appendSlice(alloc, mem.toBytes(attr.hdr)[0..]);
-            try req_buf.appendSlice(alloc, attr.data[0..]);
-            const len = req_buf.items.len;
-            try req_buf.appendNTimes(alloc, 0, mem.alignForward(usize, len, 4) - len);
+            try req_w.writeStruct(attr.hdr, .little);
+            try req_w.writeAll(attr.data);
+            const len = req_writer.written().len;
+            try req_w.splatByteAll(0, mem.alignForward(usize, len, 4) - len);
         }
     }
-    if (req_buf.items.len < msg_len) {
-        for (req_buf.items.len..msg_len) |_| //
-            req_buf.appendAssumeCapacity(0);
-    }
-    if (ctx.handler) |handler| try handler.trackRequest(ctx.*);
+    const pad_len = msg_len - req_writer.written().len;
+    try req_w.splatByteAll(0, pad_len);
+    //log.debug("Request {d} ({d}B):{f}", .{ req.nlh.seq, msg_len, HexF{ .bytes = req_writer.written() } });
+    if (ctx.handler) |handler| //
+        try handler.trackRequest(ctx.*);
     _ = try posix.send(
         ctx.sock,
-        req_buf.items[0..],
+        req_writer.written(),
         0,
     );
 }
@@ -292,7 +299,8 @@ pub const Handler = struct {
     pub fn deinit(self: *@This()) void {
         posix.close(self.nl_sock);
         var seq_resp_iter = self._seq_responses.iterator();
-        while (seq_resp_iter.next()) |resp| resp.value_ptr.deinit(self._alloc);
+        while (seq_resp_iter.next()) |resp| //
+            resp.value_ptr.deinit(self._alloc);
         self._seq_responses.mutex.unlock();
         self._seq_responses.deinit(self._alloc);
         //log.debug("Total Command Response Maps: {d}", .{ self._cmd_response_maps.count() });
@@ -300,7 +308,8 @@ pub const Handler = struct {
         while (cmd_resp_map_iter.next()) |resp_map_entry| {
             const resp_map = resp_map_entry.value_ptr;
             var cmd_resp_iter = resp_map.iterator();
-            while (cmd_resp_iter.next()) |resp| resp.value_ptr.deinit(self._alloc);
+            while (cmd_resp_iter.next()) |resp| //
+                resp.value_ptr.deinit(self._alloc);
             resp_map.mutex.unlock();
             resp_map.deinit(self._alloc);
         }
@@ -325,7 +334,8 @@ pub const Handler = struct {
 
     /// Track a specific Command
     pub fn trackCommand(self: *@This(), cmd: u16) !void {
-        if (self._cmd_response_maps.get(cmd)) |_| return;
+        if (self._cmd_response_maps.get(cmd)) |_| //
+            return;
         try self._cmd_response_maps.put(self._alloc, cmd, .empty);
     }
 
@@ -351,7 +361,8 @@ pub const Handler = struct {
         defer map.mutex.unlock();
         var map_iter = map.iterator();
         while (map_iter.next()) |resp| {
-            if (resp.value_ptr.* == .ready) return true;
+            if (resp.value_ptr.* == .ready) //
+                return true;
         }
         return false;
     }
@@ -366,7 +377,8 @@ pub const Handler = struct {
         var timeout_state: Response = .{ .ready = error.Timeout };
         return resp_state: switch (response.*) {
             .timeout => |*timeout| timeout: {
-                if (!timeout.check()) break :timeout null;
+                if (!timeout.check()) //
+                    break :timeout null;
                 continue :resp_state timeout_state;
             },
             .working => null,
@@ -392,7 +404,8 @@ pub const Handler = struct {
             var timeout_state: Response = .{ .ready = error.Timeout };
             resp_state: switch (response.*) {
                 .timeout => |*timeout| {
-                    if (!timeout.check()) continue;
+                    if (!timeout.check()) //
+                        continue;
                     continue :resp_state timeout_state;
                 },
                 .working => continue,
@@ -423,7 +436,8 @@ pub const Handler = struct {
             self._cmd_response_maps.mutex.lock();
             defer self._cmd_response_maps.mutex.unlock();
             const response = respCtx: {
-                if (self._seq_responses.map.getEntry(msg.hdr.seq)) |resp_entry| break :respCtx resp_entry.value_ptr;
+                if (self._seq_responses.map.getEntry(msg.hdr.seq)) |resp_entry| //
+                    break :respCtx resp_entry.value_ptr;
                 const msg_cmd = self.detectCmd(msg.hdr, msg.data) catch |err| {
                     self.handleError(err);
                     continue;
@@ -453,7 +467,8 @@ pub const Handler = struct {
                 };
                 break :respCtx resp_entry.value_ptr;
             };
-            if (response.* == .ready) continue;
+            if (response.* == .ready) //
+                continue;
             const resp_bytes = respData: {
                 var msg_buf = switch (response.*) {
                     .working => |buf| buf,
@@ -464,7 +479,8 @@ pub const Handler = struct {
                 };
                 var valid: bool = false;
                 var msg_list: ArrayList(u8) = .fromOwnedSlice(msg_buf);
-                defer if (!valid) msg_list.deinit(self._alloc);
+                defer if (!valid) //
+                    msg_list.deinit(self._alloc);
                 msg_list.appendSlice(self._alloc, mem.asBytes(&msg.hdr)) catch |err| {
                     self.handleError(err);
                     continue;
@@ -486,7 +502,7 @@ pub const Handler = struct {
                 c(nl.NLMSG).ERROR => nlError: {
                     const nl_err = mem.bytesAsValue(nl.ErrorHeader, msg.data[0..@sizeOf(nl.ErrorHeader)]);
                     const errno: linux.E = @enumFromInt(@as(u16, @intCast(-nl_err.err)));
-                    log.debug("NL Response ({d}): {d} ({t})", .{ msg.hdr.seq, nl_err.err, errno });
+                    //log.debug("NL Response ({d}): {d} ({t})", .{ msg.hdr.seq, nl_err.err, errno });
                     var valid: bool = false;
                     defer if (!valid) //
                         self._alloc.free(resp_bytes);
@@ -517,7 +533,10 @@ pub const Handler = struct {
                 => resp_bytes,
                 else => other: {
                     const is_multi = (msg.hdr.flags & c(nl.NLM_F).MULTI) != 0;
-                    if (is_multi) continue else break :other resp_bytes;
+                    if (is_multi) //
+                        continue //
+                    else //
+                        break :other resp_bytes;
                 },
             };
             response.* = .{ .ready = resp_data };
