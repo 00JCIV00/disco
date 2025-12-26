@@ -68,14 +68,28 @@ pub const Core = struct {
         serve_config: ?serve.Config = null,
 
         pub const GlobalScanConfig = struct {
+            /// Scan Mode: `netlink` or `monitor`
+            mode: meta.Tag(networks.ScanContext) = .monitor,
+            /// SSIDs to Scan for
+            /// Note, this is only used for `netlink` Scanning
             ssids: ?[]const []const u8 = null,
-            channels: ?[]const chs.Channel = null,
+            /// Channels to Scan through
+            channels: []const chs.Channel = &.{},
+            /// Dwell Time for each Channel in Milliseconds (ms)
+            /// Note, this is only used for `monitor` Scanning
+            dwell: u64 = 1_000, 
         };
 
         pub const ScanConfig = struct {
             if_name: []const u8,
+            /// SSIDs to Scan for
+            /// Note, this is only used for `netlink` Scanning
             ssids: ?[]const []const u8 = null,
+            /// Channels to Scan through
             channels: ?[]const chs.Channel = null,
+            /// Dwell Time for each Channel in Milliseconds (ms)
+            /// Note, this is only used for `monitor` Scanning
+            dwell: ?u64 = null,
         };
     };
 
@@ -273,7 +287,7 @@ pub const Core = struct {
         while (self.active.load(.acquire)) {
             //defer log.debug("Core Loop: {d}ms", .{ self._timer.lap() / time.ns_per_ms });
             //log.debug("Core Update", .{});
-            defer Thread.sleep(10 * time.ns_per_ms);
+            //defer Thread.sleep(10 * time.ns_per_ms);
             // Interface Tracking
             try self.if_ctx.update(self);
             //Thread.sleep(1 * time.ns_per_ms);
@@ -309,7 +323,8 @@ pub const Core = struct {
     /// (WIP) Run the Core Context up To the provided `condition`.
     /// This is useful for getting info from all Interfaces, doing a single Scan, etc
     pub fn runTo(self: *@This(), condition: RunCondition) !void {
-        if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
+        if (!self._mutex.tryLock()) //
+            return error.CoreAlreadyRunning;
         defer self._mutex.unlock();
         self.active.store(true, .release);
         self.run_condition = condition;
@@ -475,25 +490,3 @@ pub fn findConflictPIDs(
     return found_pids;
 }
 
-/// Reset a Map containing Netlink Data
-pub fn resetNLMap(
-    alloc: mem.Allocator,
-    K: type,
-    V: type,
-    map: *utils.ThreadHashMap(K, V),
-) void {
-    // Clean
-    var map_iter = map.iterator();
-    var rm_idxs: [16_000]?K = @splat(null);
-    var rm_count: u16 = 0;
-    while (map_iter.next()) |val| {
-        nl.parse.freeBytes(alloc, V, val.value_ptr.*);
-        rm_idxs[rm_count] = val.key_ptr.*;
-        rm_count +|= 1;
-    }
-    map_iter.unlock();
-    for (rm_idxs[0..rm_count]) |_idx| {
-        const idx = _idx orelse break;
-        _ = map.remove(idx);
-    }
-}

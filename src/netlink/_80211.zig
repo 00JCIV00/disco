@@ -647,6 +647,151 @@ pub const Interface = struct {
 pub const Wiphy = struct {
     pub const AttrE = ATTR;
 
+    /// WIPHY Index of the device
+    WIPHY: u32,
+    /// WIPHY Name, typically a device identifier
+    WIPHY_NAME: []const u8,
+    /// Generation of the WIPHY, often incremented on each update
+    GENERATION: ?u32 = null,
+    /// Retry limit for short frames
+    WIPHY_RETRY_SHORT: ?u32 = null,
+    /// Retry limit for long frames
+    WIPHY_RETRY_LONG: ?u32 = null,
+    /// Fragmentation threshold for frames
+    WIPHY_FRAG_THRESHOLD: ?u32 = null,
+    /// Request to Send (RTS) threshold
+    WIPHY_RTS_THRESHOLD: ?u32 = null,
+    /// Coverage class for extended range support
+    WIPHY_COVERAGE_CLASS: ?u8 = null,
+    /// Maximum number of SSIDs supported in scan requests
+    MAX_NUM_SCAN_SSIDS: ?u32 = null,
+    /// Maximum number of SSIDs for scheduled scans
+    MAX_NUM_SCHED_SCAN_SSIDS: ?u32 = null,
+    /// Maximum size of Information Elements (IEs) in scan requests
+    MAX_SCAN_IE_LEN: ?u16 = null,
+    /// Maximum size of IEs in scheduled scans
+    MAX_SCHED_SCAN_IE_LEN: ?u16 = null,
+    /// Maximum number of match sets for scans
+    MAX_MATCH_SETS: ?u32 = null,
+    /// Indicates support for RSN (Robust Security Network) in IBSS mode
+    SUPPORT_IBSS_RSN: ?bool = null,
+    /// Indicates support for mesh authentication
+    SUPPORT_MESH_AUTH: ?bool = null,
+    /// Indicates support for U-APSD (Unscheduled Automatic Power Save Delivery) in AP mode
+    SUPPORT_AP_UAPSD: ?bool = null,
+    /// Indicates TDLS (Tunneled Direct Link Setup) support
+    TDLS_SUPPORT: ?bool = null,
+    /// Indicates support for external TDLS setup
+    TDLS_EXTERNAL_SETUP: ?bool = null,
+    /// Supported cipher suites for the WIPHY
+    CIPHER_SUITES: ?[]const u32 = null,
+    /// Maximum number of PMKIDs supported for fast BSS transitions
+    MAX_NUM_PMKIDS: ?u32 = null,
+    /// Ethertype for control port protocol
+    CONTROL_PORT_ETHERTYPE: ?u16 = null,
+    /// Available TX antennas for the WIPHY
+    WIPHY_ANTENNA_AVAIL_TX: ?u32 = null,
+    /// Available RX antennas for the WIPHY
+    WIPHY_ANTENNA_AVAIL_RX: ?u32 = null,
+    /// Configured TX antennas for the WIPHY
+    WIPHY_ANTENNA_TX: ?u32 = null,
+    /// Configured RX antennas for the WIPHY
+    WIPHY_ANTENNA_RX: ?u32 = null,
+    /// Supported interface types, such as station, AP, monitor, etc.
+    SUPPORTED_IFTYPES: ?u32 = null,
+    /// Supported frequency bands for the WIPHY
+    WIPHY_BANDS: ?[]const Band = null,
+    /// Supported commands for the WIPHY
+    SUPPORTED_COMMANDS: ?u32 = null,
+    /// Maximum duration for remain-on-channel operations
+    MAX_REMAIN_ON_CHANNEL_DURATION: ?u32 = null,
+    /// Indicates support for off-channel transmissions
+    OFFCHANNEL_TX_OK: ?bool = null,
+    /// Supported software interface types
+    SOFTWARE_IFTYPES: ?u32 = null,
+    /// Supported interface combinations for the WIPHY
+    INTERFACE_COMBINATIONS: ?[]const u8 = null,
+    /// Feature flags supported by the WIPHY
+    FEATURE_FLAGS: ?u32 = null,
+    /// High Throughput (HT) capability mask
+    //HT_CAPABILITY_MASK: [26]u8 = .{ 0 } ** 26,
+    HT_CAPABILITY_MASK: ?[26]u8 = null,
+    /// High Throughput (HT) capability
+    HT_CAPABILITY: u32 = 0,
+    /// Very High Throughput (HT) capability mask
+    //VHT_CAPABILITY_MASK: [12]u8 = .{ 0 } ** 12,
+    VHT_CAPABILITY_MASK: ?[12]u8 = null,
+    /// Very High Throughput (VHT) capability
+    VHT_CAPABILITY: u32 = 0,
+    /// Use RRM
+    USE_RRM: ?[]const u8 = null,
+
+    pub const FEATURE_FLAG = enum(u32) {
+        /// Socket TX status reporting
+        SK_TX_STATUS = 1 << 0,
+        /// HT-IBSS support
+        HT_IBSS = 1 << 1,
+        /// Inactivity timer support
+        INACTIVITY_TIMER = 1 << 2,
+        /// Cell-base regulatory hints
+        CELL_BASE_REG_HINTS = 1 << 3,
+        /// P2P device requires channel assignment
+        P2P_DEVICE_NEEDS_CHANNEL = 1 << 4,
+        /// SAE authentication support
+        SAE = 1 << 5,
+        /// Low-priority scan support
+        LOW_PRIORITY_SCAN = 1 << 6,
+        /// Scan flush support
+        SCAN_FLUSH = 1 << 7,
+        /// AP-mode scanning
+        AP_SCAN = 1 << 8,
+        /// Per-VIF TX power configuration
+        VIF_TXPOWER = 1 << 9,
+        /// Requires OBSS scan before association
+        NEED_OBSS_SCAN = 1 << 10,
+        /// P2P GO CTWindow support
+        P2P_GO_CTWIN = 1 << 11,
+        /// P2P GO Opportunistic Power Save
+        P2P_GO_OPPPS = 1 << 12,
+        /// Reserved bit 13 (not defined)
+        ADVERTISE_CHAN_LIMITS = 1 << 14,
+        /// Full AP client state management
+        FULL_AP_CLIENT_STATE = 1 << 15,
+        /// Userspace Mesh Peering Management
+        USERSPACE_MPM = 1 << 16,
+        /// Active monitor mode capability
+        ACTIVE_MONITOR = 1 << 17,
+        /// AP mode channel-width changes
+        AP_MODE_CHAN_WIDTH_CHANGE = 1 << 18,
+        /// Include DS parameter set IE in probe requests
+        DS_PARAM_SET_IE_IN_PROBES = 1 << 19,
+        /// Include WFA TPC IE in probe requests
+        WFA_TPC_IE_IN_PROBES = 1 << 20,
+        /// Quieting support
+        QUIET = 1 << 21,
+        /// TX power insertion capability
+        TX_POWER_INSERTION = 1 << 22,
+        /// ACK timeout estimation
+        ACKTO_ESTIMATION = 1 << 23,
+        /// Static SMPS support
+        STATIC_SMPS = 1 << 24,
+        /// Dynamic SMPS support
+        DYNAMIC_SMPS = 1 << 25,
+        /// WMM admission control support
+        SUPPORTS_WMM_ADMISSION = 1 << 26,
+        /// Support MAC assignment at interface creation
+        MAC_ON_CREATE = 1 << 27,
+        /// TDLS channel switching support
+        TDLS_CHANNEL_SWITCH = 1 << 28,
+        /// Random MAC for normal scans
+        SCAN_RANDOM_MAC_ADDR = 1 << 29,
+        /// Random MAC for scheduled scans
+        SCHED_SCAN_RANDOM_MAC_ADDR = 1 << 30,
+        /// Random MAC for neighbor discovery
+        ND_RANDOM_MAC_ADDR = 1 << 31,
+    };
+
+
     pub const BAND_ATTR = enum(u16) {
         __INVALID,
         FREQS,
@@ -817,85 +962,6 @@ pub const Wiphy = struct {
         /// Single-user (S1G) capability for low-bandwidth applications
         S1G_CAPA: ?u32 = null,
     };
-
-    /// WIPHY Index of the device
-    WIPHY: u32,
-    /// WIPHY Name, typically a device identifier
-    WIPHY_NAME: []const u8,
-    /// Generation of the WIPHY, often incremented on each update
-    GENERATION: ?u32 = null,
-    /// Retry limit for short frames
-    WIPHY_RETRY_SHORT: ?u32 = null,
-    /// Retry limit for long frames
-    WIPHY_RETRY_LONG: ?u32 = null,
-    /// Fragmentation threshold for frames
-    WIPHY_FRAG_THRESHOLD: ?u32 = null,
-    /// Request to Send (RTS) threshold
-    WIPHY_RTS_THRESHOLD: ?u32 = null,
-    /// Coverage class for extended range support
-    WIPHY_COVERAGE_CLASS: ?u8 = null,
-    /// Maximum number of SSIDs supported in scan requests
-    MAX_NUM_SCAN_SSIDS: ?u32 = null,
-    /// Maximum number of SSIDs for scheduled scans
-    MAX_NUM_SCHED_SCAN_SSIDS: ?u32 = null,
-    /// Maximum size of Information Elements (IEs) in scan requests
-    MAX_SCAN_IE_LEN: ?u16 = null,
-    /// Maximum size of IEs in scheduled scans
-    MAX_SCHED_SCAN_IE_LEN: ?u16 = null,
-    /// Maximum number of match sets for scans
-    MAX_MATCH_SETS: ?u32 = null,
-    /// Indicates support for RSN (Robust Security Network) in IBSS mode
-    SUPPORT_IBSS_RSN: ?bool = null,
-    /// Indicates support for mesh authentication
-    SUPPORT_MESH_AUTH: ?bool = null,
-    /// Indicates support for U-APSD (Unscheduled Automatic Power Save Delivery) in AP mode
-    SUPPORT_AP_UAPSD: ?bool = null,
-    /// Indicates TDLS (Tunneled Direct Link Setup) support
-    TDLS_SUPPORT: ?bool = null,
-    /// Indicates support for external TDLS setup
-    TDLS_EXTERNAL_SETUP: ?bool = null,
-    /// Supported cipher suites for the WIPHY
-    CIPHER_SUITES: ?[]const u32 = null,
-    /// Maximum number of PMKIDs supported for fast BSS transitions
-    MAX_NUM_PMKIDS: ?u32 = null,
-    /// Ethertype for control port protocol
-    CONTROL_PORT_ETHERTYPE: ?u16 = null,
-    /// Available TX antennas for the WIPHY
-    WIPHY_ANTENNA_AVAIL_TX: ?u32 = null,
-    /// Available RX antennas for the WIPHY
-    WIPHY_ANTENNA_AVAIL_RX: ?u32 = null,
-    /// Configured TX antennas for the WIPHY
-    WIPHY_ANTENNA_TX: ?u32 = null,
-    /// Configured RX antennas for the WIPHY
-    WIPHY_ANTENNA_RX: ?u32 = null,
-    /// Supported interface types, such as station, AP, monitor, etc.
-    SUPPORTED_IFTYPES: ?[]const u32 = null,
-    /// Supported frequency bands for the WIPHY
-    WIPHY_BANDS: ?[]const Band = null,
-    /// Supported commands for the WIPHY
-    SUPPORTED_COMMANDS: ?[]const u32 = null,
-    /// Maximum duration for remain-on-channel operations
-    MAX_REMAIN_ON_CHANNEL_DURATION: ?u32 = null,
-    /// Indicates support for off-channel transmissions
-    OFFCHANNEL_TX_OK: ?bool = null,
-    /// Supported software interface types
-    SOFTWARE_IFTYPES: ?[]const u32 = null,
-    /// Supported interface combinations for the WIPHY
-    INTERFACE_COMBINATIONS: ?[]const u8 = null,
-    /// Feature flags supported by the WIPHY
-    FEATURE_FLAGS: ?u32 = null,
-    /// High Throughput (HT) capability mask
-    //HT_CAPABILITY_MASK: [26]u8 = .{ 0 } ** 26,
-    HT_CAPABILITY_MASK: ?[26]u8 = null,
-    /// High Throughput (HT) capability
-    HT_CAPABILITY: u32 = 0,
-    /// Very High Throughput (HT) capability mask
-    //VHT_CAPABILITY_MASK: [12]u8 = .{ 0 } ** 12,
-    VHT_CAPABILITY_MASK: ?[12]u8 = null,
-    /// Very High Throughput (VHT) capability
-    VHT_CAPABILITY: u32 = 0,
-    /// Use RRM
-    USE_RRM: ?[]const u8 = null,
 };
 
 /// Scan Flags
@@ -2480,8 +2546,7 @@ pub fn handleScanResultsSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]c
 }
 
 /// Determine Authentication Algorithm from the provided `scan_results`.
-pub fn determineAuthAlg(scan_results: ScanResults) AUTHTYPE {
-    const bss = scan_results.BSS orelse return .OPEN;
+pub fn determineAuthAlg(bss: BasicServiceSet) AUTHTYPE {
     const bss_ies = bss.INFORMATION_ELEMENTS orelse return .OPEN;
     // TODO: Check for WEP (somehow) and WPA1 in VENDOR_SPECIFIC
     const rsn = bss_ies.RSN orelse return .OPEN;
@@ -2743,13 +2808,12 @@ pub fn requestAuthenticate(
     req_ctx: *nl.io.RequestContext,
     if_index: i32,
     ssid: []const u8,
-    scan_results: ScanResults,
+    bss: BasicServiceSet,
     auth_data: ?[]const u8,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
-    const auth_type = determineAuthAlg(scan_results);
+    const auth_type = determineAuthAlg(bss);
     log.debug("Auth Type: {s}", .{ @tagName(auth_type) });
-    const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY;
     const bssid = bss.BSSID;
     var attr_list: ArrayList(nl.Attribute) = .empty;
@@ -2903,7 +2967,7 @@ pub fn requestAssociate(
     net_if: i32,
     wiphy: Wiphy,
     ssid: []const u8,
-    scan_results: ScanResults,
+    bss: BasicServiceSet,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
     log.debug("Before WIPHY.", .{});
@@ -2911,7 +2975,6 @@ pub fn requestAssociate(
     log.debug("After WIPHY.", .{});
     defer if (op_classes) |ocs| //
         alloc.free(ocs);
-    const bss = scan_results.BSS orelse return error.MissingBSS;
     const wiphy_freq = bss.FREQUENCY;
     log.debug("Ch: {f}, Freq: {d}MHz", .{ try chs.Channel.fromFreqBW(wiphy_freq, .bw20), wiphy_freq });
     const bssid = bss.BSSID;

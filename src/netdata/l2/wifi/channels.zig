@@ -55,20 +55,20 @@ pub const Channel = extern struct {
         if (bw_mhz == 20) switch (freq) {
             // 2.4 GHz
             2412...2472 => {
-                const ch_2g = @as(u16, @intCast((freq - 2407) / 5));
+                const ch_2g: u16 = @intCast((freq - 2407) / 5);
                 if (freq == 2407 + 5 * @as(usize, ch_2g) and ch_2g >= 1 and ch_2g <= 13) //
                     return .{ .band = .b2, .pri = ch_2g, .bw = .bw20 };
             },
             2484 => return .{ .band = .b2, .pri = 14, .bw = .bw20 },
             // 5 GHz
             5000...5895 => {
-                const ch_5g = @as(u16, @intCast((freq - 5000) / 5));
+                const ch_5g: u16 = @intCast((freq - 5000) / 5);
                 if (freq == 5000 + 5 * @as(usize, ch_5g) and validateChannel(ch_5g)) //
                     return .{ .band = .b5, .pri = ch_5g, .bw = .bw20 };
             },
             // 6 GHz
-            5925...7125 => {
-                const ch_6g = @as(u16, @intCast((freq - 5950) / 5));
+            5950...7125 => {
+                const ch_6g: u16 = @intCast((freq - 5950) / 5);
                 if (freq == 5950 + 5 * @as(usize, ch_6g) and validateChannel(ch_6g)) //
                     return .{ .band = .b6, .pri = ch_6g, .bw = .bw20 };
             },
@@ -263,6 +263,7 @@ fn genBand20(comptime band: Band) []const Channel {
 
 /// Generate Bonded Channels (40/80/160/320) by sliding over the 20 MHz list.
 fn genWideBand(comptime band: Band, comptime bw: Bandwidth) []const Channel {
+    @setEvalBranchQuota(10_000);
     return switch (band) {
         .b2 => &.{},
         .b5, .b6 => chsB5B6: {
@@ -291,7 +292,7 @@ fn genWideBand(comptime band: Band, comptime bw: Bandwidth) []const Channel {
     };
 }
 
-/// Build a parallel array of center frequencies in MHz.
+/// Build an array of Center Frequencies in MHz for all Channels (`chans`).
 fn genFrequencies(comptime chans: []const Channel) []const usize {
     var freqs: [chans.len]usize = undefined;
     for (chans, freqs[0..]) |ch, *freq| //
@@ -306,8 +307,8 @@ pub fn validateFreq(freq: usize) bool {
     return true;
 }
 
-/// Validate a primary channel number by attempting all valid band/bandwidth
-/// combinations. Returns true if any Channel constructed from `channel` is valid.
+/// Validate a primary `channel` number by attempting all valid band/bandwidth combinations.
+/// Returns true if any Channel constructed from `channel` is valid.
 pub fn validateChannel(channel: usize) bool {
     _ = Channel.fromCh(channel) catch return false;
     return true;

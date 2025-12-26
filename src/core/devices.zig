@@ -32,15 +32,17 @@ const c = utils.toStruct;
 const ThreadHashMap = utils.ThreadHashMap;
 
 
+/// Received Signal Stength Index (RSSI)
 pub const RSSI = struct {
-    rssi: i32,
+    /// Signal Strength in dBm
+    strength: i32,
 
     pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        const rssi_color: []const u8 = switch (self.rssi) {
+        const rssi_color: []const u8 = switch (self.strength) {
             -40...100 => ansi.fg.green,
             -70...-41 => ansi.fg.yellow,
             else => ansi.fg.red,
         };
-        try writer.print("{s}{d}{s}", .{ rssi_color, self.rssi, ansi.fg.reset });
+        try writer.print("{s}{d}{s}", .{ rssi_color, self.strength, ansi.fg.reset });
     }
 };

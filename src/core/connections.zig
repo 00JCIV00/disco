@@ -395,7 +395,7 @@ pub const Connection = struct {
     // Derived
     _if_index: ?i32 = null,
     _psk: [32]u8 = @splat(0),
-    _scan_result: nl._80211.ScanResults,
+    _bss: nl._80211.BasicServiceSet,
     _rsn_bytes: []const u8 = &.{},
     _dhcp_info: ?dhcp.Info = null,
     _station: ?nl._80211.Station = null,
@@ -494,7 +494,7 @@ pub const Connection = struct {
                     ansi.fmt.underline, ansi.fmt.reset, self.channel,
                     ansi.fmt.underline, ansi.fmt.reset, self.connected_time orelse 0,
                     ansi.fmt.underline, ansi.fmt.reset, self.inactive_time orelse 99999,
-                    ansi.fmt.underline, ansi.fmt.reset, RSSI{ .rssi = self.signal orelse -127 },
+                    ansi.fmt.underline, ansi.fmt.reset, RSSI{ .strength = self.signal orelse -127 },
                 }
             );
         }
@@ -591,10 +591,8 @@ pub const Connection = struct {
         };
         //const scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, network.scan_result);
         //errdefer nl.parse.freeBytes(core_ctx.alloc, nl._80211.ScanResults, scan_result);
-        const scan_result = network.scan_result;
         const rsn_bytes = rsnBytes: {
-            const bss = scan_result.BSS orelse return error.MissingBSS;
-            const bss_ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+            const bss_ies = network.bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
             var rsn = bss_ies.RSN orelse return error.MissingRSN;
             if (security == .wpa3t) {
                 rsn.AKM_SUITES = &.{ .{ .OUI = [_]u8{ 0x00, 0x0F, 0xAC }, .TYPE = 0x08 } };
@@ -627,7 +625,7 @@ pub const Connection = struct {
             .max_retries = core_ctx.config.global_connect_config.max_retries,
             .max_inactive_age = core_ctx.config.global_connect_config.max_inactive_age,
             ._psk = psk,
-            ._scan_result = scan_result,
+            ._bss = network.bss,
             ._rsn_bytes = rsn_bytes,
             ._nl80211_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.nl80211_handler } }),
             ._rtnetlink_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.rtnetlink_handler } }),
@@ -782,7 +780,7 @@ pub const Connection = struct {
                                     &self._nl80211_req_ctx,
                                     conn_if.index,
                                     self.ssid,
-                                    self._scan_result,
+                                    self._bss,
                                     null,
                                 );
                                 self._nl_state = .await_response;
@@ -856,7 +854,7 @@ pub const Connection = struct {
                                             &self._nl80211_req_ctx,
                                             conn_if.index,
                                             self.ssid,
-                                            self._scan_result,
+                                            self._bss,
                                             sae_commit[0..],
                                         );
                                         self._nl_state = .await_response;
@@ -929,7 +927,7 @@ pub const Connection = struct {
                                             &self._nl80211_req_ctx,
                                             conn_if.index,
                                             self.ssid,
-                                            self._scan_result,
+                                            self._bss,
                                             sae_confirm[0..],
                                         );
                                         self._nl_state = .await_response;
@@ -1026,7 +1024,7 @@ pub const Connection = struct {
                                     conn_if.index,
                                     conn_if.wiphy,
                                     self.ssid,
-                                    self._scan_result,
+                                    self._bss,
                                 ) catch |err| {
                                     log.warn("Connection {s} | {s}: Association Error: {t}", .{ self.ssid, conn_if.name, err });
                                     switch (err) {
@@ -1127,7 +1125,7 @@ pub const Connection = struct {
                         const seq = keyData: {
                             if (eapol_ctx.key_idx == 0) break :keyData .{
                                 keys.ptk[32..],
-                                self._scan_result.BSS.?.BSSID,
+                                self._bss.BSSID,
                                 null,
                             };
                             break :keyData .{

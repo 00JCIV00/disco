@@ -33,6 +33,7 @@ const utils = @import("../utils.zig");
 const ansi = utils.ansi;
 const c = utils.toStruct;
 const CSlice = utils.CSlice;
+const SliceF = utils.SliceFormatter;
 const ThreadHashMap = utils.ThreadHashMap;
 
 
@@ -62,6 +63,7 @@ pub const Interface = struct {
     channel: ?chs.Channel = null,
     ssid: ?[]const u8 = null,
     supported_freqs: []const u32 = &.{},
+    supported_chans: []const chs.Channel = &.{},
     // Netlink
     wiphy: nl._80211.Wiphy,
     mod_queue: []ModifyContext = &.{},
@@ -72,7 +74,7 @@ pub const Interface = struct {
         inactive,
         //modify: ArrayList(*ModifyContext),
         active,
-        scan: core.networks.NetworkScanContext,
+        scan: core.networks.ScanContext,
         connect: core.connections.Connection,
         remove,
     };
@@ -130,6 +132,7 @@ pub const Interface = struct {
         channel: ?chs.Channel = null,
         ssid: []const u8,
         supported_freqs: []const u32,
+        supported_chans: []const chs.Channel,
 
         pub fn from(alloc: mem.Allocator, from_if: Interface) @This() {
             return .{
@@ -169,6 +172,7 @@ pub const Interface = struct {
                     break :ssid "";
                 },
                 .supported_freqs = alloc.dupe(u32, from_if.supported_freqs) catch @panic("OOM"),
+                .supported_chans = alloc.dupe(chs.Channel, from_if.supported_chans) catch @panic("OOM"),
             };
         }
 
@@ -179,6 +183,7 @@ pub const Interface = struct {
             alloc.free(self.cidrs);
             alloc.free(self.ssid);
             alloc.free(self.supported_freqs);
+            alloc.free(self.supported_chans);
         }
 
         pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
@@ -202,6 +207,7 @@ pub const Interface = struct {
         alloc.free(self.name);
         alloc.free(self.phy_name);
         alloc.free(self.supported_freqs);
+        alloc.free(self.supported_chans);
         nl.parse.freeBytes(alloc, nl._80211.Wiphy, self.wiphy);
         //if (self.ssid) |ssid| alloc.free(ssid);
         self._init = false;
@@ -235,6 +241,24 @@ pub const Interface = struct {
         //try posix.setsockopt(if_sock, linux.SOL.PACKET, linux.PACKET.ADD_MEMBERSHIP, linux);
     }
 
+    /// Check if this Interface supports a specific `command`
+    pub fn checkCommand(self: *const @This(), command: nl._80211.CMD) bool {
+        const commands = self.wiphy.SUPPORTED_COMMANDS orelse return false;
+        return commands & @intFromEnum(command) == @intFromEnum(command);
+    }
+
+    /// Check if this Interface has a specific `feature`
+    pub fn checkFeature(self: *const @This(), feature: nl._80211.Wiphy.FEATURE_FLAG) bool {
+        const features = self.wiphy.FEATURE_FLAGS orelse return false;
+        return features & @intFromEnum(feature) == @intFromEnum(feature);
+    }
+
+    /// Check if this Interface supports a specific Interface Type (`if_type`)
+    pub fn checkIFType(self: *const @This(), if_type: nl._80211.IFTYPE) bool {
+        const if_types = self.wiphy.SUPPORTED_IFTYPES orelse return false;
+        return if_types & @intFromEnum(if_type) == @intFromEnum(if_type);
+    }
+
     /// Check if the Interface is currently under a Penalty.
     pub fn checkPenalty(self: *@This()) bool {
         const last_penalty = self.penalty_time orelse return false;
@@ -248,11 +272,15 @@ pub const Interface = struct {
     /// Set the current Penalty of the Interface.
     pub fn setPenalty(self: *@This(), set: enum { up, down }) void {
         defer {
-            if (self.penalty < self.min_penalty) self.penalty = self.min_penalty;
-            if (self.penalty > self.max_penalty) self.penalty = self.max_penalty;
+            if (self.penalty < self.min_penalty) //
+                self.penalty = self.min_penalty;
+            if (self.penalty > self.max_penalty) //
+                self.penalty = self.max_penalty;
         }
         self.penalty = switch (set) {
-            .up => if (self.penalty == 0) 1 else self.penalty * 5,
+            .up => //
+                if (self.penalty == 0) 1 //
+                else self.penalty * 5,
             .down => @divFloor(self.penalty, 5),
         };
     }
@@ -276,6 +304,8 @@ pub const Interface = struct {
     }
 
     /// Modify this Interface
+    /// Note, while these Modifications are handled asynchronously, they're intended to be "fire and forget".
+    /// If the status of the Modification needs to be tracked, prefer to use equivalent Netlink Request.
     pub fn modify(self: *@This(), core_ctx: *core.Core, mod_field: ModifyField) !void {
         //if (self.usage != .modify) self.usage = .{ .modify = .empty };
         const mod_ctx: ModifyContext = modReq: {
@@ -356,6 +386,7 @@ pub const Interface = struct {
 
     /// Restoration Kind
     pub const RestoreKind = enum {
+        mode,
         dns,
         ips,
         mac,
@@ -365,9 +396,17 @@ pub const Interface = struct {
     pub fn restore(self: *@This(), alloc: mem.Allocator, kinds: []const RestoreKind) void {
         log.info("- Restoring Interface '{s}'...", .{ self.name });
         //if (self.usage == .connect) self.usage.connect.stop();
-        const has_ip: bool = if (self.ips[0]) |_| true else false;
+        const has_ip: bool = self.ips[0] != null;
+        log.info("-- Reset to Managed Mode.", .{});
         for (kinds) |kind| {
             switch (kind) {
+                .mode => {
+                    nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch {};
+                    Thread.sleep(time.ns_per_ms);
+                    nl._80211.setMode(self.index, c(nl._80211.IFTYPE).STATION) catch |err| {
+                        log.warn("Could not set the Interface back to Managed Mode: {t}", .{ err });
+                    };
+                },
                 .ips => {
                     for (self.ips, self.cidrs) |_ip, _cidr| {
                         const ip = _ip orelse continue;
@@ -388,17 +427,19 @@ pub const Interface = struct {
                     }
                 },
                 .mac => resetMAC: {
-                    if (mem.eql(u8, self.og_mac[0..], self.mac[0..])) break :resetMAC;
+                    if (mem.eql(u8, self.og_mac[0..], self.mac[0..])) //
+                        break :resetMAC;
                     nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch {};
                     Thread.sleep(time.ns_per_ms);
-                    if (nl.route.setMAC(self.index, self.og_mac))
-                        log.info("-- Restored Original MAC '{f}'.", .{ MACF{ .bytes = self.og_mac[0..] } })
-                    else |_|
+                    if (nl.route.setMAC(self.index, self.og_mac)) //
+                        log.info("-- Restored Original MAC '{f}'.", .{ MACF{ .bytes = self.og_mac[0..] } }) //
+                    else |_| //
                         log.warn("-- Could not restore Interface '{s}' to its original MAC '{f}'.", .{ self.name, MACF{ .bytes = self.og_mac[0..] } });
                 },
                 .dns => resetDNS: {
-                    if (!has_ip) break :resetDNS;
-                    dns.updateDNS(.{ 
+                    if (!has_ip) //
+                        break :resetDNS;
+                    dns.updateDNS(.{
                         .if_index = self.index,
                         .servers = &.{},
                         .set_route = false,
@@ -418,7 +459,8 @@ pub const Interface = struct {
     /// Free the allocated portions of this Interface and close the Raw Socket.
     pub fn stop(self: *@This(), alloc: mem.Allocator) void {
         //self.restore(alloc, .all);
-        if (self.raw_sock) |sock| posix.close(sock);
+        if (self.raw_sock) |sock| //
+            posix.close(sock);
         self.deinit(alloc);
         self.usage = .inactive;
     }
@@ -525,6 +567,7 @@ pub const Interface = struct {
         );
         var chans_2G: u8 = 0;
         var chans_5G: u8 = 0;
+        var chans_6G: u8 = 0;
         for (self.supported_freqs) |freq| {
             if (mem.indexOfScalar(usize, chs.Frequencies.band_2G_20, @intCast(freq))) |_| {
                 chans_2G += 1;
@@ -532,6 +575,10 @@ pub const Interface = struct {
             }
             if (mem.indexOfScalar(usize, chs.Frequencies.band_5G_20, @intCast(freq))) |_| {
                 chans_5G += 1;
+                continue;
+            }
+            if (mem.indexOfScalar(usize, chs.Frequencies.band_6G_20, @intCast(freq))) |_| {
+                chans_6G += 1;
                 continue;
             }
             //const ch = nl._80211.channelFromFreq(freq) catch {
@@ -546,7 +593,42 @@ pub const Interface = struct {
                 try w.print("    - 2G: {d} channels\n", .{ chans_2G });
             if (chans_5G > 0) //
                 try w.print("    - 5G: {d} channels\n", .{ chans_5G });
+            if (chans_6G > 0) //
+                try w.print("    - 6G: {d} channels\n", .{ chans_6G });
             //try writer.print("\n", .{});
+        }
+        if (T == @This()) {
+            commands: {
+                try w.print("  - {s}Commands{s}:\n", .{ ansi.fmt.underline, ansi.reset });
+                if (self.wiphy.SUPPORTED_COMMANDS == null) {
+                    try w.print("    - None Reported", .{});
+                    break :commands;
+                }
+                inline for (&.{
+                    nl._80211.CMD.REMAIN_ON_CHANNEL,
+                    nl._80211.CMD.START_SCHED_SCAN,
+                }) |command| {
+                    const has_command = self.checkCommand(command);
+                    try w.print("    - {t}: {}\n", .{ command, has_command });
+                }
+            }
+            features: {
+                try w.print("  - {s}Features{s}:\n", .{ ansi.fmt.underline, ansi.reset });
+                if (self.wiphy.FEATURE_FLAGS == null) {
+                    try w.print("    - None Reported", .{});
+                    break :features;
+                }
+                inline for (&.{ 
+                    nl._80211.Wiphy.FEATURE_FLAG.ACTIVE_MONITOR,
+                    nl._80211.Wiphy.FEATURE_FLAG.AP_SCAN,
+                    nl._80211.Wiphy.FEATURE_FLAG.LOW_PRIORITY_SCAN,
+                    nl._80211.Wiphy.FEATURE_FLAG.SCAN_FLUSH,
+                    nl._80211.Wiphy.FEATURE_FLAG.SAE,
+                }) |feature| {
+                    const has_feature = self.checkFeature(feature);
+                    try w.print("    - {t}: {}\n", .{ feature, has_feature });
+                }
+            }
         }
     }
 };
@@ -651,13 +733,13 @@ pub const Context = struct {
     /// Deinitialize the Interface Context.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         var names_iter = self.avail_if_names.iterator();
-        while (names_iter.next()) |name_entry|
+        while (names_iter.next()) |name_entry| //
             alloc.free(name_entry.key_ptr.*);
         names_iter.unlock();
         self.avail_if_names.deinit(alloc);
         alloc.destroy(self.avail_if_names);
         var if_iter = self.interfaces.iterator();
-        while (if_iter.next()) |if_entry|
+        while (if_iter.next()) |if_entry| //
             if_entry.value_ptr.stop(alloc);
         if_iter.unlock();
         self.interfaces.deinit(alloc);
@@ -668,7 +750,8 @@ pub const Context = struct {
 
     /// Restore All Interfaces to their Original MAC Addresses and remove any IP Addresses.
     pub fn restore(self: *@This(), core_ctx: *core.Core) void {
-        if (self.interfaces.count() == 0) return;
+        if (self.interfaces.count() == 0) //
+            return;
         var if_iter = self.interfaces.iterator();
         defer if_iter.unlock();
         while (if_iter.next()) |if_entry| {
@@ -683,7 +766,7 @@ pub const Context = struct {
                 },
                 else => {},
             }
-            res_if.restore(core_ctx.alloc, &.{ .ips, .mac, .dns });
+            res_if.restore(core_ctx.alloc, &.{ .mode, .ips, .mac, .dns });
         }
     }
     
@@ -697,10 +780,16 @@ pub const Context = struct {
                     else => 500,
                 };
             };
-            if (@divFloor(timer.read(), time.ns_per_ms) < wait) return;
+            if (@divFloor(timer.read(), time.ns_per_ms) < wait) //
+                return;
             timer.reset();
         }
         else self._timer = try .start();
+        //var trace_timer: time.Timer = try .start();
+        //defer {
+        //    log.debug("IF Update Time: {d}ms", .{ @divFloor(trace_timer.read(), time.ns_per_ms) });
+        //    trace_timer.reset();
+        //}
         //log.debug("Updating Interfaces: {t}", .{ self.state });
         ifState: switch (self.state) {
             .ready => {
@@ -754,11 +843,11 @@ pub const Context = struct {
                 //    },
                 //);
                 // Ensure all requests have either gotten a response or timed out
-                if (
-                    self._req_wifi_ifs.checkResponse() and
-                    self._req_wiphys.checkResponse() and
-                    self._req_links.checkResponse() and
-                    self._req_addrs.checkResponse()
+                if ( //
+                    self._req_wifi_ifs.checkResponse() and //
+                    self._req_wiphys.checkResponse() and //
+                    self._req_links.checkResponse() and //
+                    self._req_addrs.checkResponse() //
                 ) {
                     self.state = .parse;
                     continue :ifState self.state;
@@ -829,10 +918,10 @@ pub const Context = struct {
                 // Parse each Interface element
                 defer _ = self._arena.reset(.retain_capacity);
                 //const wifi_if_arena = self._a_alloc.dupe(u8, wifi_if_data) catch @panic("OOM");
-                const nl_wifi_ifs = try nl._80211.handleInterfaceBuf(self._a_alloc, wifi_if_data); 
-                const nl_wiphys = try nl._80211.handleWIPHYBuf(self._a_alloc, wiphy_data); 
-                const nl_links = try nl.route.handleIFLinksBuf(self._a_alloc, link_data); 
-                const nl_addrs = try nl.route.handleIFAddrsBuf(self._a_alloc, addr_data); 
+                const nl_wifi_ifs = try nl._80211.handleInterfaceBuf(self._a_alloc, wifi_if_data);
+                const nl_wiphys = try nl._80211.handleWIPHYBuf(self._a_alloc, wiphy_data);
+                const nl_links = try nl.route.handleIFLinksBuf(self._a_alloc, link_data);
+                const nl_addrs = try nl.route.handleIFAddrsBuf(self._a_alloc, addr_data);
                 // Update WiFi Interfaces Netlink Status
                 updateIfs: for (nl_wifi_ifs) |wifi_if| {
                     const wifi_if_idx = wifi_if.IFINDEX orelse continue;
@@ -840,14 +929,16 @@ pub const Context = struct {
                     var valid: bool = false;
                     const wiphy: nl._80211.Wiphy = nlWiphy: {
                         for (nl_wiphys) |nl_wiphy| {
-                            if (wifi_if.WIPHY != nl_wiphy.WIPHY) continue;
+                            if (wifi_if.WIPHY != nl_wiphy.WIPHY) //
+                                continue;
                             break :nlWiphy nl_wiphy;
                         }
                         else continue :updateIfs;
                     };
                     const link: nl.route.IFInfoAndLink = nlLink: {
                         for (nl_links) |nl_link| {
-                            if (wifi_if_idx != nl_link.info.index) continue;
+                            if (wifi_if_idx != nl_link.info.index) //
+                                continue;
                             break :nlLink nl_link;
                         }
                         else continue :updateIfs;
@@ -897,8 +988,8 @@ pub const Context = struct {
                         .ips = ips,
                         .cidrs = cidrs,
                         .ssid = wifi_if.SSID,
-                        .wiphy = try nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy),
-                        //.wiphy = wiphy_clone,
+                        //.wiphy = try nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy),
+                        .wiphy = undefined,
                         .last_upd = try zeit.instant(.{}),
                     };
                     self.interfaces.mutex.lock();
@@ -920,29 +1011,54 @@ pub const Context = struct {
                         add_if.min_penalty = upd_if.min_penalty;
                         add_if.max_penalty = upd_if.max_penalty;
                         add_if.supported_freqs = upd_if.supported_freqs;
+                        add_if.supported_chans = upd_if.supported_chans;
                         add_if.mod_queue = upd_if.mod_queue;
+                        add_if.wiphy = upd_if.wiphy;
                         if (add_if.usage == .inactive and add_if._init) //
                             add_if.stop(core_ctx.alloc);
                         core_ctx.alloc.free(upd_if.name);
                         core_ctx.alloc.free(upd_if.phy_name);
-                        nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
-                    }
+                        //nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
+                    } //
                     else newIFMsg: {
+                        add_if.wiphy = try nl.parse.clone(core_ctx.alloc, nl._80211.Wiphy, wiphy);
+                        //log.debug("Field Check '{s}':", .{ add_if.name });
+                        //inline for (@typeInfo(nl._80211.Wiphy).@"struct".fields) |field| cont: {
+                        //    const has_field = hasField: {
+                        //        if (@typeInfo(field.type) != .optional) //
+                        //            break :hasField true;
+                        //        break :hasField @field(add_if.wiphy, field.name) != null;
+                        //    };
+                        //    if (!has_field)
+                        //        break :cont;
+                        //    const enum_tag = meta.stringToEnum(nl._80211.ATTR, field.name);
+                        //    const enum_val =
+                        //        if (enum_tag) |tag| @intFromEnum(tag)
+                        //        else null;
+                        //    log.debug("- {s} ({?d}): {}", .{ field.name, enum_val, has_field });
+                        //}
                         const bands = wiphy.WIPHY_BANDS orelse {
                             log.warn("The Interface '{s}' did not provide Band/Frequency Info, so it can't be used.", .{ add_if.name });
                             continue :updateIfs;
                         };
                         var freqs_list: ArrayList(u32) = .empty;
                         errdefer freqs_list.deinit(core_ctx.alloc);
+                        var chans_list: ArrayList(chs.Channel) = .empty;
+                        errdefer chans_list.deinit(core_ctx.alloc);
                         for (bands) |band| {
                             const freqs = band.FREQS orelse continue;
-                            for (freqs) |freq| //
+                            for (freqs) |freq| {
                                 try freqs_list.append(core_ctx.alloc, freq.FREQ);
+                                // TODO: Add support for non-20MHz Bandwidths
+                                const chan: chs.Channel = chs.Channel.fromFreqBW(freq.FREQ, .bw20) catch continue;
+                                try chans_list.append(core_ctx.alloc, chan);
+                            }
                         }
                         add_if.supported_freqs = try freqs_list.toOwnedSlice(core_ctx.alloc);
+                        add_if.supported_chans = try chans_list.toOwnedSlice(core_ctx.alloc);
                         if (add_if.supported_freqs.len == 0) {
                             core_ctx.alloc.free(add_if.supported_freqs);
-                            log.debug("The Interface '{s}' did not report any available Channels." ,.{ add_if.name });
+                            log.debug("The Interface '{s}' did not report any available Channels.", .{ add_if.name });
                         }
                         if (core_ctx.run_condition) |condition| {
                             switch (condition) {
@@ -975,21 +1091,22 @@ pub const Context = struct {
                     while (names_iter.next()) |name_entry| {
                         const avail_if_name = name_entry.key_ptr.*;
                         //log.debug("- Check name: {s} ({d}B) vs {s} ({d}B)", .{ net_if.name, net_if.name.len, avail_if_name, avail_if_name.len });
-                        if (!mem.eql(u8, net_if.name, avail_if_name)) continue;
+                        if (!mem.eql(u8, net_if.name, avail_if_name)) //
+                            continue;
                         net_if.usage = .active;
                         if (core_ctx.run_condition) |condition| {
                             switch (condition) {
                                 .list_interfaces,
                                 .mod_interfaces,
                                     => continue,
-                                else => {}, 
+                                else => {},
                             }
                         }
                         log.info("Available Interface Found:\n{f}", .{ net_if });
                         try net_if.initSock();
-                        core_ctx.network_ctx.scan_configs.mutex.lock();
-                        defer core_ctx.network_ctx.scan_configs.mutex.unlock();
-                        if (core_ctx.network_ctx.scan_configs.map.getEntry(net_if.name)) |scan_cfg_entry| scanCfg: {
+                        core_ctx.network_ctx.nl_scan_configs.mutex.lock();
+                        defer core_ctx.network_ctx.nl_scan_configs.mutex.unlock();
+                        if (core_ctx.network_ctx.nl_scan_configs.map.getEntry(net_if.name)) |scan_cfg_entry| scanCfg: {
                             const scan_config = scan_cfg_entry.value_ptr;
                             const freqs = scan_config.freqs orelse break :scanCfg;
                             var scan_list: ArrayList(u32) = .empty;
@@ -1030,8 +1147,9 @@ pub const Context = struct {
                         net_if.raw_sock = null;
                     };
                     const now = try zeit.instant(.{});
-                    const since_upd = @divFloor((now.timestamp -| net_if.last_upd.timestamp), @as(i128, time.ns_per_ms));
-                    if (since_upd < 15_000) continue;
+                    const since_upd = @divFloor(now.timestamp -| net_if.last_upd.timestamp, @as(i128, time.ns_per_ms));
+                    if (since_upd < 15_000) //
+                        continue;
                     log.warn("Interface '{s}' is no longer available. Last seen {d}s ago", .{ net_if.name, @divFloor(since_upd, 1_000) });
                     net_if.deinit(core_ctx.alloc);
                     rm_macs[rm_count] = net_if_entry.key_ptr.*;
@@ -1044,7 +1162,9 @@ pub const Context = struct {
             defer seq_list.deinit(core_ctx.alloc);
             for (net_if.mod_queue) |mod| {
                 const mod_resp = mod.req_ctx.getResponse() orelse continue;
-                defer if (mod_resp) |resp_data| core_ctx.alloc.free(resp_data) else |_| {};
+                defer if (mod_resp) |resp_data| //
+                    core_ctx.alloc.free(resp_data) //
+                else |_| {};
                 seq_list.append(core_ctx.alloc, mod.req_ctx.seq_id) catch @panic("OOM");
                 switch (mod.mod_field) {
                     .mac => |mac| {
@@ -1088,7 +1208,8 @@ pub const Context = struct {
             var mod_list: ArrayList(Interface.ModifyContext) = .fromOwnedSlice(net_if.mod_queue);
             for (seq_list.items) |seq| {
                 for (mod_list.items, 0..) |mod, idx| {
-                    if (mod.req_ctx.seq_id != seq) continue;
+                    if (mod.req_ctx.seq_id != seq) //
+                        continue;
                     _ = mod_list.orderedRemove(idx);
                     break;
                 }
