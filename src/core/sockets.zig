@@ -78,17 +78,21 @@ pub const Parser = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.alloc.free(self.io_writer.buffer);
-        for (self.eth_list.items) |frame| self.alloc.free(frame);
+        for (self.eth_list.items) |frame| //
+            self.alloc.free(frame);
         self.eth_list.deinit(self.alloc);
-        for (self.wifi_list.items) |frame| self.alloc.free(frame);
+        for (self.wifi_list.items) |frame| //
+            self.alloc.free(frame);
         self.wifi_list.deinit(self.alloc);
     }
 
     /// Parse data from the Raw Socket into Frames
     pub fn parse(self: *@This()) !usize {
         const locked = self.mutex.tryLock();
-        if (!locked) return 0;
-        defer if (locked) self.mutex.unlock();
+        if (!locked) //
+            return 0;
+        defer if (locked) //
+            self.mutex.unlock();
         return try self.io_reader.stream(&self.io_writer, .unlimited);
     }
 
@@ -173,7 +177,7 @@ pub const Parser = struct {
 
 /// Frame Handler
 pub const Handler = struct {
-    /// Hanlde Function Context
+    /// Handle Function Context
     ctx: *anyopaque,
     /// Ethernet Frame Handling Function
     eth_handle_fn: ?*const fn (*anyopaque, []const []const u8, Parser.Context) anyerror!void = null,
@@ -208,6 +212,8 @@ pub const Loop = struct {
     parsers: ThreadHashMap(posix.socket_t, Parser) = .empty,
     /// Frame Handlers
     handlers: ThreadHashMap([]const u8, Handler) = .empty,
+    /// Forced Throttle Time between Loop Iterations in Nanoseconds (ns)
+    throttle: u64 = 1_000,
 
     /// Initialize a new Event Loop
     pub fn init() !@This() {
@@ -230,7 +236,8 @@ pub const Loop = struct {
 
     /// Start the Event Loop on its own Thread
     pub fn start(self: *@This(), core_ctx: *core.Core) !void {
-        if (self._active.load(.acquire)) return;
+        if (self._active.load(.acquire)) //
+            return;
         self._active.store(true, .monotonic);
         self._thread = try .spawn(
             .{ .allocator = core_ctx.alloc },
@@ -249,14 +256,15 @@ pub const Loop = struct {
             //log.debug("Start: SOCKET THREAD", .{});
             defer {
                 //log.debug("End: SOCKET THREAD", .{});
-                Thread.sleep(10 * time.ns_per_ms);
+                Thread.sleep(self.throttle);
             }
             const event_count = posix.epoll_wait(self._epoll_fd, events[0..], -1);
             //log.debug("{d} events: SOCKET THREAD", .{ event_count });
             self.parsers.mutex.lock();
             defer self.parsers.mutex.unlock();
             for (events[0..event_count]) |event| {
-                if (!core_ctx.active.load(.acquire) or !self._active.load(.acquire)) break;
+                if (!core_ctx.active.load(.acquire) or !self._active.load(.acquire)) //
+                    break;
                 //log.debug("Received event on: {d} ({d})", .{ event.data.fd, event.events });
                 if (event.events & linux.EPOLL.ERR != 0) {
                     var err_buf: [1]u8 = .{ 0 };
@@ -270,11 +278,10 @@ pub const Loop = struct {
                     const parser = parser_entry.value_ptr;
                     //log.debug("Reading: SOCKET THREAD", .{});
                     const frames_buf_len = parser.parse() catch |err| {
-                        if (err == error.OutOfMemory) @panic("OOM");
-                        if (err == error.Unexpected) {
+                        if (err == error.OutOfMemory) //
+                            @panic("OOM");
+                        if (err == error.Unexpected) //
                             parser.ctx.state = .down;
-                            //continue;
-                        }
                         log.err("There was an error while processing a Raw Socket: {t}", .{ err });
                         continue;
                     };

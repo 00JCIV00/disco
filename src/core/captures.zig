@@ -344,7 +344,8 @@ pub const Writer = struct {
             log.info("New TCP Connection from '{f}'", .{ IPF{ .bytes = conn_ip } });
         }
         // Update Interfaces
-        if (core_ctx.if_ctx.interfaces.count() == self.cur_if_ids.count()) return;
+        if (core_ctx.if_ctx.interfaces.count() == self.cur_if_ids.count()) //
+            return;
         defer core_ctx.if_ctx.interfaces.mutex.unlock();
         var if_iter = core_ctx.if_ctx.interfaces.iterator();
         while (if_iter.next()) |sock_if_entry| {
@@ -356,7 +357,8 @@ pub const Writer = struct {
                 => continue,
                 else => {},
             }
-            if (self.cur_if_ids.map.get(if_mac) != null) continue;
+            if (self.cur_if_ids.map.get(if_mac) != null) //
+                continue;
             self.idbs.appendSlice(
                 core_ctx.alloc,
                 &.{
@@ -453,7 +455,9 @@ pub const Writer = struct {
 
     /// Finalize the current PCAP-NG File
     pub fn finalize(self: *@This(), core_ctx: *core.Core) !void {
-        const file = if (self.file_ctx) |file_ctx| file_ctx.file else return;
+        const file = //
+            if (self.file_ctx) |file_ctx| file_ctx.file //
+            else return;
         var file_r = file.reader(&.{});
         const file_reader = &file_r.interface;
         const no_idb_buf = try file_reader.readAlloc(core_ctx.alloc, try file.getEndPos());
@@ -468,7 +472,8 @@ pub const Writer = struct {
 
     /// Write Frames in PCAP-NG Format
     pub fn writeFrames(self_ptr: *anyopaque, frames: []const []const u8, parser_ctx: core.sockets.Parser.Context) !void {
-        if (frames.len == 0) return;
+        if (frames.len == 0) //
+            return;
         //log.debug("Writing {d} PCAP Frame(s)", .{ frames.len });
         var self: *@This() = @ptrCast(@alignCast(self_ptr));
         self.parser_ctx = parser_ctx;
@@ -627,7 +632,8 @@ pub const Writer = struct {
                 }
                 add_bytes = true;
             }
-            if (add_bytes) n += bytes.len;
+            if (add_bytes) //
+                n += bytes.len;
         }
         for (data) |bytes| {
             const cap_len: u32 = @truncate(bytes.len);
