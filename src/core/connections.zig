@@ -182,7 +182,8 @@ pub const Context = struct {
     }
 
     /// Update Connections
-    pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+    pub fn update(self: *@This()) !void {
+        const core_ctx: *core.Core = @fieldParentPtr("conn_ctx", self);
         //log.debug("Start Conn Update", .{});
         //defer log.debug("End Conn Update", .{});
         if (core_ctx.run_condition) |condition| {
@@ -193,7 +194,7 @@ pub const Context = struct {
                 else => {},
             }
         }
-        try self.scoreCandidates(core_ctx);
+        try self.scoreCandidates();
         //log.debug("Candidates: {d}", .{ self._candidates.items.len });
         const statuses = self.statuses.items();
         defer self.statuses.mutex.unlock();
@@ -248,7 +249,8 @@ pub const Context = struct {
     }
 
     /// Score Candidate Networks
-    fn scoreCandidates(self: *@This(), core_ctx: *core.Core) !void {
+    fn scoreCandidates(self: *@This()) !void {
+        const core_ctx: *core.Core = @fieldParentPtr("conn_ctx", self);
         //log.debug("Scoring Connections", .{});
         //defer log.debug("Scored {d} Connections.", .{ self._candidates.items.len });
         self._candidates.deinit(core_ctx.alloc);

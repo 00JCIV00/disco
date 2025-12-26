@@ -752,7 +752,8 @@ pub const Context = struct {
     }
 
     /// Restore All Interfaces to their Original MAC Addresses and remove any IP Addresses.
-    pub fn restore(self: *@This(), core_ctx: *core.Core) void {
+    pub fn restore(self: *@This()) void {
+        const core_ctx: *core.Core = @fieldParentPtr("if_ctx", self);
         if (self.interfaces.count() == 0) //
             return;
         var if_iter = self.interfaces.iterator();
@@ -774,7 +775,8 @@ pub const Context = struct {
     }
     
     /// Update the status of all Interfaces
-    pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+    pub fn update(self: *@This()) !void {
+        const core_ctx: *core.Core = @fieldParentPtr("if_ctx", self);
         if (self._timer) |*timer| {
             const wait: u64 = wait: {
                 const run_cond = core_ctx.run_condition orelse break :wait 500;

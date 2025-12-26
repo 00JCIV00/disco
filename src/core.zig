@@ -208,7 +208,8 @@ pub const Core = struct {
     /// Start the Core Context
     /// This is the main loop for how DisCo is typically run.
     pub fn start(self: *@This()) !void {
-        if (!self._mutex.tryLock()) return error.CoreAlreadyRunning;
+        if (!self._mutex.tryLock()) //
+            return error.CoreAlreadyRunning;
         log.debug("Core Locked!", .{});
         log.info("{s}{s}Starting DisCo Core...{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         defer {
@@ -278,7 +279,7 @@ pub const Core = struct {
         // Netlink Event Loop
         try self.nl_event_loop.start(self.alloc, &self.active);
         // Sockets Event Loop
-        try self.sock_event_loop.start(self);
+        try self.sock_event_loop.start();
         // PCAP Handling
         self.cap_writer = try .init(self);
         // Core Loop
@@ -289,16 +290,16 @@ pub const Core = struct {
             //log.debug("Core Update", .{});
             //defer Thread.sleep(10 * time.ns_per_ms);
             // Interface Tracking
-            try self.if_ctx.update(self);
+            try self.if_ctx.update();
             //Thread.sleep(1 * time.ns_per_ms);
             // Socket Monitoring
-            try self.sock_event_loop.update(self);
+            try self.sock_event_loop.update();
             // Connection Tracking
-            try self.conn_ctx.update(self);
+            try self.conn_ctx.update();
             // Network Tracking
-            try self.network_ctx.update(self);
+            try self.network_ctx.update();
             // Capture Writing
-            try self.cap_writer.update(self);
+            try self.cap_writer.update();
             // Request Processing
             try self.req_aggregator.process();
         }
@@ -331,7 +332,7 @@ pub const Core = struct {
         // Event Loop
         try self.nl_event_loop.start(self.alloc, &self.active);
         // Core Loop
-        try self.if_ctx.update(self);
+        try self.if_ctx.update();
         while (switch (self.run_condition.?) {
             .list_interfaces => |list_cond| !list_cond.updated,
             //TODO: WIP
@@ -339,9 +340,9 @@ pub const Core = struct {
             .network_scan => |scan_cond| scan_cond._cur_passes < scan_cond.max_passes,
         }) {
             // Interface Tracking
-            try self.if_ctx.update(self);
+            try self.if_ctx.update();
             // Network Tracking
-            try self.network_ctx.update(self);
+            try self.network_ctx.update();
             Thread.sleep(10 * time.ns_per_ms);
         }
     }
@@ -379,8 +380,8 @@ pub const Core = struct {
                 log.warn("- Couldn't reset the Hostname: {t}", .{ err });
         }
         if (self.run_condition == null) //
-            self.cap_writer.deinit(self);
-        self.if_ctx.restore(self);
+            self.cap_writer.deinit();
+        self.if_ctx.restore();
         self.alloc.free(self.og_hostname);
         if (self.forced_close) {
             log.warn("- Forced close. Leaving resource clean up to the OS.", .{});

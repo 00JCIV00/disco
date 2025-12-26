@@ -235,22 +235,21 @@ pub const Loop = struct {
     }
 
     /// Start the Event Loop on its own Thread
-    pub fn start(self: *@This(), core_ctx: *core.Core) !void {
+    pub fn start(self: *@This()) !void {
+        const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
         if (self._active.load(.acquire)) //
             return;
         self._active.store(true, .monotonic);
         self._thread = try .spawn(
             .{ .allocator = core_ctx.alloc },
             run,
-            .{
-                self,
-                core_ctx,
-            },
+            .{ self },
         );
     }
 
     /// Run the Event Loop Thread
-    fn run(self: *@This(), core_ctx: *core.Core) void {
+    fn run(self: *@This()) void {
+        const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
         var events: [64]posix.system.epoll_event = undefined;
         while (core_ctx.active.load(.acquire) and self._active.load(.acquire)) {
             //log.debug("Start: SOCKET THREAD", .{});
@@ -301,7 +300,8 @@ pub const Loop = struct {
     }
 
     /// Update this Socket Loop
-    pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+    pub fn update(self: *@This()) !void {
+        const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
         //log.debug("Start: Socket Monitor Update", .{});
         const epoll_events: u32 = linux.EPOLL.IN | linux.EPOLL.OUT;
         //if (self.readers.mutex.tryLock()) {} else return;

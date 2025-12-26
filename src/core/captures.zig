@@ -220,7 +220,8 @@ pub const Writer = struct {
     }
 
     /// Deinitialize the PCAP-NG Writer
-    pub fn deinit(self: *@This(), core_ctx: *core.Core) void {
+    pub fn deinit(self: *@This()) void {
+        const core_ctx: *core.Core = @fieldParentPtr("cap_writer", self);
         //self.finalize(core_ctx) catch |err| {
         //    log.warn("There was a problem finalizing the PCAP file/stream: {t}", .{ err });
         //};
@@ -260,7 +261,8 @@ pub const Writer = struct {
     }
 
     /// Update the PCAP-NG Writer
-    pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+    pub fn update(self: *@This()) !void {
+        const core_ctx: *core.Core = @fieldParentPtr("cap_writer", self);
         //log.debug("Start Capture Update", .{});
         // Check for Filesize Limit
         if (self.file_ctx) |*file_ctx| newFile: {
@@ -454,6 +456,7 @@ pub const Writer = struct {
     }
 
     /// Finalize the current PCAP-NG File
+    /// DEPRECATED
     pub fn finalize(self: *@This(), core_ctx: *core.Core) !void {
         const file = //
             if (self.file_ctx) |file_ctx| file_ctx.file //

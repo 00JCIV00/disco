@@ -297,7 +297,7 @@ pub const ScanContext = union(enum) {
     },
 };
 
-/// Network Contextrtnetlink_handler
+/// Network Context
 pub const Context = struct {
     /// Arena
     _arena: *heap.ArenaAllocator,
@@ -310,7 +310,7 @@ pub const Context = struct {
     /// List of all Networks seen
     networks: *ThreadHashMap([6]u8, Network),
 
-    /// Initialize all Maps.
+    /// Initialize the Network Context.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
         self._arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
@@ -393,7 +393,8 @@ pub const Context = struct {
     }
 
     /// Update Networks
-    pub fn update(self: *@This(), core_ctx: *core.Core) !void {
+    pub fn update(self: *@This()) !void {
+        const core_ctx: *core.Core = @fieldParentPtr("network_ctx", self);
         if (core_ctx.run_condition) |*condition| {
             switch (condition.*) {
                 .list_interfaces,
