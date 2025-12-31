@@ -79,6 +79,7 @@ pub const Handler = struct {
         config: Config,
     ) !@This() {
         const r_buf = try alloc.alloc(u8, 4096);
+        errdefer alloc.free(r_buf);
         const reader: SockReader = .init(dbus_conn.sock.handle, r_buf, posix.MSG.DONTWAIT);
         return .{
             .dbus_conn = dbus_conn,
@@ -91,7 +92,7 @@ pub const Handler = struct {
 
     /// Deinitialize this DNS Handler.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
-        alloc.free(self.reader.io_reader.buffer[0..]);
+        alloc.free(self.reader.io_reader.buffer);
     }
 
     /// Step through setting DNS Servers, mDNS, and LLMNR.
@@ -315,7 +316,9 @@ pub const Handler = struct {
         var sock_w: Io.Writer = .fixed(msg_buf[0..]);
         const if_index = self.config.if_index orelse 0;
         try sock_w.writeInt(i32, if_index, .little);
-        const setting_len: i32 = if (setting == .inherit) 0 else @intCast(@tagName(setting).len);
+        const setting_len: i32 = //
+            if (setting == .inherit) 0 //
+            else @intCast(@tagName(setting).len);
         try sock_w.writeInt(i32, setting_len, .little);
         try sock_w.print("{f}\u{0}", .{ setting });
         try self.dbus_conn.sendMsg(header_fields[0..], sock_w.buffered());

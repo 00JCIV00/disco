@@ -1,7 +1,6 @@
 //! Connection Tracking
 
 const std = @import("std");
-const atomic = std.atomic;
 const crypto = std.crypto;
 const P256 = crypto.ecc.P256;
 const fmt = std.fmt;
@@ -183,7 +182,8 @@ pub const Context = struct {
 
     /// Update Connections
     pub fn update(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("conn_ctx", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("conn_ctx", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("conn_ctx", self);
         //log.debug("Start Conn Update", .{});
         //defer log.debug("End Conn Update", .{});
         if (core_ctx.run_condition) |condition| {
@@ -250,7 +250,8 @@ pub const Context = struct {
 
     /// Score Candidate Networks
     fn scoreCandidates(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("conn_ctx", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("conn_ctx", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("conn_ctx", self);
         //log.debug("Scoring Connections", .{});
         //defer log.debug("Scored {d} Connections.", .{ self._candidates.items.len });
         self._candidates.deinit(core_ctx.alloc);
@@ -539,7 +540,7 @@ pub const Connection = struct {
             servers: []const [4]u8 = &.{},
         },
         /// Connected to the Network
-        conn: enum { init, running },
+        conn: union(enum) { init, running: time.Timer },
         /// Disconnected from the Network
         disconn: enum {
             start,
@@ -548,6 +549,7 @@ pub const Connection = struct {
             ip,
             disassoc,
             deauth,
+            keys,
             disc,
         },
         /// Error during Connnection
@@ -645,9 +647,17 @@ pub const Connection = struct {
                 self._state = .{ .disconn = .start };
                 continue :stop self._state;
             },
-            .disconn => {
-                for (0..10) |_| {
+            .disconn => |*disc| {
+                for (0..50) |_| {
                     self.handle(core_ctx) catch break;
+                    switch (disc.*) {
+                        .ip => {
+                            disc.* = .disassoc;
+                            continue;
+                        },
+                        .disc => break,
+                        else => {},
+                    }
                     Thread.sleep(1 * time.ns_per_ms);
                 }
             },
@@ -760,7 +770,7 @@ pub const Connection = struct {
                         }
                         log.debug("Finished setup for Connection: {s} | {s}", .{ self.ssid, conn_if.name });
                         self._nl_state = .request;
-                        self._state = .{ .auth = .{ .auth_timer = try .start() } };
+                        self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
                         continue :state self._state;
                     },
                 }
@@ -1337,7 +1347,8 @@ pub const Connection = struct {
                         dnsLoop: for (dhcp_ctx.info.?.dns_ips) |dns_ip| {
                             const next_dns = dns_ip orelse break :dnsLoop;
                             for (dns_ips_list.items) |prev_dns| {
-                                if (mem.eql(u8, prev_dns[0..], next_dns[0..])) continue :dnsLoop;
+                                if (mem.eql(u8, prev_dns[0..], next_dns[0..])) //
+                                    continue :dnsLoop;
                             }
                             //log.debug("- {f}", .{ IPF{ .bytes = next_dns[0..] } });
                             try dns_ips_list.append(core_ctx.alloc, next_dns);
@@ -1347,11 +1358,12 @@ pub const Connection = struct {
                 }
             },
             .dns => |*dns_ctx| {
+                var old_ctx: @TypeOf(dns_ctx.*) = dns_ctx.*;
                 defer if (self._state != .dns) {
-                    core_ctx.alloc.free(dns_ctx.servers);
-                    if (dns_ctx.handler) |*handler| {
+                    core_ctx.alloc.free(old_ctx.servers);
+                    if (old_ctx.handler) |*handler| {
                         handler.deinit(core_ctx.alloc);
-                        dns_ctx.handler = null;
+                        old_ctx.handler = null;
                     }
                 };
                 if (dns_ctx.servers.len == 0) {
@@ -1363,7 +1375,7 @@ pub const Connection = struct {
                     switch (handler.state) {
                         .done => {
                             for (dns_ctx.servers) |server| //
-                                log.debug("Added DNS Server: {f}", .{ IPF{ .bytes = server[0..] } });
+                                log.info("Added DNS Server: {f}", .{ IPF{ .bytes = server[0..] } });
                             self._state = .{ .conn = .init };
                             continue :state self._state;
                         },
@@ -1372,10 +1384,10 @@ pub const Connection = struct {
                                 error.ReadFailed,
                                 error.WriteFailed,
                                 => {
-                                    //log.debug("EAPoL Read Failed: {t}", .{ handler.state });
+                                    //log.warn("DNS Read Failed: {t}", .{ handler.state });
                                 },
                                 else => {
-                                    log.debug("DNS Handling Error: '{t}'. Could not finish setting DNS.", .{ err });
+                                    log.warn("DNS Handling Error: '{t}'. Could not finish setting DNS.", .{ err });
                                     return err;
                                 },
                             };
@@ -1404,9 +1416,9 @@ pub const Connection = struct {
                         self._retries = 0;
                         conn_if.subtractPenalty();
                         conn_if.penalty_time = null;
-                        conn.* = .running;
+                        conn.* = .{ .running = time.Timer.start() catch @panic("Time Issue") };
                     },
-                    .running => {
+                    .running => |*timer| {
                         errdefer {
                             if (self._station) |sta| {
                                 nl.parse.freeBytes(core_ctx.alloc, nl._80211.Station, sta);
@@ -1417,6 +1429,8 @@ pub const Connection = struct {
                         }
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
+                                if (timer.read() < time.ns_per_s) //
+                                    break :nlState;
                                 //log.debug("Requesting Station Info...", .{});
                                 self._nl80211_req_ctx.nextSeqID();
                                 try nl._80211.requestStation(
@@ -1429,11 +1443,13 @@ pub const Connection = struct {
                                 continue :nlState self._nl_state;
                             },
                             .await_response => {
-                                if (!self._nl80211_req_ctx.checkResponse()) return;
+                                if (!self._nl80211_req_ctx.checkResponse()) //
+                                    return;
                                 self._nl_state = .parse;
                                 continue :nlState self._nl_state;
                             },
                             .parse => {
+                                defer timer.reset();
                                 //log.debug("Received Station Info Response.", .{});
                                 const station_resp = self._nl80211_req_ctx.getResponse() orelse error.NoStationInfo;
                                 const station_data = station_resp catch |err| {
@@ -1521,11 +1537,11 @@ pub const Connection = struct {
                             disc_state.* = .disassoc;
                             continue :discState disc_state.*;
                         };
-                        log.debug("- Removing IPs...", .{});
                         const ip = dhcp_info.assigned_ip;
                         const cidr = netdata.address.cidrFromSubnet(dhcp_info.subnet_mask);
                         nlState: switch (self._nl_state) {
                             .ready, .request => {
+                                log.debug("- Removing IPs...", .{});
                                 nl.route.requestDeleteIP(
                                     core_ctx.alloc,
                                     &self._rtnetlink_req_ctx,
@@ -1542,7 +1558,8 @@ pub const Connection = struct {
                                 continue :nlState self._nl_state;
                             },
                             .await_response => {
-                                if (!self._rtnetlink_req_ctx.checkResponse()) return;
+                                if (!self._rtnetlink_req_ctx.checkResponse()) //
+                                    return;
                                 self._nl_state = .parse;
                                 continue :nlState self._nl_state;
                             },
@@ -1551,8 +1568,8 @@ pub const Connection = struct {
                                 if (ip_del_resp) |ip_del_data| {
                                     core_ctx.alloc.free(ip_del_data);
                                     log.info("- Removed IP '{f}/{d}'", .{ IPF{ .bytes = ip[0..] }, cidr });
-                                }
-                                else |err| 
+                                } //
+                                else |err| //
                                     log.warn("- Could not remove IP '{f}': {t}", .{ IPF{ .bytes = ip[0..] }, err });
                                 disc_state.* = .disassoc;
                                 continue :discState disc_state.*;
@@ -1582,12 +1599,33 @@ pub const Connection = struct {
                             self.bssid,
                         ) catch {};
                         log.debug("- Sent Deauthentication Request to '{s}'.", .{ self.ssid });
+                        disc_state.* = .keys;
+                        continue :discState disc_state.*;
+                    },
+                    .keys => {
+                        log.debug("- Deleting Keys for '{s}'...", .{ self.ssid });
+                        for (0..2) |idx| {
+                            nl._80211.requestDelKey(
+                                core_ctx.alloc,
+                                &self._nl80211_req_ctx,
+                                conn_if.index,
+                                self.bssid,
+                                @truncate(idx),
+                            ) catch {};
+                        }
+                        log.debug("- Sent Key Deletion Requests to '{s}'.", .{ self.ssid });
                         disc_state.* = .disc;
                         continue :discState disc_state.*;
                     },
                     .disc => {
-                        log.info("Cleaned Connection (ssid: {s}, if: {s}).", .{ self.ssid, conn_if.name });
+                        nl._80211.requestDisconnect(
+                            core_ctx.alloc,
+                            &self._nl80211_req_ctx,
+                            conn_if.index,
+                            self.bssid,
+                        ) catch {};
                         log.info("Disconnected from '{s}'.", .{ self.ssid });
+                        log.info("Cleaned Connection (ssid: {s}, if: {s}).", .{ self.ssid, conn_if.name });
                         for (core_ctx.conn_ctx._candidates.items, 0..) |candidate, idx| {
                             if ( //
                                 !mem.eql(u8, candidate.bssid[0..], self.bssid[0..]) or //
@@ -1604,26 +1642,5 @@ pub const Connection = struct {
             },
             else => {},
         }
-    }
-
-    /// Use the provided Basic Service Set (`bss`) to Calculate a Delay, in milliseconds, between WiFi Connection Operations to make the connection process more resilient.
-    fn calcOpDelay(bss: nl._80211.BasicServiceSet) u64 {
-        // Initial delay based on RSSI
-        var delay: u64 = rssiDelay: {
-            const rssi = @divFloor(bss.SIGNAL_MBM orelse -10_000, 100);
-            //if (rssi > -50) break :rssiDelay 30;
-            if (rssi > -65) break :rssiDelay 40;
-            if (rssi > -80) break :rssiDelay 80;
-            if (rssi > -90) break :rssiDelay 160;
-            break :rssiDelay 300;
-        };
-        // Adjust for unstable beacon interval
-        const beacon_interval = bss.BEACON_INTERVAL orelse 100;
-        if (beacon_interval > 105 or beacon_interval < 95)
-            delay += 50;
-        // Adjust for high frequency bands (5GHz, 6GHz)
-        if (bss.FREQUENCY > 5000)
-            delay += 20;
-        return delay * time.ns_per_ms;
     }
 };
