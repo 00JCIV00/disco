@@ -62,15 +62,6 @@ var forcing_close: bool = false;
 var panicking: bool = false;
 // Core Context
 var _core_ctx: ?core.Core = null;
-// TODO: Pull these into Core context
-// Active
-var active: atomic.Value(bool) = atomic.Value(bool).init(false);
-// Connect
-var connected: bool = false;
-// DHCP Info
-var dhcp_info: ?dhcp.Info = null;
-// Interface
-var raw_net_if: ?core.interfaces.Interface = null;
 
 pub fn main() !void {
     // Catch Forced Close
@@ -286,7 +277,6 @@ pub fn main() !void {
         const port = try serve_opts.get("port").?.val.getAs(u16);
         const dir = try serve_opts.get("directory").?.val.getAs([]const u8);
         const protos = try serve_opts.get("protocols").?.val.getAllAs(core.serve.Protocol);
-        active.store(true, .seq_cst);
         //try serve.serveDir(port, dir, &active);
         const conf: core.serve.Config = .{
             .ip = ip.addr,
@@ -798,7 +788,7 @@ pub fn main() !void {
                     log.warn("Unable to set the interface up.", .{});
                 };
                 Thread.sleep(100 * time.ns_per_ms);
-                nl._80211.setMode(set_if.index, @intFromEnum(new_mode)) catch |err| switch (err) {
+                nl._80211.setMode(alloc, set_if.index, @intFromEnum(new_mode), &.{}) catch |err| switch (err) {
                     error.OutOfMemory => {
                         log.err("Out of Memory!", .{});
                         return err;
@@ -841,7 +831,7 @@ pub fn main() !void {
                     log.warn("Unable to set the interface down.", .{});
                 };
                 Thread.sleep(100 * time.ns_per_ms);
-                try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
+                try nl._80211.setMode(alloc, set_if.index, c(nl._80211.IFTYPE).MONITOR, &.{});
                 nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
                     log.warn("Unable to set the interface up.", .{});
                 };
@@ -873,7 +863,7 @@ pub fn main() !void {
                     break :newChMain new_ct_opt.val.getAs(nl._80211.CHANNEL_WIDTH) catch nl._80211.CHANNEL_WIDTH.@"20_NOHT";
                 };
                 try stdout_log_ctx.print("Setting the Channel for {s}...\n", .{ set_if.name });
-                try nl._80211.setMode(set_if.index, c(nl._80211.IFTYPE).MONITOR);
+                try nl._80211.setMode(alloc, set_if.index, c(nl._80211.IFTYPE).MONITOR, &.{});
                 nl.route.setState(set_if.index, c(nl.route.IFF).UP) catch {
                     log.warn("Unable to set the interface up.", .{});
                 };
@@ -1115,16 +1105,20 @@ fn cleanUp(_: i32) callconv(.c) void {
         posix.exit(1);
     }
     cleaning = true;
-    if (panicking) log.err("Runtime Panic! Attempting to close gracefully...", .{})
-    else if (forcing_close) log.info("Forced close! Attempting to close gracefully...", .{})
-    else log.info("Closing gracefully...\n(Force close w/ `ctrl + c`.)", .{});
+    if (panicking) //
+        log.err("Runtime Panic! Attempting to close gracefully...", .{}) //
+    else if //
+        (forcing_close) log.info("Forced close! Attempting to close gracefully...", .{}) //
+    else //
+        log.info("Closing gracefully...\n(Force close w/ `ctrl + c`.)", .{});
     if (_core_ctx) |*core_ctx| {
-        if (panicking or forcing_close)
+        if (panicking or forcing_close) //
             core_ctx.forced_close = true;
         core_ctx.stop();
         core_ctx._mutex.lock();
     }
-    if (panicking) return;
+    if (panicking) //
+        return;
     log.info("Exit!", .{});
     posix.exit(1);
 }
@@ -1144,9 +1138,9 @@ fn panicFn(msg: []const u8, ret_addr: ?usize) noreturn {
     }
     log.err("Panic Report: ({d}) {s}", .{ ret_addr orelse 0, msg });
     //@breakpoint();
-    if (@import("builtin").mode == .Debug)
-        debug.defaultPanic(msg, ret_addr)
-    else
+    if (@import("builtin").mode == .Debug) //
+        debug.defaultPanic(msg, ret_addr) //
+    else //
         posix.exit(1);
 }
 //pub const panic = debug.FullPanic(panicFn);

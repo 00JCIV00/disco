@@ -149,7 +149,7 @@ pub const Interface = struct {
                     var ip_list: ArrayList([4]u8) = .empty;
                     errdefer ip_list.deinit(alloc);
                     var idx: u8 = 0;
-                    while (idx < from_if.ips.len) : (idx += 1)
+                    while (idx < from_if.ips.len) : (idx += 1) //
                         ip_list.append(alloc, from_if.ips[idx] orelse break) catch @panic("OOM");
                     break :ips ip_list.toOwnedSlice(alloc) catch @panic("OOM");
                 },
@@ -157,7 +157,7 @@ pub const Interface = struct {
                     var cidr_list: ArrayList(u8) = .empty;
                     errdefer cidr_list.deinit(alloc);
                     var idx: u8 = 0;
-                    while (idx < from_if.cidrs.len) : (idx += 1)
+                    while (idx < from_if.cidrs.len) : (idx += 1) //
                         cidr_list.append(alloc, from_if.cidrs[idx] orelse break) catch @panic("OOM");
                     break :cidrs cidr_list.toOwnedSlice(alloc) catch @panic("OOM");
                 },
@@ -188,11 +188,11 @@ pub const Interface = struct {
 
         pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             try formatGen(@This(), self, writer, false);
-        } 
+        }
 
         pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
             try formatGen(@This(), self, writer, true);
-        } 
+        }
     };
 
     /// Free the allocated portions of this Interface.
@@ -368,6 +368,7 @@ pub const Interface = struct {
                     mod_req_ctx,
                     self.index,
                     mode,
+                    &.{},
                 );
             },
             .channel => |channel| {
@@ -393,19 +394,23 @@ pub const Interface = struct {
     };
     /// Restore the Interface.
     /// Note, this is blocking.
-    pub fn restore(self: *@This(), alloc: mem.Allocator, kinds: []const RestoreKind) void {
+    pub fn restore(self: *@This(), core_ctx: *core.Core, kinds: []const RestoreKind) void {
+        const alloc = core_ctx.alloc;
         log.info("- Restoring Interface '{s}'...", .{ self.name });
-        //if (self.usage == .connect) self.usage.connect.stop();
         const has_ip: bool = self.ips[0] != null;
-        log.info("-- Reset to Managed Mode.", .{});
         for (kinds) |kind| {
             switch (kind) {
                 .mode => {
-                    nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch {};
+                    nl._80211.abortScan(alloc, self.index) catch {};
                     Thread.sleep(time.ns_per_ms);
-                    nl._80211.setMode(self.index, c(nl._80211.IFTYPE).STATION) catch |err| {
-                        log.warn("Could not set the Interface back to Managed Mode: {t}", .{ err });
+                    nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch |err| {
+                        log.warn("Could not the Interface Down: {t}", .{ err });
                     };
+                    Thread.sleep(time.ns_per_ms);
+                    if (nl._80211.setMode(core_ctx.alloc, self.index, c(nl._80211.IFTYPE).STATION, &.{})) //
+                        log.info("-- Reset to Managed Mode.", .{}) //
+                    else |err| //
+                        log.warn("-- Could not set the Interface back to Managed Mode: {t}", .{ err });
                 },
                 .ips => {
                     for (self.ips, self.cidrs) |_ip, _cidr| {
@@ -467,11 +472,11 @@ pub const Interface = struct {
 
     pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         try formatGen(@This(), self, writer, false);
-    } 
+    }
 
     pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
         try formatGen(@This(), self, writer, true);
-    } 
+    }
 
     pub fn formatGen(T: type, self: T, writer: *Io.Writer, use_ansi: bool) Io.Writer.Error!void {
         // Setup Writer
@@ -752,12 +757,14 @@ pub const Context = struct {
     }
 
     /// Restore All Interfaces to their Original MAC Addresses and remove any IP Addresses.
+    /// Intended for use at the end of execution during clean up.
     pub fn restore(self: *@This()) void {
-        const core_ctx: *core.Core = @fieldParentPtr("if_ctx", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("if_ctx", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("if_ctx", self);
         if (self.interfaces.count() == 0) //
             return;
         var if_iter = self.interfaces.iterator();
-        defer if_iter.unlock();
+        if_iter.unlock();
         while (if_iter.next()) |if_entry| {
             const res_if = if_entry.value_ptr;
             //if (res_if.usage == .unavailable or res_if.usage == .err) continue;
@@ -770,13 +777,14 @@ pub const Context = struct {
                 },
                 else => {},
             }
-            res_if.restore(core_ctx.alloc, &.{ .mode, .ips, .mac, .dns });
+            res_if.restore(core_ctx, &.{ .mode, .ips, .mac, .dns });
         }
     }
     
     /// Update the status of all Interfaces
     pub fn update(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("if_ctx", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("if_ctx", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("if_ctx", self);
         if (self._timer) |*timer| {
             const wait: u64 = wait: {
                 const run_cond = core_ctx.run_condition orelse break :wait 500;
@@ -1126,14 +1134,18 @@ pub const Context = struct {
                                 scan_config.freqs = null;
                                 break :scanCfg;
                             }
+                            if (scan_config.freqs) |old_freqs| //
+                                core_ctx.alloc.free(old_freqs);
                             scan_config.freqs = scan_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
                         }
+                        if (net_if.state & c(nl.route.IFF).UP != c(nl.route.IFF).DOWN) //
+                            try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN });
+                        if (net_if.mode & c(nl._80211.IFTYPE).STATION != c(nl._80211.IFTYPE).STATION) //
+                            try net_if.modify(core_ctx, .{ .mode = c(nl._80211.IFTYPE).STATION });
                         if (core_ctx.config.profile.mask) |pro_mask| {
                             var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
                             if (pro_mask.oui) |mask_oui| //
                                 @memcpy(mask_mac[0..3], mask_oui[0..]);
-                            if (net_if.state & c(nl.route.IFF).UP != c(nl.route.IFF).DOWN) //
-                                try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN });
                             if (mem.eql(u8, net_if.mac[0..], net_if.og_mac[0..])) //
                                 try net_if.modify(core_ctx, .{ .mac = mask_mac });
                         }
@@ -1222,7 +1234,7 @@ pub const Context = struct {
             if (mod_list.items.len == 0) {
                 mod_list.deinit(core_ctx.alloc);
                 net_if.mod_queue = &.{};
-            }
+            } //
             else //
                 net_if.mod_queue = mod_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
         }

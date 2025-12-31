@@ -15,6 +15,7 @@ const posix = std.posix;
 const sort = std.sort;
 const time = std.time;
 const ArrayList = std.ArrayList;
+const Io = std.Io;
 
 const netdata = @import("../netdata.zig");
 const ies = netdata.l2.information_elements;
@@ -791,7 +792,6 @@ pub const Wiphy = struct {
         ND_RANDOM_MAC_ADDR = 1 << 31,
     };
 
-
     pub const BAND_ATTR = enum(u16) {
         __INVALID,
         FREQS,
@@ -813,10 +813,42 @@ pub const Wiphy = struct {
         __AFTER_LAST,
         //MAX = @intCast(u32, @intFromEnum(__AFTER_LAST) - 1),
     };
-
     const Band = struct {
         pub const AttrE = BAND_ATTR;
         pub const _grouped_attr = {};
+
+        /// List of frequencies for the band
+        FREQS: ?[]const Frequency = null,
+        /// Supported data rates in the band
+        RATES: ?[]const u32 = null,
+        /// Modulation and Coding Scheme (MCS) settings for HT
+        HT_MCS_SET: ?[16]u8 = null,
+        /// High Throughput (HT) capabilities
+        HT_CAPA: u16 = 0, //HT_CAPA = .{},
+        /// High Throughput AMPDU (Aggregated MAC Protocol Data Unit) factor
+        HT_AMPDU_FACTOR: ?u8 = null,
+        /// High Throughput AMPDU density setting
+        HT_AMPDU_DENSITY: ?u8 = null,
+        /// High Throughput Extended Capabilities
+        HT_EXT_CAPA: ?u16 = null,
+        /// High Throughput Transmit Beamformer Capabilities
+        HT_TX_BF_CAPA: ?u32 = null,
+        /// High Throughput Antenna Selection Capbilities
+        HT_ASEL_CAPA: ?u8 = null,
+        /// Very High Throughput (Very High Throughput) MCS settings
+        VHT_MCS_SET: ?[8]u8 = null,
+        /// Very High Throughput capabilities
+        VHT_CAPA: u32 = 0,
+        /// Interface type-specific data for this band
+        IFTYPE_DATA: ?[]const u8 = null,
+        /// Enhanced Directional Multi-Gigabit (EDMG) channels
+        EDMG_CHANNELS: ?u8 = null,
+        /// EDMG bandwidth configuration
+        EDMG_BW_CONFIG: ?u8 = null,
+        /// S1G MCS and NSS settings for sub-1GHz operation
+        S1G_MCS_NSS_SET: ?[]const u8 = null,
+        /// Single-user (S1G) capability for low-bandwidth applications
+        S1G_CAPA: ?u32 = null,
 
         pub const FREQUENCY_ATTR = enum(u16) {
             __INVALID,
@@ -927,42 +959,34 @@ pub const Wiphy = struct {
             /// Antenna Selection Capabilities (optional features for antenna selection)
             asel_capabilities: u8 = 0,
         };
-
-
-        /// List of frequencies for the band
-        FREQS: ?[]const Frequency = null,
-        /// Supported data rates in the band
-        RATES: ?[]const u32 = null,
-        /// Modulation and Coding Scheme (MCS) settings for HT
-        HT_MCS_SET: ?[16]u8 = null,
-        /// High Throughput (HT) capabilities
-        HT_CAPA: u16 = 0, //HT_CAPA = .{},
-        /// High Throughput AMPDU (Aggregated MAC Protocol Data Unit) factor
-        HT_AMPDU_FACTOR: ?u8 = null,
-        /// High Throughput AMPDU density setting
-        HT_AMPDU_DENSITY: ?u8 = null,
-        /// High Throughput Extended Capabilities
-        HT_EXT_CAPA: ?u16 = null,
-        /// High Throughput Transmit Beamformer Capabilities
-        HT_TX_BF_CAPA: ?u32 = null,
-        /// High Throughput Antenna Selection Capbilities
-        HT_ASEL_CAPA: ?u8 = null,
-        /// Very High Throughput (Very High Throughput) MCS settings
-        VHT_MCS_SET: ?[8]u8 = null,
-        /// Very High Throughput capabilities
-        VHT_CAPA: u32 = 0,
-        /// Interface type-specific data for this band
-        IFTYPE_DATA: ?[]const u8 = null,
-        /// Enhanced Directional Multi-Gigabit (EDMG) channels
-        EDMG_CHANNELS: ?u8 = null,
-        /// EDMG bandwidth configuration
-        EDMG_BW_CONFIG: ?u8 = null,
-        /// S1G MCS and NSS settings for sub-1GHz operation
-        S1G_MCS_NSS_SET: ?[]const u8 = null,
-        /// Single-user (S1G) capability for low-bandwidth applications
-        S1G_CAPA: ?u32 = null,
     };
 };
+
+/// Monitor Flags
+pub const MntrFlags = enum(u16) {
+    /// Reserved / invalid
+    INVALID,
+    /// Pass frames with bad FCS
+    FCSFAIL,
+    /// Pass frames with bad PLCP
+    PLCPFAIL,
+    /// Pass control frames
+    CONTROL,
+    /// Disable BSSID filtering
+    OTHER_BSS,
+    /// Deprecated; will always be refused
+    COOK_FRAMES,
+    /// Use configured MAC address and ACK incoming unicast packets
+    ACTIVE,
+    /// Do not pass local TX packets
+    SKIP_TX,
+    /// Internal use
+    AFTER_LAST,
+    /// Highest possible monitor flag
+    MAX = math.maxInt(u16),
+    _,
+};
+
 
 /// Scan Flags
 pub const SCAN_FLAG = enum(u16) {
@@ -1306,6 +1330,12 @@ pub const Key = struct {
     TYPE: ?u8 = null,
 };
 
+/// Power Save State
+pub const PowerSave = enum(u8) {
+    DISABLED,
+    ENABLED,
+};
+
 /// Station Flags
 pub const STA_FLAG = enum(u32) {
     /// Invalid STA flag
@@ -1603,7 +1633,7 @@ pub fn requestSetFreq(
                 .pid = 0,
             },
             .msg = .{
-                .cmd = c(CMD).SET_WIPHY,
+                .cmd = c(CMD).SET_CHANNEL,
                 .version = 1,
             },
         },
@@ -1635,6 +1665,41 @@ pub fn setChannel(if_index: i32, channel: chs.Channel) !void {
         error.InvalidFrequency => return error.InvalidChannel,
         else => return err,
     };
+}
+
+/// Request to Set the Power Save State (`enabled`) of the provided Interface (`if_index`).
+pub fn requestSetPowerSave(
+    alloc: mem.Allocator,
+    req_ctx: *nl.io.RequestContext,
+    if_index: i32,
+    enabled: bool,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const ps_state: PowerSave = //
+        if (enabled) .ENABLED //
+        else .DISABLED;
+    try nl.io.request(
+        alloc,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).SET_POWER_SAVE,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).PS_STATE }, .data = mem.toBytes(ps_state)[0..] },
+        },
+        req_ctx,
+    );
 }
 
 /// Request to Take Ownership of a Wireless Interface.
@@ -1680,8 +1745,34 @@ pub fn requestSetMode(
     req_ctx: *nl.io.RequestContext,
     if_index: i32,
     mode: u32,
+    flags: []const u16,
 ) !void {
     const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    var attrs_list: ArrayList(nl.Attribute) = try .initCapacity(alloc, 2);
+    defer attrs_list.deinit(alloc);
+    attrs_list.appendSliceAssumeCapacity(
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).IFTYPE }, .data = mem.toBytes(mode)[0..] },
+        },
+    );
+    var flag_attrs_writer: Io.Writer.Allocating = .init(alloc);
+    defer flag_attrs_writer.deinit();
+    if (flags.len > 0) {
+        const fa_w = &flag_attrs_writer.writer;
+        for (flags) |flag| {
+            const flag_attr_hdr: nl.AttributeHeader = .{ .type = flag, .len = 4 };
+            try fa_w.writeStruct(flag_attr_hdr, .little);
+        }
+        const flag_attrs_bytes = flag_attrs_writer.written();
+        try attrs_list.append(alloc, .{
+            .hdr = .{
+                .type = c(ATTR).MNTR_FLAGS,
+                .len = @intCast(nl.attr_hdr_len + flag_attrs_bytes.len),
+            },
+            .data = flag_attrs_bytes,
+        });
+    }
     try nl.io.request(
         alloc,
         nl.generic.Request,
@@ -1698,20 +1789,24 @@ pub fn requestSetMode(
                 .version = 1,
             },
         },
-        &.{
-            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
-            .{ .hdr = .{ .type = c(ATTR).IFTYPE }, .data = mem.toBytes(mode)[0..] },
-        },
+        attrs_list.items,
         req_ctx,
     );
 }
 /// Set the `mode` for the Interface (`if_index`)
-pub fn setMode(if_index: i32, mode: u32) !void {
-    const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 4, 4);
-    var req_buf: [buf_len]u8 = undefined;
-    var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
+pub fn setMode(alloc: mem.Allocator, if_index: i32, mode: u32, flags: []const u16) !void {
+    //const buf_len = comptime mem.alignForward(usize, (nl.generic.Request.len + nl.attr_hdr_len + 8) * 8, 4);
+    //var req_buf: [buf_len]u8 = undefined;
+    //var fba = heap.FixedBufferAllocator.init(req_buf[0..]);
     var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
-    try requestSetMode(fba.allocator(), &req_ctx, if_index, mode);
+    try requestSetMode(
+        //fba.allocator(),
+        alloc,
+        &req_ctx,
+        if_index,
+        mode,
+        flags,
+    );
     defer posix.close(req_ctx.sock);
     try nl.parse.handleAckSock(req_ctx.sock);
 }
@@ -1859,7 +1954,7 @@ pub fn getInterface(alloc: mem.Allocator, if_index: i32) !Interface {
     try requestInterface(alloc, &req_ctx, if_index);
     defer posix.close(req_ctx.sock);
     const if_buf = try handleInterfaceSock(alloc, req_ctx.sock);
-    if (if_buf.len == 0 or if_buf[0].IFINDEX != if_index) 
+    if (if_buf.len == 0 or if_buf[0].IFINDEX != if_index) //
         return error.NoResultForInterface;
     return if_buf[0];
 }
@@ -2274,9 +2369,11 @@ pub fn requestTriggerScan(
         },
     );
     var freq_attrs_bytes: ?[]const u8 = null;
-    defer if (freq_attrs_bytes) |fab| alloc.free(fab);
+    defer if (freq_attrs_bytes) |fab| //
+        alloc.free(fab);
     if (config.freqs) |freqs| addFreqs: {
-        if (freqs.len == 0) break :addFreqs;
+        if (freqs.len == 0) //
+            break :addFreqs;
         var freq_attrs_buf: ArrayList(u8) = .empty;
         errdefer freq_attrs_buf.deinit(alloc);
         for (freqs) |freq| {
@@ -2294,9 +2391,11 @@ pub fn requestTriggerScan(
         });
     }
     var ssid_attrs_bytes: ?[]const u8 = null;
-    defer if (ssid_attrs_bytes) |sab| alloc.free(sab);
+    defer if (ssid_attrs_bytes) |sab| //
+        alloc.free(sab);
     if (config.ssids) |ssids| addSSIDs: {
-        if (ssids.len == 0) break :addSSIDs;
+        if (ssids.len == 0) //
+            break :addSSIDs;
         var ssid_attrs_buf: ArrayList(u8) = .empty;
         errdefer ssid_attrs_buf.deinit(alloc);
         for (ssids) |ssid| {
@@ -2345,6 +2444,46 @@ pub fn triggerScan(alloc: mem.Allocator, if_index: i32, config: TriggerScanConfi
         &req_ctx,
         if_index,
         config,
+    );
+    defer posix.close(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
+}
+/// Request to Abort a Scan on the provided Interface (`if_index`) using the provided Trigger Scan Config (`config`).
+pub fn requestAbortScan(
+    alloc: mem.Allocator,
+    req_ctx: *nl.io.RequestContext,
+    if_index: i32,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.io.request(
+        alloc,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).ABORT_SCAN,
+                .version = 0,
+            },
+        },
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+        },
+        req_ctx,
+    );
+}
+/// Abort a Scan on the provided Interface (`if_index`)
+pub fn abortScan(alloc: mem.Allocator, if_index: i32) !void {
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestAbortScan(
+        alloc,
+        &req_ctx,
+        if_index,
     );
     defer posix.close(req_ctx.sock);
     try nl.parse.handleAckSock(req_ctx.sock);
@@ -3145,7 +3284,49 @@ pub fn requestDisassociate(
         },
         req_ctx,
     );
-    //try nl.parse.handleAckSock(nl_sock);
+}
+
+/// Request to Disconnect the given Station (`mac`) from the provided Interface (`if_index`).
+/// Note, this works from both AP and Station modes.
+pub fn requestDisconnect(
+    alloc: mem.Allocator,
+    req_ctx: *nl.io.RequestContext,
+    if_index: i32,
+    mac: [6]u8,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.io.request(
+        alloc, 
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).DISCONNECT,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ 
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = mac[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).REASON_CODE },
+                .data = mem.toBytes(@as(u16, 1))[0..],
+            },
+        },
+        req_ctx,
+    );
 }
 
 /// Request to Send Control Frame
@@ -3247,7 +3428,7 @@ pub fn requestAuthPort(
     //try nl.parse.handleAckSock(nl_sock);
 }
 
-/// Request to Add a `key` to the given `key_index` for a specific connection.
+/// Request to Add a `key` for a specific connection.
 pub fn requestAddKey(
     alloc: mem.Allocator,
     req_ctx: *nl.io.RequestContext,
@@ -3289,7 +3470,7 @@ pub fn requestAddKey(
             },
         }
         else &.{
-            .{ 
+            .{
                 .hdr = .{ .type = c(ATTR).IFINDEX },
                 .data = mem.toBytes(if_index)[0..],
             },
@@ -3300,8 +3481,49 @@ pub fn requestAddKey(
         },
         req_ctx,
     );
-    //errdefer posix.close(nl_sock);
-    //try nl.parse.handleAckSock(nl_sock);
+}
+
+/// Request to Delete the Key at the specified `key_idx` for a specific connection.
+pub fn requestDelKey(
+    alloc: mem.Allocator,
+    req_ctx: *nl.io.RequestContext,
+    if_index: i32,
+    mac: [6]u8,
+    key_idx: u8,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.io.request(
+        alloc,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .seq = 0,
+                .pid = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).DEL_KEY,
+                .version = 0,
+            },
+        },
+        &.{
+            .{
+                .hdr = .{ .type = c(ATTR).IFINDEX },
+                .data = mem.toBytes(if_index)[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).MAC, .len = 10 },
+                .data = mac[0..],
+            },
+            .{
+                .hdr = .{ .type = c(ATTR).KEY_IDX },
+                .data = mem.toBytes(key_idx)[0..],
+            },
+        },
+        req_ctx,
+    );
 }
 
 /// EAPoL Keys

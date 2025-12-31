@@ -278,7 +278,7 @@ pub const ScanContext = union(enum) {
         /// Timer
         timer: time.Timer,
         /// Monitor Mode Setup
-        setup: enum { down, mon, up, done } = .down,
+        setup: enum { down, mon, ch, up, roc, ps, done } = .down,
     },
     /// Netlink Scan
     netlink: struct {
@@ -323,8 +323,8 @@ pub const Context = struct {
                 var freqs_list: ArrayList(u32) = .empty;
                 errdefer freqs_list.deinit(core_ctx.alloc);
                 for (core_ctx.config.global_scan_config.channels) |ch| {
-                    const freq = try ch.toFreq();
-                    freqs_list.append(core_ctx.alloc, @truncate(freq)) catch @panic("OOM");
+                    const freq: u32 = @truncate(try ch.toFreq());
+                    freqs_list.append(core_ctx.alloc, freq) catch @panic("OOM");
                 }
                 break :freqs freqs_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
             };
@@ -336,22 +336,22 @@ pub const Context = struct {
         self.nl_scan_configs = core_ctx.alloc.create(ThreadHashMap([]const u8, nl._80211.TriggerScanConfig)) catch @panic("OOM");
         self.nl_scan_configs.* = .empty;
         for (core_ctx.config.scan_configs) |config| {
-            log.debug("Added Scan Config for '{s}'", .{ config.if_name });
             const freqs: ?[]const u32 = freqs: {
                 const channels = config.channels orelse break :freqs null;
                 var freqs_list: ArrayList(u32) = .empty;
                 errdefer freqs_list.deinit(core_ctx.alloc);
                 for (channels) |ch| {
-                    const freq = try ch.toFreq();
-                    try freqs_list.append(core_ctx.alloc, @truncate(freq));
+                    const freq: u32 = @truncate(try ch.toFreq());
+                    freqs_list.append(core_ctx.alloc, freq) catch @panic("OOM");
                 }
-                break :freqs try freqs_list.toOwnedSlice(core_ctx.alloc);
+                break :freqs freqs_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
             };
             const trigger_config: nl._80211.TriggerScanConfig = .{
                 .freqs = freqs,
                 .ssids = config.ssids,
             };
             self.nl_scan_configs.put(core_ctx.alloc, config.if_name, trigger_config) catch @panic("OOM");
+            log.debug("Added Scan Config for '{s}'", .{ config.if_name });
         }
         log.debug("Total Scan Configs: {d}", .{ self.nl_scan_configs.count() });
         //log.debug("Global Scan Channels:\n{f}", .{ SliceF(chs.Channel, "- {f}"){ .slice = core_ctx.config.global_scan_config.channels, .separator = "\n" } });
@@ -377,9 +377,9 @@ pub const Context = struct {
         scan_conf_iter.unlock();
         self.nl_scan_configs.deinit(alloc);
         alloc.destroy(self.nl_scan_configs);
-        if (self.global_nl_scan_config.freqs) |freqs|
+        if (self.global_nl_scan_config.freqs) |freqs| //
             alloc.free(freqs);
-        if (self.global_nl_scan_config.ssids) |ssids|
+        if (self.global_nl_scan_config.ssids) |ssids| //
             alloc.free(ssids);
         var nw_iter = self.networks.iterator();
         while (nw_iter.next()) |nw_entry| //
@@ -394,7 +394,8 @@ pub const Context = struct {
 
     /// Update Networks
     pub fn update(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("network_ctx", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("network_ctx", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("network_ctx", self);
         if (core_ctx.run_condition) |*condition| {
             switch (condition.*) {
                 .list_interfaces,
@@ -427,7 +428,7 @@ pub const Context = struct {
             }
         }
         //defer _ = self._arena.reset(.retain_capacity);
-        if (self._arena.state.end_index > 1_000)
+        if (self._arena.state.end_index > 1_000) //
             _ = self._arena.reset(.retain_capacity);
         //log.debug("Network Arena Capacity: {d}B", .{ self._arena.queryCapacity() });
         const scan_result_resps = core_ctx.nl80211_handler.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM");
@@ -492,7 +493,7 @@ pub const Context = struct {
                             const scan_results_ready: bool = resultsReady: {
                                 for (scan_result_resps) |response| {
                                     const data = response catch continue;
-                                    //log.debug("Scan Results Len: {d}B", .{ data.len });
+                                    log.debug("Scan Results Len: {d}B", .{ data.len });
                                     const results = try nl._80211.handleScanResultsBuf(self._a_alloc, data);
                                     for (results) |result| {
                                         if (result.IFINDEX != scan_if.index) //
@@ -505,10 +506,10 @@ pub const Context = struct {
                             };
                             nlState: switch (nl_ctx.nl_state) {
                                 .ready, .request => {
-                                    nl_ctx.req_ctx.nextSeqID();
                                     switch (nl_ctx.scan_state) {
                                         .trigger => {
-                                            if (scan_if.checkPenalty()) continue;
+                                            if (scan_if.checkPenalty()) //
+                                                continue;
                                             defer self.nl_scan_configs.mutex.unlock();
                                             const scan_config = scanConfig: {
                                                 const scan_config_entry = self.nl_scan_configs.getEntry(scan_if.name) orelse {
@@ -516,6 +517,7 @@ pub const Context = struct {
                                                 };
                                                 break :scanConfig scan_config_entry.value_ptr.*;
                                             };
+                                            nl_ctx.req_ctx.nextSeqID();
                                             //const scan_config = self.global_scan_config;
                                             try nl._80211.requestTriggerScan(
                                                 core_ctx.alloc,
@@ -525,23 +527,29 @@ pub const Context = struct {
                                             );
                                         },
                                         .results => {
+                                            if (nl_ctx.timer.read() < time.ns_per_s) //
+                                                continue;
                                             if (nl_ctx.timer.read() > 10 * time.ns_per_s) {
                                                 log.warn("Scan timed out on Interface '{s}'.", .{ scan_if.name });
                                                 scan_if.usage = .active;
                                                 continue;
                                             }
-                                            if (!scan_results_ready) continue;
+                                            if (!scan_results_ready) //
+                                                continue;
+                                            nl_ctx.req_ctx.nextSeqID();
                                             try nl._80211.requestScanResults(
                                                 core_ctx.alloc,
                                                 &nl_ctx.req_ctx,
                                                 scan_if.index,
                                             );
+                                            nl_ctx.timer.reset();
                                         },
                                     }
                                     nl_ctx.nl_state = .await_response;
                                 },
                                 .await_response => {
-                                    if (!nl_ctx.req_ctx.checkResponse()) continue;
+                                    if (!nl_ctx.req_ctx.checkResponse()) //
+                                        continue;
                                     nl_ctx.nl_state = .parse;
                                     continue :nlState nl_ctx.nl_state;
                                 },
@@ -625,7 +633,14 @@ pub const Context = struct {
                                                         .freq = bss.FREQUENCY,
                                                         .channel = channel: {
                                                             // TODO: Properly pull the Channel Width
-                                                            const bw: chs.Bandwidth = @enumFromInt(bss.CHAN_WIDTH orelse 20);
+                                                            const ch_width: u8 = chWidth: {
+                                                                const width = bss.CHAN_WIDTH orelse break :chWidth 20;
+                                                                if (width == 0) //
+                                                                    break :chWidth 20;
+                                                                break :chWidth width;
+                                                            };
+                                                            //log.debug("Channel Width: {d}", .{ ch_width });
+                                                            const bw: chs.Bandwidth = @enumFromInt(ch_width);
                                                             const ch: chs.Channel = try .fromFreqBW(bss.FREQUENCY, bw);
                                                             break :channel ch.pri;
                                                         },
@@ -679,7 +694,7 @@ pub const Context = struct {
                                             if (mon_ctx.setup == .down) //
                                                 c(nl.route.IFF).DOWN //
                                             else //
-                                                c(nl.route.IFF).UP;
+                                                c(nl.route.IFF).UP | c(nl.route.IFF).PROMISC;
                                         mon_ctx.req_ctx_rt.nextSeqID();
                                         try nl.route.requestSetState(
                                             core_ctx.alloc,
@@ -714,7 +729,7 @@ pub const Context = struct {
                                         mon_ctx.nl_state = .ready;
                                         mon_ctx.setup = //
                                             if (mon_ctx.setup == .down) .mon //
-                                            else .done;
+                                            else .roc;
                                         mon_ctx.timer.reset();
                                         continue :monSetup mon_ctx.setup;
                                     },
@@ -730,6 +745,13 @@ pub const Context = struct {
                                             &mon_ctx.req_ctx_80211,
                                             scan_if.index,
                                             c(nl._80211.IFTYPE).MONITOR,
+                                            &.{
+                                                //c(nl._80211.MntrFlags).ACTIVE,
+                                                c(nl._80211.MntrFlags).OTHER_BSS,
+                                                c(nl._80211.MntrFlags).CONTROL,
+                                                //c(nl._80211.MntrFlags).FCSFAIL,
+                                                //c(nl._80211.MntrFlags).PLCPFAIL,
+                                            },
                                         );
                                         mon_ctx.nl_state = .await_response;
                                         continue :setMon mon_ctx.nl_state;
@@ -753,7 +775,140 @@ pub const Context = struct {
                                             continue;
                                         }
                                         mon_ctx.nl_state = .ready;
+                                        mon_ctx.setup = .ch;
+                                        continue :monSetup mon_ctx.setup;
+                                    },
+                                },
+                                .ch => ch: switch (mon_ctx.nl_state) {
+                                    .ready, .request => {
+                                        mon_ctx.req_ctx_80211.nextSeqID();
+                                        nl._80211.requestSetFreq(
+                                            core_ctx.alloc,
+                                            &mon_ctx.req_ctx_80211,
+                                            scan_if.index,
+                                            chs.Frequencies.band_2G_20[0],
+                                            nl._80211.CHANNEL_WIDTH.@"20",
+                                        ) catch |err| {
+                                            log.warn("Unable to change Channel of '{s}': {t}", .{ scan_if.name, err });
+                                            continue;
+                                        };
+                                        mon_ctx.nl_state = .await_response;
+                                        continue :ch mon_ctx.nl_state;
+                                    },
+                                    .await_response => {
+                                        if (!mon_ctx.req_ctx_80211.checkResponse()) //
+                                            continue;
+                                        mon_ctx.nl_state = .parse;
+                                        continue :ch mon_ctx.nl_state;
+                                    },
+                                    .parse => {
+                                        const mod_resp = mon_ctx.req_ctx_80211.getResponse().?;
+                                        if (mod_resp) |resp_data| {
+                                            core_ctx.alloc.free(resp_data);
+                                            log.debug("Reset Channel Context of '{s}'", .{ scan_if.name });
+                                            mon_ctx.timer.reset();
+                                        } //
+                                        else |err| //
+                                            log.warn("Unable to Reset Channel Context of '{s}': {t}", .{ scan_if.name, err });
+                                        mon_ctx.nl_state = .ready;
                                         mon_ctx.setup = .up;
+                                        continue :monSetup mon_ctx.setup;
+                                    },
+                                },
+                                .roc => disROC: switch (mon_ctx.nl_state) {
+                                    .ready, .request => {
+                                        if (!scan_if.checkCommand(.REMAIN_ON_CHANNEL)) {
+                                            mon_ctx.setup = .ps;
+                                            continue :monSetup mon_ctx.setup;
+                                        }
+                                        if (mon_ctx.timer.read() < 100 * time.ns_per_ms) //
+                                            continue;
+                                        log.debug("Disabling Remain-on-Channel (ROC) on Interface '{s}'...", .{ scan_if.name });
+                                        mon_ctx.req_ctx_80211.nextSeqID();
+                                        const info = nl._80211.ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+                                        try nl.io.request(
+                                            core_ctx.alloc,
+                                            nl.generic.Request,
+                                            .{
+                                                .nlh = .{
+                                                    .len = 0,
+                                                    .type = info.FAMILY_ID,
+                                                    .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                                                    .seq = 0,
+                                                    .pid = 0,
+                                                },
+                                                .msg = .{
+                                                    .cmd = c(nl._80211.CMD).CANCEL_REMAIN_ON_CHANNEL,
+                                                    .version = 1,
+                                                },
+                                            },
+                                            &.{
+                                                .{ .hdr = .{ .type = c(nl._80211.ATTR).IFINDEX }, .data = mem.toBytes(scan_if.index)[0..] },
+                                                .{ .hdr = .{ .type = c(nl._80211.ATTR).COOKIE }, .data = mem.toBytes(@as(u64, 1234321))[0..] },
+                                            },
+                                            &mon_ctx.req_ctx_80211,
+                                        );
+                                        mon_ctx.nl_state = .await_response;
+                                        continue :disROC mon_ctx.nl_state;
+                                    },
+                                    .await_response => {
+                                        if (!mon_ctx.req_ctx_80211.checkResponse()) //
+                                            continue;
+                                        mon_ctx.nl_state = .parse;
+                                        continue :disROC mon_ctx.nl_state;
+                                    },
+                                    .parse => {
+                                        const mod_resp = mon_ctx.req_ctx_80211.getResponse() orelse continue;
+                                        if (mod_resp) |resp_data| {
+                                            core_ctx.alloc.free(resp_data);
+                                            log.info("Disabled Remain-on-Channel (ROC) on Interface '{s}'.", .{ scan_if.name });
+                                            mon_ctx.timer.reset();
+                                        } //
+                                        else |err| {
+                                            log.warn("Unable to disable Remain-on-Channel (ROC) on Interface '{s}': {t}", .{ scan_if.name, err });
+                                            //scan_if.usage = .{ .err = err };
+                                            //continue;
+                                        }
+                                        mon_ctx.nl_state = .ready;
+                                        mon_ctx.setup = .ps;
+                                        continue :monSetup mon_ctx.setup;
+                                    },
+                                },
+                                .ps => disPS: switch (mon_ctx.nl_state) {
+                                    .ready, .request => {
+                                        if (mon_ctx.timer.read() < 100 * time.ns_per_ms) //
+                                            continue;
+                                        log.debug("Disabling Power Save (PS) on Interface '{s}'...", .{ scan_if.name });
+                                        mon_ctx.req_ctx_80211.nextSeqID();
+                                        try nl._80211.requestSetPowerSave(
+                                            core_ctx.alloc,
+                                            &mon_ctx.req_ctx_80211,
+                                            scan_if.index,
+                                            false,
+                                        );
+                                        mon_ctx.nl_state = .await_response;
+                                        continue :disPS mon_ctx.nl_state;
+                                    },
+                                    .await_response => {
+                                        if (!mon_ctx.req_ctx_80211.checkResponse()) //
+                                            continue;
+                                        mon_ctx.nl_state = .parse;
+                                        continue :disPS mon_ctx.nl_state;
+                                    },
+                                    .parse => {
+                                        const mod_resp = mon_ctx.req_ctx_80211.getResponse() orelse continue;
+                                        if (mod_resp) |resp_data| {
+                                            core_ctx.alloc.free(resp_data);
+                                            log.info("Disabled Power Save (PS) on Interface '{s}'.", .{ scan_if.name });
+                                            mon_ctx.timer.reset();
+                                        } //
+                                        else |err| {
+                                            log.warn("Unable to disable Power Save (PS) on Interface '{s}': {t}", .{ scan_if.name, err });
+                                            //scan_if.usage = .{ .err = err };
+                                            //continue;
+                                        }
+                                        mon_ctx.nl_state = .ready;
+                                        mon_ctx.setup = .done;
                                         continue :monSetup mon_ctx.setup;
                                     },
                                 },
