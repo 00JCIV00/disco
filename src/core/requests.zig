@@ -269,7 +269,8 @@ pub const Aggregator = struct {
 
     /// Push a Request to the queue (`req_map`).
     pub fn push(self: *@This(), req: Request) !usize {
-        const core_ctx: *core.Core = @fieldParentPtr("req_aggregator", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("req_aggregator", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("req_aggregator", self);
         const id = self.getReqID();
         try self.req_map.put(core_ctx.alloc, id, req);
         return id;
@@ -284,7 +285,8 @@ pub const Aggregator = struct {
 
     /// Process any queued requests
     pub fn process(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("req_aggregator", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("req_aggregator", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("req_aggregator", self);
         self.req_map.mutex.lock();
         var reqs = self.req_map.map.move();
         defer reqs.deinit(core_ctx.alloc);

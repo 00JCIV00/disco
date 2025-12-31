@@ -322,7 +322,6 @@ pub const SocketReader = struct {
     /// Read Flags
     flags: u32 = 0,
 
-
     /// Initialize a new POSIX Socket Reader
     pub fn init(sock: posix.socket_t, buf: []u8, flags: u32) @This() {
         return .{

@@ -105,6 +105,7 @@ pub const RequestContext = struct {
 
     /// Get a Unique Netlink Sequence ID
     fn getSeqID() u32 {
+        //log.debug("Seq ID: {d}", .{ unique_seq_id.load(.acquire) });
         defer if (unique_seq_id.load(.acquire) >= math.maxInt(u32) - 1)
             unique_seq_id.store(1000, .monotonic);
         return unique_seq_id.fetchAdd(1, .acquire);
@@ -181,7 +182,7 @@ pub fn request(
         };
     };
     defer if (attrs.len > 0) //
-        alloc.free(@as([]align(8) const nl.Attribute, @alignCast(attrs)));
+        alloc.free(@as([]align(@alignOf(usize)) const nl.Attribute, @alignCast(attrs)));
     var req = raw_req;
     const msg_len = mem.alignForward(u32, @intCast(req_len + attrs_len), 4);
     var sock_info: posix.sockaddr.nl = undefined;
@@ -399,6 +400,7 @@ pub const Handler = struct {
         defer cmd_resp_map.mutex.unlock();
         var cmd_resp_iter = cmd_resp_map.iterator();
         var resp_list: ArrayList(anyerror![]const u8) = .empty;
+        errdefer resp_list.deinit(self._alloc);
         while (cmd_resp_iter.next()) |resp_entry| {
             const response = resp_entry.value_ptr;
             var timeout_state: Response = .{ .ready = error.Timeout };

@@ -15,6 +15,7 @@ const time = std.time;
 const Thread = std.Thread;
 
 const utils = @import("../utils.zig");
+const ansi = utils.ansi;
 const c = utils.toStruct;
 
 const netdata = @import("../netdata.zig");
@@ -191,7 +192,16 @@ pub const Context = struct {
             log.err("Could not bind to UDP Socket: {t}", .{ err });
             return;
         };
-        log.info("Serving '{s}' on '{f}:{d}'...", .{ conf.path, IPF{ .bytes = conf.ip[0..] }, conf.port });
+        log.info(
+            "{s}Serving '{s}' on '{f}:{d}'{s}",
+            .{
+                ansi.fg.yellow,
+                conf.path,
+                IPF{ .bytes = conf.ip[0..] },
+                conf.port,
+                ansi.reset,
+            },
+        );
         // Set up event loop for both protocols
         const serve_path = //
             if (mem.endsWith(u8, conf.path, "/")) //

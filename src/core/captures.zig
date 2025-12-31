@@ -24,6 +24,7 @@ const pcap = netdata.pcap;
 const IPF = address.IPFormatter;
 const MACF = address.MACFormatter;
 const utils = @import("../utils.zig");
+const ansi = utils.ansi;
 const c = utils.toStruct;
 const HexF = utils.HexFormatter;
 const SockWriter = utils.SocketWriter;
@@ -76,7 +77,7 @@ pub const TCPContext = struct {
     config: Config.TCPConfig,
     /// Accept Socket
     accept_sock: posix.socket_t,
-    /// Connections List 
+    /// Connections List
     conn_list: ThreadArrayList(Connection) = .empty,
 
     /// Connected Client
@@ -189,6 +190,16 @@ pub const Writer = struct {
                 log.err("Could not listen on TCP Socket: {t}", .{ err });
                 break :tcpCtx null;
             };
+            posix.setsockopt(
+                tcp_sock,
+                posix.SOL.SOCKET,
+                posix.SO.REUSEADDR,
+                mem.toBytes(@as(isize, 1))[0..],
+            ) catch |err| {
+                log.warn("Could note enable 'Re-Use' on TCP Socket: {t}", .{ err });
+                //break :tcpCtx null;
+            };
+            log.info("{s}Serving PCAP TCP Stream on '{f}'{s}", .{ ansi.fg.yellow, tcp_addr, ansi.reset });
             break :tcpCtx .{
                 .config = tcp_conf,
                 .accept_sock = tcp_sock,
@@ -221,7 +232,8 @@ pub const Writer = struct {
 
     /// Deinitialize the PCAP-NG Writer
     pub fn deinit(self: *@This()) void {
-        const core_ctx: *core.Core = @fieldParentPtr("cap_writer", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("cap_writer", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("cap_writer", self);
         //self.finalize(core_ctx) catch |err| {
         //    log.warn("There was a problem finalizing the PCAP file/stream: {t}", .{ err });
         //};
@@ -262,7 +274,8 @@ pub const Writer = struct {
 
     /// Update the PCAP-NG Writer
     pub fn update(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("cap_writer", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("cap_writer", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("cap_writer", self);
         //log.debug("Start Capture Update", .{});
         // Check for Filesize Limit
         if (self.file_ctx) |*file_ctx| newFile: {
@@ -569,7 +582,7 @@ pub const Writer = struct {
     /// This will inject Enahanced Packet Block Headers for each Frame.
     fn frameDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
         defer self.end = 0;
-        const pcap_writer: *@This() = @fieldParentPtr("frame_writer", self);
+        const pcap_writer: *@This() = @alignCast(@fieldParentPtr("frame_writer", self));
         const parser_ctx = pcap_writer.parser_ctx orelse return error.WriteFailed;
         const if_id = ifID: {
             const if_id_pair = pcap_writer.cur_if_ids.get(parser_ctx.if_mac) orelse {

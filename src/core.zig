@@ -250,7 +250,7 @@ pub const Core = struct {
         self.active.store(true, .release);
         // Profile Mask
         if (self.config.profile.mask == null) setMask: {
-            log.info("- No Profile Mask provided.", .{}); 
+            log.info("- No Profile Mask provided.", .{});
             if (!self.config.profile.use_random_mask) {
                 log.info("- Profile Mask explicitly NOT used.", .{});
                 break :setMask;

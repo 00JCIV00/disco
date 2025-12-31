@@ -113,6 +113,7 @@ pub const Parser = struct {
     /// Satisfy the `Io.Reader` Interface.
     fn ioStream(self: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
         const parser: *@This() = @alignCast(@fieldParentPtr("io_reader", self));
+        //const parser: *@This() = @fieldParentPtr("io_reader", self);
         if (parser.ctx.state == .down) return 0;
         //log.debug("Reading Data...", .{});
         var n: usize = 0;
@@ -136,7 +137,7 @@ pub const Parser = struct {
     /// Satisfy the `Io.Writer` Interface.
     fn ioDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
         if (data.len == 0) return 0;
-        const parser: *@This() = @fieldParentPtr("io_writer", self);
+        const parser: *@This() = @alignCast(@fieldParentPtr("io_writer", self));
         //log.debug("Writing {d} Frames", .{ data.len });
         var n: usize = 0;
         if (self.buffered().len > 0) {
@@ -236,7 +237,8 @@ pub const Loop = struct {
 
     /// Start the Event Loop on its own Thread
     pub fn start(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("sock_event_loop", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
         if (self._active.load(.acquire)) //
             return;
         self._active.store(true, .monotonic);
@@ -249,7 +251,8 @@ pub const Loop = struct {
 
     /// Run the Event Loop Thread
     fn run(self: *@This()) void {
-        const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("sock_event_loop", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
         var events: [64]posix.system.epoll_event = undefined;
         while (core_ctx.active.load(.acquire) and self._active.load(.acquire)) {
             //log.debug("Start: SOCKET THREAD", .{});
@@ -301,7 +304,13 @@ pub const Loop = struct {
 
     /// Update this Socket Loop
     pub fn update(self: *@This()) !void {
-        const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
+        //var trace_timer: time.Timer = try .start();
+        //defer {
+        //    log.debug("Socket Update: {d}ms", .{ @divFloor(trace_timer.read(), time.ns_per_ms) });
+        //    trace_timer.reset();
+        //}
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("sock_event_loop", self));
+        //const core_ctx: *core.Core = @fieldParentPtr("sock_event_loop", self);
         //log.debug("Start: Socket Monitor Update", .{});
         const epoll_events: u32 = linux.EPOLL.IN | linux.EPOLL.OUT;
         //if (self.readers.mutex.tryLock()) {} else return;

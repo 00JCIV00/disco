@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const log = std.log.scoped(.ies);
+const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
 const ArrayList = std.ArrayList;
@@ -204,6 +205,25 @@ pub const InformationElements = struct {
 
     /// Robust Security Network (RSN)
     pub const RobustSecurityNetwork = struct {
+        /// Version of the RSN (typically 1 for WPA2)
+        VERSION: u16,
+        /// Group Cipher Suite
+        GROUP_CIPHER_SUITE: Suite,
+        /// Pairwise Cipher Suite Count
+        PAIRWISE_CIPHER_COUNT: ?u16 = null,
+        /// Pairwise Cipher Suite(s)
+        PAIRWISE_CIPHER_SUITES: ?[]const Suite = null,
+        /// AKM Suite Count
+        AKM_SUITE_COUNT: ?u16 = null,
+        /// AKM Suite(s)
+        AKM_SUITES: ?[]const Suite = null,
+        /// RSN Capabilities
+        CAPABILITIES: ?u16 = null,
+        /// Optional fields for WPA3 and beyond
+        PMKID_COUNT: ?u16 = null,
+        PMKID_LIST: ?[]const [16]u8 = null,
+        GROUP_MANAGEMENT_CIPHER_SUITE: ?Suite = null,
+
         /// Custom Netlink Parse Function (implicitly used by `nl.parse`)
         pub fn fromBytes(alloc: mem.Allocator, bytes: []const u8) !@This() {
             var rsn: @This() = undefined;
@@ -213,8 +233,9 @@ pub const InformationElements = struct {
             }
             inline for (meta.fields(@This())) |field| {
                 const field_info = @typeInfo(field.type);
-                if (field_info == .optional) @field(rsn, field.name) = null;
-                if (field_info == .pointer and field_info.pointer.size == .Slice)
+                if (field_info == .optional) //
+                    @field(rsn, field.name) = null;
+                if (field_info == .pointer and field_info.pointer.size == .Slice) //
                     @field(rsn, field.name) = &.{};
             }
             rsn.VERSION = @bitCast(bytes[0..2].*);
@@ -222,12 +243,15 @@ pub const InformationElements = struct {
             var start: usize = 6;
             var end: usize = 8;
             if (end < bytes.len) opts: {
+                //try nl.parse.validateIndexes(bytes[start..].len, start, end);
                 rsn.PAIRWISE_CIPHER_COUNT = @bitCast(bytes[6..8].*);
                 if (rsn.PAIRWISE_CIPHER_COUNT.? > 0) {
-                    const slice_end = end + (@sizeOf(Suite) * rsn.PAIRWISE_CIPHER_COUNT.?);
+                    //const slice_end = end + (@sizeOf(Suite) * rsn.PAIRWISE_CIPHER_COUNT.?);
+                    const slice_end = end + try math.mul(usize, @sizeOf(Suite), rsn.PAIRWISE_CIPHER_COUNT.?);
                     while (end < slice_end) {
                         start = end;
                         end += @sizeOf(Suite);
+                        //try nl.parse.validateIndexes(bytes[start..].len, start, end);
                         try nl.parse.setOptFromBytes(
                             alloc,
                             ?[]const Suite,
@@ -239,18 +263,22 @@ pub const InformationElements = struct {
                 errdefer nl.parse.freeOptBytes(alloc, ?[]const Suite, rsn.PAIRWISE_CIPHER_SUITES);
                 start = end;
                 end += 2;
-                if (end > bytes.len) break :opts;
-
+                if (end > bytes.len) //
+                    break :opts;
+                // AKM
+                //try nl.parse.validateIndexes(bytes[start..].len, start, end);
                 rsn.AKM_SUITE_COUNT = @bitCast(bytes[start..end][0..2].*);
                 if (rsn.AKM_SUITE_COUNT.? > 0) {
-                    const slice_end = end + (@sizeOf(Suite) * rsn.AKM_SUITE_COUNT.?);
+                    //const slice_end = end + (@sizeOf(Suite) * rsn.AKM_SUITE_COUNT.?);
+                    const slice_end = end + try math.mul(usize, @sizeOf(Suite), rsn.AKM_SUITE_COUNT.?);
                     while (end < slice_end) {
                         start = end;
                         end += @sizeOf(Suite);
+                        //try nl.parse.validateIndexes(bytes[start..].len, start, end);
                         try nl.parse.setOptFromBytes(
-                            alloc, 
-                            ?[]const Suite, 
-                            &rsn.AKM_SUITES, 
+                            alloc,
+                            ?[]const Suite,
+                            &rsn.AKM_SUITES,
                             bytes[start..end],
                         );
                     }
@@ -258,19 +286,24 @@ pub const InformationElements = struct {
                 errdefer nl.parse.freeOptBytes(alloc, ?[]const Suite, rsn.AKM_SUITES);
                 start = end;
                 end += 2;
-                if (end > bytes.len) break :opts;
-
+                if (end > bytes.len) //
+                    break :opts;
+                // Capabilities
+                //try nl.parse.validateIndexes(bytes[start..].len, start, end);
                 rsn.CAPABILITIES = @bitCast(bytes[start..end][0..2].*);
                 start = end;
                 end += 2;
-                if (end > bytes.len) break :opts;
-
+                if (end > bytes.len) //
+                    break :opts;
+                // PMKID Count
                 rsn.PMKID_COUNT = @bitCast(bytes[start..end][0..2].*);
                 if (rsn.PMKID_COUNT.? > 0) {
-                    const slice_end = end + (@sizeOf(Suite) * rsn.PMKID_COUNT.?);
+                    //const slice_end = end + (@sizeOf(Suite) * rsn.PMKID_COUNT.?);
+                    const slice_end = end + try math.mul(usize, @sizeOf(Suite), rsn.PMKID_COUNT.?);
                     while (end < slice_end) {
                         start = end;
                         end += @sizeOf(Suite);
+                        //try nl.parse.validateIndexes(bytes[start..].len, start, end);
                         try nl.parse.setOptFromBytes(
                             alloc, 
                             ?[]const [16]u8, 
@@ -280,10 +313,12 @@ pub const InformationElements = struct {
                     }
                     errdefer nl.parse.freeOptBytes(alloc, ?[]const Suite, rsn.PMKID_LIST);
                 }
-                if (end > bytes.len) break :opts;
-
+                if (end > bytes.len) //
+                    break :opts;
+                // Group Management Cipher Suite
                 start = end;
                 end += @sizeOf(Suite);
+                //try nl.parse.validateIndexes(bytes[start..].len, start, end);
                 if (bytes.len - start < end - start)
                     return error.MalformedRSN;
                 rsn.GROUP_MANAGEMENT_CIPHER_SUITE = @bitCast(bytes[start..end][0..4].*);
@@ -395,25 +430,6 @@ pub const InformationElements = struct {
                 WPA3_EAP = 0x0D,
             };
         };
-
-        /// Version of the RSN (typically 1 for WPA2)
-        VERSION: u16,
-        /// Group Cipher Suite
-        GROUP_CIPHER_SUITE: Suite,
-        /// Pairwise Cipher Suite Count
-        PAIRWISE_CIPHER_COUNT: ?u16 = null,
-        /// Pairwise Cipher Suite(s)
-        PAIRWISE_CIPHER_SUITES: ?[]const Suite = null,
-        /// AKM Suite Count
-        AKM_SUITE_COUNT: ?u16 = null,
-        /// AKM Suite(s)
-        AKM_SUITES: ?[]const Suite = null,
-        /// RSN Capabilities
-        CAPABILITIES: ?u16 = null,
-        /// Optional fields for WPA3 and beyond
-        PMKID_COUNT: ?u16 = null,
-        PMKID_LIST: ?[]const [16]u8 = null,
-        GROUP_MANAGEMENT_CIPHER_SUITE: ?Suite = null,
     };
 
     pub const OperatingClass = enum(u8) {

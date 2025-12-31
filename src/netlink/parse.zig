@@ -4,7 +4,7 @@ const enums = std.enums;
 const fmt = std.fmt;
 const heap = std.heap;
 const io = std.io;
-const log = std.log.scoped(.netlink);
+const log = std.log.scoped(.nl_parse);
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
@@ -42,6 +42,8 @@ pub fn handleAckBuf(msg_buf: []const u8) !void {
             .NETUNREACH => return error.NETUNREACH,
             .INPROGRESS => return error.INPROGRESS,
             .NODEV => return error.NODEV,
+            .NOENT => return error.NOENT,
+            .NETDOWN => return error.NETDOWN,
             else => |err| {
                 log.err("OS Error: ({d}) {s}", .{ nl_err.err, @tagName(err) });
                 return error.OSError;

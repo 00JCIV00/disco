@@ -34,13 +34,18 @@ pub fn build(b: *std.Build) void {
         break :exeName std.fmt.allocPrint(b.allocator, "disco_{s}-{s}", .{ @tagName(os_tag), @tagName(cpu_arch) }) catch @panic("OOM or Fmt");
     };
     defer b.allocator.free(exe_name);
+    const sanitize_thread: bool = sanThread: {
+        if (optimize != .Debug) //
+            break :sanThread false;
+        if (target.query.cpu_arch) |cpu_arch| //
+            break :sanThread cpu_arch != .arm;
+        break :sanThread true;
+    };
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
-        .target = //
-            if (optimize == .Debug) target //
-            else target,
+        .target = target,
         .optimize = optimize,
-        .sanitize_thread = if (optimize == .Debug) true else null,
+        .sanitize_thread = sanitize_thread,
         //.sanitize_thread = true,
         //.strip = false,
         //.omit_frame_pointer = false,
