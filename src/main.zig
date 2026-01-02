@@ -699,9 +699,9 @@ pub fn main() !void {
         return;
         //posix.exit(0);
     }
-    defer cleanUp(0);
 
     // Single Use
+    defer cleanUp(0);
     const list_interfaces: core.Core.RunCondition = .{ .list_interfaces = .{} };
     // - Set
     if (main_cmd.matchSubCmd("set")) |set_cmd| {

@@ -17,6 +17,7 @@ pub const Header = extern struct {
 };
 
 /// RadioTap Defined Fields
+/// These values serve as bitshift masks to be applied to `Header.it_present`.
 pub const DefinedFields = enum(u8) {
     TSFT = 0,
     Flags = 1,
@@ -46,9 +47,45 @@ pub const DefinedFields = enum(u8) {
     TLVFields = 28,
     RadiotapNamespace = 29,
     VendorNamespace = 30,
+    EXT = 31,
     S1G = 32,
     USIG = 33,
     EHT = 34,
+};
+
+/// RadioTap Data Fields
+pub const Data = struct {
+    TSFT: ?TSFT = null,
+    Flags: ?Flags = null,
+    Rate: ?Rate = null,
+    Channel: ?Channel = null,
+    FHSS: ?FHSS = null,
+    AntSignal: ?i8 = null,
+    AntNoise: ?i8 = null,
+    LockQuality: ?u16 = null,
+    TxAttenuation: ?u16 = null,
+    TxAttenuation_dB: ?u16 = null,
+    TxPower_dB: ?u16 = null,
+    Ant: ?u8 = null,
+    AntSignal_dB: ?u8 = null,
+    AntNoise_dB: ?u8 = null,
+    RxFlags: ?u16 = null,
+    TxFlags: ?u16 = null,
+    MCS: ?MCS = null,
+    AMPDUStatus: ?AMPDU = null,
+    VHT: ?VHT = null,
+    Timestamp: ?Timestamp = null,
+    HE: ?HE = null,
+    HEMU: ?HEMU = null,
+    HEMUOtherUser: ?HEMUOtherUser = null,
+    PSDU0Length: ?u8 = null,
+    LSIG: ?LSIG = null,
+    TLVFields: ?TLVFields = null,
+    //RadiotapNamespace: ?RadiotapNamespace = null,
+    VendorNamespace: ?VendorNamespace = null,
+    S1G: ?S1G = null,
+    USIG: ?USIG = null,
+    EHT: ?EHT = null,
 };
 
 /// Time Synchronization Function Timer
@@ -80,7 +117,7 @@ pub const Rate = extern struct {
 };
 
 /// Channel
-pub const Channel = struct {
+pub const Channel = extern struct {
     /// Frequency in MHz
     freq: u16 align(2),
     /// Flags
@@ -150,17 +187,17 @@ pub const Ant = extern struct {
 };
 
 /// Antenna Signal dB
-pub const AntSignal_dB = struct {
+pub const AntSignal_dB = extern struct {
     power: u8,
 };
 
 /// Antenna Noise dB
-pub const AntNoise_dB = struct {
+pub const AntNoise_dB = extern struct {
     power: u8,
 };
 
 /// Rx Flags
-pub const RxFlags = struct {
+pub const RxFlags = extern struct {
     flags: u16 align(2),
 
     pub const Mask = enum(u16) {
@@ -171,7 +208,7 @@ pub const RxFlags = struct {
 };
 
 /// Tx Flags
-pub const TxFlags = struct {
+pub const TxFlags = extern struct {
     flags: u16 align(2),
 
     pub const Mask = enum(u16) {
@@ -185,7 +222,7 @@ pub const TxFlags = struct {
 };
 
 /// Modulation & Coding Schemes
-pub const MCS = struct {
+pub const MCS = extern struct {
     /// Known Information
     known: u8 align(1),
     /// Flags
@@ -218,7 +255,7 @@ pub const MCS = struct {
 };
 
 /// A-MPDU
-pub const AMPDU = struct {
+pub const AMPDU = extern struct {
     ref_num: u32 align(4),
     flags: u16 align(2),
     delim_crc: u8 align(1),
@@ -239,7 +276,7 @@ pub const AMPDU = struct {
 };
 
 /// Very High Throughput
-pub const VHT = struct {
+pub const VHT = extern struct {
     known: u16 align(2),
     flags: u8 align(1),
     bandwidth: u8 align(1),
@@ -274,7 +311,7 @@ pub const VHT = struct {
 };
 
 /// Timestamp
-pub const Timestamp = struct {
+pub const Timestamp = extern struct {
     timestamp: u64 align(8),
     accuracy: u16 align(2),
     unit_position: u8 align(1),
@@ -289,7 +326,7 @@ pub const Timestamp = struct {
 };
 
 /// High Efficiency (802.11ax) information
-pub const HE = struct {
+pub const HE = extern struct {
     /// HE Data 1
     data1: u16 align(2),
     /// HE Data 2
@@ -432,7 +469,7 @@ pub const HE = struct {
 };
 
 /// HE-MU common information
-pub const HEMU = struct {
+pub const HEMU = extern struct {
     /// Flags 1
     flags1: u16 align(2),
     /// Flags 2
@@ -492,7 +529,7 @@ pub const HEMU = struct {
 };
 
 /// HE-MU per-user information for additional users
-pub const HEMUOtherUser = struct {
+pub const HEMUOtherUser = extern struct {
     /// HE-SIG-B user field bits 0–14
     per_user_1: u16 align(2),
     /// HE-SIG-B user field bits 15–20
@@ -537,7 +574,7 @@ pub const HEMUOtherUser = struct {
 };
 
 /// 0-length PSDU indicator
-pub const PSDU0Length = struct {
+pub const PSDU0Length = extern struct {
     /// Type of PPDU without PSDU
     typ: u8 align(1),
 
@@ -553,7 +590,7 @@ pub const PSDU0Length = struct {
 };
 
 /// Legacy L-SIG contents
-pub const LSIG = struct {
+pub const LSIG = extern struct {
     /// Known bits for rate/length
     data1: u16 align(2),
     /// Encoded rate and length
@@ -578,14 +615,14 @@ pub const LSIG = struct {
 
 /// TLV-based radiotap fields (bit 28)
 /// Represents a single TLV item within the TLV field.
-pub const TLVFields = struct {
+pub const TLVFields = extern struct {
     /// TLV type (radiotap field number or special)
     typ: u16 align(2),
     /// Length of the following value in bytes
     length: u16 align(2),
 
     /// Header for a vendor TLV (type 30 inside TLVs)
-    pub const VendorHeader = struct {
+    pub const VendorHeader = extern struct {
         /// Organizationally Unique Identifier
         oui: [3]u8 align(1),
         /// Vendor-specific subtype
@@ -599,10 +636,10 @@ pub const TLVFields = struct {
 
 /// Radiotap namespace reset (bit 29)
 /// No payload; presence resets to the default radiotap namespace.
-pub const RadiotapNamespace = struct {};
+pub const RadiotapNamespace = extern struct {};
 
 /// Vendor namespace selector (bit 30)
-pub const VendorNamespace = struct {
+pub const VendorNamespace = extern struct {
     /// Vendor OUI
     oui: [3]u8 align(1),
     /// Vendor-specific sub-namespace selector
@@ -612,7 +649,7 @@ pub const VendorNamespace = struct {
 };
 
 /// Sub-1 GHz (S1G) PHY information (TLV type 32)
-pub const S1G = struct {
+pub const S1G = extern struct {
     /// Which S1G parameters are known
     known: u16 align(2),
     /// S1G parameter word 1
@@ -663,7 +700,7 @@ pub const S1G = struct {
 };
 
 /// U-SIG contents (EHT / 11be)
-pub const USIG = struct {
+pub const USIG = extern struct {
     /// Common part of U-SIG
     common: u32 align(4),
     /// Value bits
@@ -673,7 +710,7 @@ pub const USIG = struct {
 };
 
 /// Extremely High Throughput (EHT / 802.11be) information
-pub const EHT = struct {
+pub const EHT = extern struct {
     /// Which EHT fields are known
     known: u32 align(4),
     /// EHT data words 0–8
