@@ -14,6 +14,7 @@ const posix = std.posix;
 const ArrayList = std.ArrayListUnmanaged;
 const AutoHashMap = std.AutoHashMapUnmanaged;
 const Io = std.Io;
+const MultiArrayList = std.MultiArrayList;
 const StringHashMap = std.StringHashMapUnmanaged;
 const Thread = std.Thread;
 
@@ -109,15 +110,15 @@ pub fn SliceFormatter(T: type, comptime fmt_str: []const u8) type {
 /// Thread Safe ArrayList
 pub fn ThreadArrayList(T: type) type {
     return struct {
-        /// List Type
-        pub const ListT: type = ArrayList(T);
-        /// Empty Thread Safe ArrayList
-        pub const empty: @This() = .{};
-
         /// Mutex Lock
         mutex: Thread.Mutex = .{},
         /// ArrayList
         list: ListT = .empty,
+
+        /// List Type
+        pub const ListT: type = ArrayList(T);
+        /// Empty Thread Safe ArrayList
+        pub const empty: @This() = .{};
 
         /// List Items
         /// Caller must unlock when finished with `list.mutex.unlock()`.
@@ -159,9 +160,14 @@ pub fn ThreadArrayList(T: type) type {
 /// Thread Safe HashMap
 pub fn ThreadHashMap(K: type, V: type) type {
     return struct {
+        /// Mutex Lock
+        mutex: std.Thread.Mutex = .{},
+        /// Hash Map
+        map: MapT = .empty,
+
         /// Map Type
-        pub const MapT: type =
-            if (K == []const u8) StringHashMap(V)
+        pub const MapT: type = //
+            if (K == []const u8) StringHashMap(V) //
             else AutoHashMap(K, V);
 
         /// Iterator
@@ -182,11 +188,6 @@ pub fn ThreadHashMap(K: type, V: type) type {
 
         /// Empty Thread Safe HashMap
         pub const empty: @This() = .{};
-
-        /// Mutex Lock
-        mutex: std.Thread.Mutex = .{},
-        /// Hash Map
-        map: MapT = .empty,
 
         /// Deinitialize this ThreadHashMap
         pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
@@ -269,6 +270,58 @@ pub fn ThreadHashMap(K: type, V: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
             return self.map.remove(key);
+        }
+    };
+}
+
+/// Thread Safe MultiArrayList
+/// Intended for use with Structs, not Tagged Unions.
+pub fn ThreadMultiArrayList(T: type) type {
+    return struct {
+        /// Mutex Lock
+        mutex: Thread.Mutex = .{},
+        /// ArrayList
+        mal: ListT = .empty,
+
+        /// List Type
+        pub const ListT: type = MultiArrayList(T);
+        /// Empty Thread Safe ArrayList
+        pub const empty: @This() = .{};
+
+        /// Deinitialize this ThreadMultiArrayList
+        pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.mal.deinit(alloc);
+        }
+
+        /// Append
+        pub fn append(self: *@This(), alloc: mem.Allocator, item: T) mem.Allocator.Error!void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            try self.mal.append(alloc, item);
+        }
+
+        /// Set
+        pub fn set(self: *@This(), index: usize, item: T) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            try self.mal.set(index, item);
+        }
+
+        /// Get the first matching Item's Index
+        /// Use `lock` to set the mutex lock during the operation.
+        pub fn getIndex(self: *@This(), comptime field: ListT.Field, match: @FieldType(T, @tagName(field)), lock: bool) ?usize {
+            if (lock) //
+                self.mutex.lock();
+            defer if (lock) //
+                self.mutex.unlock();
+            const items = self.mal.items(field);
+            for (items, 0..) |item, idx| {
+                if (meta.eql(item, match)) //
+                    return idx;
+            }
+            return null;
         }
     };
 }

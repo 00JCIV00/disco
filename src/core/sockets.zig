@@ -136,7 +136,8 @@ pub const Parser = struct {
 
     /// Satisfy the `Io.Writer` Interface.
     fn ioDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
-        if (data.len == 0) return 0;
+        if (data.len == 0) //
+            return 0;
         const parser: *@This() = @alignCast(@fieldParentPtr("io_writer", self));
         //log.debug("Writing {d} Frames", .{ data.len });
         var n: usize = 0;
@@ -151,7 +152,8 @@ pub const Parser = struct {
             n += bytes.len;
         }
         for (data) |bytes| {
-            if (bytes.len == 0) continue;
+            if (bytes.len == 0) //
+                continue;
             const alloc_bytes = parser.alloc.dupe(u8, bytes) catch @panic("OOM");
             switch (parser.ctx.mode) {
                 .managed => parser.eth_list.append(parser.alloc, alloc_bytes) catch @panic("OOM"),
@@ -172,6 +174,7 @@ pub const Parser = struct {
         //    },
         //);
         self.end = 0;
+
         return n;
     }
 };
@@ -299,7 +302,8 @@ pub const Loop = struct {
     pub fn stop(self: *@This(), de_alloc: ?mem.Allocator) void {
         self._active.store(false, .monotonic);
         self._thread.join();
-        if (de_alloc) |alloc| self.deinit(alloc);
+        if (de_alloc) |alloc| //
+            self.deinit(alloc);
     }
 
     /// Update this Socket Loop

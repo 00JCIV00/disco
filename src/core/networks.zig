@@ -46,7 +46,7 @@ pub const Network = struct {
     freq: u32,
     //beacon_interval: ?u16 = null,
     //bss_tsf: ?u64 = null,
-    net_meta: *ThreadHashMap([6]u8, Meta),
+    net_meta: *ThreadHashMap([6]u8, core.devices.Meta),
     bss: nl._80211.BasicServiceSet,
 
     /// ID of a Network
@@ -93,12 +93,10 @@ pub const Network = struct {
         auth: wifi.AuthType,
         channel: u32,
         freq: u32,
-        net_meta: []const Meta,
+        net_meta: []const core.devices.Meta,
 
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
             alloc.free(self.ssid);
-            for (self.net_meta) |nm| //
-                nm.deinit(alloc);
             alloc.free(self.net_meta);
         }
 
@@ -111,11 +109,11 @@ pub const Network = struct {
                 .channel = from_net.channel,
                 .freq = from_net.freq,
                 .net_meta = netMeta: {
-                    var nm_list: ArrayList(Meta) = .empty;
+                    var nm_list: ArrayList(core.devices.Meta) = .empty;
                     var nm_iter = from_net.net_meta.iterator();
                     defer nm_iter.unlock();
                     while (nm_iter.next()) |nm_entry| //
-                        nm_list.append(alloc, nm_entry.value_ptr.clone(alloc)) catch @panic("OOM");
+                        nm_list.append(alloc, nm_entry.value_ptr.*) catch @panic("OOM");
                     break :netMeta nm_list.toOwnedSlice(alloc) catch @panic("OOM");
                 },
             };
@@ -130,62 +128,8 @@ pub const Network = struct {
         }
     };
 
-    /// Meta Information about how a Network was Seen
-    pub const Meta = struct {
-        seen_by: []const u8,
-        last_seen: zeit.Instant,
-        rssi: i32,
-        frame_nums: []const usize = &.{},
-
-        pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
-            alloc.free(self.seen_by);
-            if (self.frame_nums.len > 0)
-                alloc.free(self.frame_nums);
-        }
-
-        pub fn clone(self: *const @This(), alloc: mem.Allocator) @This() {
-            return .{
-                .seen_by = alloc.dupe(u8, self.seen_by) catch @panic("OOM"),
-                .last_seen = self.last_seen,
-                .rssi = self.rssi,
-                .frame_nums = alloc.dupe(usize, self.frame_nums) catch @panic("OOM"),
-            };
-        }
-
-        pub fn calcRxQual(self: *const @This()) usize {
-            if (self.frame_nums.len < 2) //
-                return 0;
-            const first = self.frame_nums[0];
-            const last = self.frame_nums[self.frame_nums.len - 1];
-            const total: f128 = @floatFromInt(last - first);
-            return @intFromFloat(@divFloor(@as(f128, @floatFromInt(self.frame_nums.len)), total) * 100);
-        }
-
-        pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-            var last_ts_buf: [50]u8 = undefined;
-            const last_ts = self.last_seen.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
-            try writer.print(
-                \\- {s}Seen By{s}:   {s}
-                \\- {s}RSSI{s}:      {f}{s} dBm
-                \\- {s}Rx Qual{s}:   {d}
-                \\- {s}Last Seen{s}: {s}
-                \\
-                , .{
-                    ansi.fmt.underline, ansi.reset, self.seen_by,
-                    ansi.fmt.underline, ansi.reset, RSSI{ .strength = self.rssi }, ansi.reset,
-                    ansi.fmt.underline, ansi.reset, self.calcRxQual(),
-                    ansi.fmt.underline, ansi.reset, last_ts,
-                },
-            );
-        }
-    };
-
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
         alloc.free(self.ssid);
-        var meta_iter = self.net_meta.iterator();
-        while (meta_iter.next()) |meta_entry| //
-            meta_entry.value_ptr.deinit(alloc);
-        self.net_meta.mutex.unlock();
         self.net_meta.deinit(alloc);
         nl.parse.freeBytes(alloc, nl._80211.BasicServiceSet, self.bss);
         alloc.destroy(self.net_meta);
@@ -600,30 +544,20 @@ pub const Context = struct {
                                                     const ssid = core_ctx.alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]") catch @panic("OOM");
                                                     defer if (!valid) //
                                                         core_ctx.alloc.free(ssid);
-                                                    const if_name = core_ctx.alloc.dupe(u8, scan_if.name) catch @panic("OOM");
-                                                    defer if (!valid) //
-                                                        core_ctx.alloc.free(if_name);
-                                                    const net_meta: Network.Meta = .{
-                                                        .seen_by = if_name,
+                                                    const net_meta: core.devices.Meta = .{
+                                                        .if_mac = scan_if.og_mac,
+                                                        .mac = bss.BSSID,
                                                         .last_seen = try zeit.instant(.{}),
                                                         .rssi = @divFloor(bss.SIGNAL_MBM orelse continue, 100),
                                                     };
-                                                    var net_meta_map: *ThreadHashMap([6]u8, Network.Meta) = netMetaMap: {
+                                                    var net_meta_map: *ThreadHashMap([6]u8, core.devices.Meta) = netMetaMap: {
                                                         const entry = old_network_entry orelse {
-                                                            const new_meta_map = core_ctx.alloc.create(ThreadHashMap([6]u8, Network.Meta)) catch @panic("OOM");
+                                                            const new_meta_map = core_ctx.alloc.create(ThreadHashMap([6]u8, core.devices.Meta)) catch @panic("OOM");
                                                             new_meta_map.* = .empty;
                                                             break :netMetaMap new_meta_map;
                                                         };
                                                         break :netMetaMap entry.value_ptr.net_meta;
                                                     };
-                                                    {
-                                                        const old_meta_entry = net_meta_map.getEntry(scan_if.og_mac);
-                                                        defer net_meta_map.mutex.unlock();
-                                                        if (old_meta_entry) |entry| {
-                                                            const old_meta = entry.value_ptr;
-                                                            old_meta.deinit(core_ctx.alloc);
-                                                        }
-                                                    }
                                                     net_meta_map.put(core_ctx.alloc, scan_if.og_mac, net_meta) catch @panic("OOM");
                                                     const new_network: Network = .{
                                                         .bssid = bss.BSSID,

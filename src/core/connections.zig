@@ -233,15 +233,19 @@ pub const Context = struct {
                 const check_if = check_if_entry.value_ptr;
                 switch (check_if.usage) {
                     .connect => |conn| {
-                        if (mem.eql(u8, conn.bssid[0..], candidate.bssid[0..])) continue :connLoop;
+                        if (mem.eql(u8, conn.bssid[0..], candidate.bssid[0..])) //
+                            continue :connLoop;
                     },
                     else => {},
                 }
             }
-            if (conn_if.usage != .active) continue;
+            if (conn_if.usage != .active) //
+                continue;
             for (statuses) |status| {
-                if (!mem.eql(u8, candidate.bssid[0..], status.bssid[0..])) continue;
-                if (status.ended) |_| continue :connLoop;
+                if (!mem.eql(u8, candidate.bssid[0..], status.bssid[0..])) //
+                    continue;
+                if (status.ended) |_| //
+                    continue :connLoop;
             }
             //log.debug("Found Viable Connection: '{s}' | '{s}'", .{ candidate.network, conn_if.name });
             conn_if.usage = .{ .connect = try .start(core_ctx, candidate) };
@@ -284,14 +288,21 @@ pub const Context = struct {
             };
             var net_meta_iter = network.net_meta.iterator();
             defer network.net_meta.mutex.unlock();
+            core_ctx.if_ctx.interfaces.mutex.lock();
+            defer core_ctx.if_ctx.interfaces.mutex.unlock();
             while (net_meta_iter.next()) |net_meta_entry| {
                 const net_meta = net_meta_entry.value_ptr;
                 checkIF: {
                     if (config.if_names.len == 0) //
                         break :checkIF;
                     for (config.if_names) |if_name| {
-                        if (mem.eql(u8, net_meta.seen_by, if_name)) //
-                            break :checkIF;
+                        var if_iter = core_ctx.if_ctx.interfaces.map.valueIterator();
+                        while (if_iter.next()) |check_if| {
+                            if (!mem.eql(u8, check_if.name, if_name)) //
+                                continue;
+                            if (mem.eql(u8, net_meta.if_mac[0..], check_if.og_mac[0..])) //
+                                break :checkIF;
+                        }
                     }
                     continue;
                 }
@@ -308,10 +319,12 @@ pub const Context = struct {
                     break :timeScore @intFromFloat(@min(diff * 0.5, 50));
                 };
                 //log.debug("- Time Score: {d}", .{ time_score });
-                if (time_score == 0) continue;
+                if (time_score == 0) //
+                    continue;
                 const sig_score: u8 = sigScore: {
                     const rxq = net_meta.calcRxQual();
-                    if (rxq > 0) break :sigScore @intFromFloat(@as(f16, @floatFromInt(rxq)) * 0.5);
+                    if (rxq > 0) //
+                        break :sigScore @intFromFloat(@as(f16, @floatFromInt(rxq)) * 0.5);
                     //log.debug("- RSSI: {d} dBm", .{ net_meta.rssi });
                     break :sigScore @intFromFloat(@as(f16, @floatFromInt(100 +| net_meta.rssi)) * 0.25);
                 };

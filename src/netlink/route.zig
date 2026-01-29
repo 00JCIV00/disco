@@ -1092,8 +1092,8 @@ pub fn handleIFAddrsSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const
 
 /// Request that the provided Interface (`if_index`) be Set to the Up or Down State (`state`).
 pub fn requestSetState(
-    alloc: mem.Allocator, 
-    req_ctx: *nl.io.RequestContext, 
+    alloc: mem.Allocator,
+    req_ctx: *nl.io.RequestContext,
     if_index: i32,
     state: u32,
 ) !void {
