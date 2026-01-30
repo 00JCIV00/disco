@@ -87,7 +87,7 @@ pub const IE = enum(u8) {
     /// HT Capabilities
     HT_CAPABILITIES = 44,
     /// HT Operation
-    HT_OPERATION = 45,
+    HT_OPERATION = 61,
     /// Secondary Channel Offset
     SECONDARY_CHANNEL_OFFSET = 46,
     /// Robust Security Network (RSN) Information
@@ -97,9 +97,9 @@ pub const IE = enum(u8) {
     /// Supported Operating Classes
     SUPPORTED_OPER_CLASSES = 59,
     /// Mesh Configuration
-    MESH_CONFIGURATION = 60,
+    MESH_CONFIGURATION = 113,
     /// Mesh ID
-    MESH_ID = 61,
+    MESH_ID = 114,
     /// Multi-band
     MULTI_BAND = 70,
     /// Extended Capabilities
