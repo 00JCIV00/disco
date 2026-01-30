@@ -280,7 +280,7 @@ pub fn ThreadMultiArrayList(T: type) type {
     return struct {
         /// Mutex Lock
         mutex: Thread.Mutex = .{},
-        /// ArrayList
+        /// MultiArrayList
         mal: ListT = .empty,
 
         /// List Type
@@ -311,7 +311,12 @@ pub fn ThreadMultiArrayList(T: type) type {
 
         /// Get the first matching Item's Index
         /// Use `lock` to set the mutex lock during the operation.
-        pub fn getIndex(self: *@This(), comptime field: ListT.Field, match: @FieldType(T, @tagName(field)), lock: bool) ?usize {
+        pub fn getIndex(
+            self: *@This(),
+            comptime field: ListT.Field,
+            match: @FieldType(T, @tagName(field)),
+            lock: bool,
+        ) ?usize {
             if (lock) //
                 self.mutex.lock();
             defer if (lock) //
@@ -322,6 +327,119 @@ pub fn ThreadMultiArrayList(T: type) type {
                     return idx;
             }
             return null;
+        }
+    };
+}
+
+/// Thread Safe MultiArrayList with an index HashMap
+/// The key must be derivable from the item and remain stable for the lifetime of the entry.
+pub fn ThreadHashMAL(K: type, V: type, key_fn: fn (V) K) type {
+    return struct {
+        /// Mutex Lock
+        mutex: Thread.Mutex = .{},
+        /// MultiArrayList
+        mal: ListT = .empty,
+        /// Index map for key -> index
+        index_map: MapT = .empty,
+        /// Tombstone flags aligned to MAL indices (false = live, true = removed)
+        tombstones: ArrayList(bool) = .empty,
+
+        /// List Type
+        pub const ListT: type = MultiArrayList(V);
+        /// Map Type
+        pub const MapT: type = //
+            if (K == []const u8) StringHashMap(usize) //
+            else AutoHashMap(K, usize);
+        /// Empty Thread Safe MultiArrayList w/ Index HashMap
+        pub const empty: @This() = .{};
+
+        /// Deinitialize this ThreadHashMAL
+        pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.mal.deinit(alloc);
+            self.index_map.deinit(alloc);
+            self.tombstones.deinit(alloc);
+        }
+
+        /// Ensure capacity for `additional_count` items.
+        pub fn ensureUnusedCapacity(self: *@This(), alloc: mem.Allocator, additional_count: usize) !void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            try self.mal.ensureUnusedCapacity(alloc, additional_count);
+            try self.tombstones.ensureUnusedCapacity(alloc, additional_count);
+            try self.index_map.ensureUnusedCapacity(alloc, additional_count);
+        }
+
+        /// Append
+        pub fn append(self: *@This(), alloc: mem.Allocator, item: V) mem.Allocator.Error!void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            try self.mal.ensureUnusedCapacity(alloc, 1);
+            try self.tombstones.ensureUnusedCapacity(alloc, 1);
+            try self.index_map.ensureUnusedCapacity(alloc, 1);
+            const idx = self.mal.len;
+            try self.mal.append(alloc, item);
+            errdefer self.mal.shrinkRetainingCapacity(idx);
+            try self.tombstones.append(alloc, false);
+            errdefer self.tombstones.shrinkRetainingCapacity(idx);
+            const key = key_fn(item);
+            try self.index_map.put(alloc, key, idx);
+        }
+
+        /// Get the first matching Item's Index.
+        /// Use `lock` to set the mutex lock during the operation.
+        pub fn getIndex(self: *@This(), key: K, lock: bool) ?usize {
+            if (lock) //
+                self.mutex.lock();
+            defer if (lock) //
+                self.mutex.unlock();
+            return self.index_map.get(key);
+        }
+
+        /// Get
+        pub fn get(self: *@This(), key: K) ?V {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            const idx = self.getIndex(key);
+            return self.mal.slice().get(idx);
+        }
+
+        /// Get the `field` corresponding to the provided `key`.
+        pub fn getField(self: *@This(), key: K, comptime field: ListT.Field) ?@FieldType(V, field) {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            const idx = self.getIndex(key);
+            return self.mal.items(field).get(idx);
+        }
+
+        /// Set
+        /// NOTE: The key derived from `item` must match the existing key at `index`.
+        pub fn set(self: *@This(), index: usize, item: V) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.mal.set(index, item);
+        }
+
+        /// Remove an item by `key` and mark the slot as a tombstone.
+        pub fn remove(self: *@This(), key: K) bool {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            const kv = self.index_map.fetchRemove(key) orelse return false;
+            if (kv.value < self.tombstones.items.len) //
+                self.tombstones.items[kv.value] = true;
+            return true;
+        }
+
+        /// Check whether the `index` is live (not tombstoned).
+        pub fn isLive(self: *@This(), index: usize, lock: bool) bool {
+            if (lock) //
+                self.mutex.lock();
+            defer if (lock) //
+                self.mutex.unlock();
+            if (index >= self.tombstones.items.len) //
+                return false;
+            return self.tombstones.items[index] == false;
         }
     };
 }
