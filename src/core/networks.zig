@@ -44,8 +44,6 @@ pub const Network = struct {
     auth: wifi.AuthType,
     channel: u32,
     freq: u32,
-    //beacon_interval: ?u16 = null,
-    //bss_tsf: ?u64 = null,
     net_meta: *ThreadHashMap([6]u8, core.devices.Meta),
     bss: nl._80211.BasicServiceSet,
 
