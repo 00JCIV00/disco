@@ -1,4 +1,4 @@
-//! Device Tracking
+//! Frame Parsing
 
 const builtin = @import("builtin");
 const std = @import("std");
@@ -7,7 +7,7 @@ const enums = std.enums;
 const fmt = std.fmt;
 const heap = std.heap;
 const linux = std.os.linux;
-const log = std.log.scoped(.devices);
+const log = std.log.scoped(.frames);
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
@@ -28,6 +28,7 @@ const ies = netdata.l2.information_elements;
 const wifi = netdata.l2.wifi;
 const radiotap = wifi.radiotap;
 const core = @import("../core.zig");
+const networks = @import("networks.zig");
 const nl = @import("../netlink.zig");
 const proto = @import("../protocols.zig");
 const wpa = proto.wpa;
@@ -38,214 +39,26 @@ const ThreadHashMap = utils.ThreadHashMap;
 const ThreadMAL = utils.ThreadMultiArrayList;
 const ThreadHashMAL = utils.ThreadHashMAL;
 
-/// WiFi Device
-pub const Device = struct {
-    mac: [6]u8,
-    kind: Kind,
-    channel: chs.Channel,
-    ssid: ?[]const u8 = null,
-    bss: ?nl._80211.BasicServiceSet = null,
+const Device = networks.Device;
+const Meta = networks.Meta;
 
-    pub const Kind = enum(u8) {
-        ap,
-        sta,
-        mesh,
-    };
-
-    /// Extracts the SSID or Mesh ID of this Device.
-    /// This will always return `null` for Stations.
-    pub fn id(self: @This()) ?[]const u8 {
-        return switch (self.kind) {
-            .ap => ssid: {
-                const bss = self.bss orelse break :ssid null;
-                const dev_ies = bss.INFORMATION_ELEMENTS orelse break :ssid null;
-                const ssid = dev_ies.SSID orelse break :ssid null;
-                if (ssid.len > 0 and !mem.eql(u8, ssid, &.{ 0 })) //
-                    break :ssid ssid;
-                break :ssid null;
-            },
-            .mesh => meshID: {
-                const bss = self.bss orelse break :meshID null;
-                const dev_ies = bss.INFORMATION_ELEMENTS orelse break :meshID null;
-                break :meshID dev_ies.MESH_ID;
-            },
-            else => null,
-        };
-    }
-
-    /// Format
-    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        try formatGen(self, writer, false);
-    }
-    /// Format w/ ANSI
-    pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        try formatGen(self, writer, true);
-    }
-    /// Generate a Format Method
-    fn formatGen(
-        self: @This(),
-        writer: *Io.Writer,
-        use_ansi: bool,
-    ) Io.Writer.Error!void {
-        // Setup Writer
-        var filter_writer: ansi.FilterWriter = .init(writer);
-        const w: *Io.Writer = //
-            if (use_ansi) writer //
-            else &filter_writer.io_writer;
-        // ANSI Resets
-        try w.print("{s}", .{ ansi.reset });
-        defer w.print("{s}", .{ ansi.reset }) catch {};
-        // Format
-        switch (self.kind) {
-            .ap => {
-                const security_info: ?wifi.SecurityInfo = sec: {
-                    const bss = self.bss orelse break :sec null;
-                    break :sec bss.getSecurityInfo() catch break :sec null;
-                };
-                try w.print(
-                    \\{s}{s}{s}
-                    \\- {s}BSSID{s}:    {f} ({s})
-                    \\- {s}Channel{s}:  {f}
-                    \\
-                    , .{
-                        ansi.fmt.bold, self.id() orelse "[HIDDEN NETWORK] (DisCo)", ansi.reset,
-                        ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "[UNKNOWN]",
-                        ansi.fmt.underline, ansi.reset, self.channel,
-                    },
-                );
-                if (security_info) |sec| {
-                    try w.print(
-                        \\- {s}Security{s}: {t}
-                        \\- {s}Auth{s}:     {t}
-                        \\
-                        , .{
-                            ansi.fmt.underline, ansi.reset, sec.type,
-                            ansi.fmt.underline, ansi.reset, sec.auth,
-                        },
-                    );
-                }
-            },
-            .sta => {
-                try w.print(
-                    \\{s}Station{s}
-                    \\- {s}MAC{s}:     {f} ({s})
-                    \\- {s}Channel{s}: {f}
-                    \\
-                    , .{
-                        ansi.fmt.bold, ansi.reset,
-                        ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "[UNKNOWN]",
-                        ansi.fmt.underline, ansi.reset, self.channel,
-                    },
-                );
-            },
-            .mesh => {
-                try w.print(
-                    \\{s}{s}{s} (Mesh)
-                    \\- {s}MAC{s}:     {f} ({s})
-                    \\- {s}Channel{s}: {f}
-                    \\
-                    , .{
-                        ansi.fmt.bold, self.id() orelse "[HIDDEN MESH NETWORK] (DisCo", ansi.reset,
-                        ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "[UNKNOWN]",
-                        ansi.fmt.underline, ansi.reset, self.channel,
-                    },
-                );
-            },
-        }
-    }
-
-    pub fn key(dev: @This()) [6]u8 {
-        return dev.mac;
-    }
-};
-
-/// Meta Information about how a Device was Seen
-pub const Meta = struct {
-    if_mac: [6]u8,
-    mac: [6]u8,
-    last_seen: zeit.Instant,
-    rssi: i32,
-    frame_nums: [32]u16 = @splat(0),
-    frame_nums_idx: u8 = 0,
-
-    pub const Key = struct {
-        if_mac: [6]u8,
-        mac: [6]u8,
-    };
-
-    pub fn addSeqNum(self: *@This(), seq_num: u16) void {
-        self.frame_nums[self.frame_nums_idx] = seq_num;
-        self.frame_nums_idx = (self.frame_nums_idx + 1) % 32;
-    }
-
-    pub fn calcRxQual(self: *const @This()) usize {
-        const count: u16 = @truncate(32 - mem.count(u16, self.frame_nums[0..], &.{ 0 }));
-        if (count < 2) //
-            return 0;
-        const oldest_idx: u8 = //
-            if (count < 32) 0 //
-            else self.frame_nums_idx;
-        const newest_idx: u8 = (self.frame_nums_idx + 31) % 32;
-        const oldest = self.frame_nums[oldest_idx];
-        const newest = self.frame_nums[newest_idx];
-        const span: u16 = //
-            if (newest >= oldest) newest - oldest //
-            else (4096 - oldest) + newest;
-        if (span == 0) //
-            return 100;
-        return @intFromFloat(@min(100, @as(f32, @floatFromInt(count)) / @as(f32, @floatFromInt(span)) * 100));
-    }
-
-    pub fn key(dev_meta: @This()) Key {
-        return .{ .if_mac = dev_meta.if_mac, .mac = dev_meta.mac };
-    }
-
-    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        var last_ts_buf: [50]u8 = undefined;
-        const last_ts = self.last_seen.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
-        try writer.print(
-            \\- {s}Interface{s}: {f}
-            \\- {s}Device{s}:    {f}
-            \\- {s}RSSI{s}:      {f}{s} dBm
-            \\- {s}Rx Qual{s}:   {d}%
-            \\- {s}Last Seen{s}: {s}
-            \\
-            , .{
-                ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.if_mac[0..] },
-                ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] },
-                ansi.fmt.underline, ansi.reset, RSSI{ .strength = self.rssi }, ansi.reset,
-                ansi.fmt.underline, ansi.reset, self.calcRxQual(),
-                ansi.fmt.underline, ansi.reset, last_ts,
-            },
-        );
-    }
-};
-
-/// WiFi Devices Context
+/// Frame Parsing Context
 pub const Context = struct {
     /// Frame Arena
     _frame_arena: *heap.ArenaAllocator,
     /// Frame Arena Allocator
     _frame_alloc: mem.Allocator,
-    /// Device MultiArrayList
-    dev_mal: *ThreadHashMAL([6]u8, Device, Device.key),
-    /// Meta MultiArrayList
-    meta_mal: *ThreadHashMAL(Meta.Key, Meta, Meta.key),
     //freqs_seen: *ArrayList(u16),
     //frames_seen: *ArrayList(wifi.Header.FrameType),
     frame_trace_times: *ArrayList(u64),
     ie_trace_times: *ArrayList(u64),
 
-    /// Initialize the Devices Context.
+    /// Initialize the Frames Context.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
         self._frame_arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
         self._frame_arena.* = .init(core_ctx.alloc);
         self._frame_alloc = self._frame_arena.allocator();
-        self.dev_mal = core_ctx.a_alloc.create(ThreadHashMAL([6]u8, Device, Device.key)) catch @panic("OOM");
-        self.dev_mal.* = .empty;
-        self.meta_mal = core_ctx.a_alloc.create(ThreadHashMAL(Meta.Key, Meta, Meta.key)) catch @panic("OOM");
-        self.meta_mal.* = .empty;
         self.frame_trace_times = core_ctx.a_alloc.create(ArrayList(u64)) catch @panic("OOM");
         self.frame_trace_times.* = .empty;
         self.ie_trace_times = core_ctx.a_alloc.create(ArrayList(u64)) catch @panic("OOM");
@@ -253,23 +66,22 @@ pub const Context = struct {
         return self;
     }
 
-    /// Deinitialize the Devices Context
+    /// Deinitialize the Frames Context
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         self._frame_arena.deinit();
         alloc.destroy(self._frame_arena);
-        if (builtin.mode != .Debug or self.dev_mal.mal.len == 0) //
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("frames_ctx", self));
+        if (builtin.mode != .Debug or core_ctx.network_ctx.dev_mal.mal.len == 0) //
             return;
-        self.dev_mal.mutex.lock();
-        self.meta_mal.mutex.lock();
+        core_ctx.network_ctx.dev_mal.mutex.lock();
+        core_ctx.network_ctx.meta_mal.mutex.lock();
         defer {
-            self.dev_mal.mutex.unlock();
-            //self.dev_mal.deinit(alloc);
-            self.meta_mal.mutex.unlock();
-            //self.meta_mal.deinit(alloc);
+            core_ctx.network_ctx.dev_mal.mutex.unlock();
+            core_ctx.network_ctx.meta_mal.mutex.unlock();
         }
         chans: {
             log.debug("Channels Seen:", .{});
-            const chans_seen = self.dev_mal.mal.items(.channel);
+            const chans_seen = core_ctx.network_ctx.dev_mal.mal.items(.channel);
             if (chans_seen.len == 0) {
                 log.debug("- None Seen", .{});
                 break :chans;
@@ -286,7 +98,7 @@ pub const Context = struct {
         }
         devs: {
             log.debug("Devices Seen:", .{});
-            const kinds_seen = self.dev_mal.mal.items(.kind);
+            const kinds_seen = core_ctx.network_ctx.dev_mal.mal.items(.kind);
             if (kinds_seen.len == 0) {
                 log.debug("- None Seen", .{});
                 break :devs;
@@ -327,11 +139,10 @@ pub const Context = struct {
 
     /// Parse Frames for Device Info
     pub fn parseFrames(self_ptr: *anyopaque, frames: []const []const u8, parse_ctx: core.sockets.Parser.Context) !void {
-        //_ = parse_ctx;
         if (frames.len == 0) //
             return;
         var self: *@This() = @ptrCast(@alignCast(self_ptr));
-        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("dev_ctx", self));
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("frames_ctx", self));
         var trace_timer: time.Timer = time.Timer.start() catch @panic("Time Issue");
         _ = self._frame_arena.reset(.retain_capacity);
         frameLoop: for (frames) |frame| {
@@ -392,8 +203,6 @@ pub const Context = struct {
                     }
                 }
             }
-            //if (rt_data.Channel) |ch| //
-            //    self.freqs_seen.append(core_ctx.a_alloc, ch.freq) catch @panic("OOM");
             if (frame_r.seek < rt_hdr.it_len) //
                 frame_r.toss(rt_hdr.it_len - frame_r.seek);
             // Parse 802.11 Header Prefix
@@ -405,7 +214,6 @@ pub const Context = struct {
                 .frame_control = @bitCast(wifi_prefix.frame_control),
                 .duration = wifi_prefix.duration,
             };
-            //self.frames_seen.append(core_ctx.a_alloc, wifi_hdr.frame_control.frame_type) catch @panic("OOM");
             var dev: ?Device = null;
             switch (wifi_hdr.frame_control.frame_type) {
                 .management,
@@ -439,25 +247,23 @@ pub const Context = struct {
                             .if_mac = parse_ctx.if_mac,
                             .mac = device_mac,
                         };
-                        const existing_idx: ?usize = self.meta_mal.getIndex(meta_key, false);
+                        const existing_idx: ?usize = core_ctx.network_ctx.meta_mal.getIndex(meta_key, false);
                         if (existing_idx) |idx| {
-                            new_meta.frame_nums = self.meta_mal.mal.items(.frame_nums)[idx];
-                            new_meta.frame_nums_idx = self.meta_mal.mal.items(.frame_nums_idx)[idx];
+                            new_meta.frame_nums = core_ctx.network_ctx.meta_mal.mal.items(.frame_nums)[idx];
+                            new_meta.frame_nums_idx = core_ctx.network_ctx.meta_mal.mal.items(.frame_nums_idx)[idx];
                         }
                         new_meta.addSeqNum(seq_num);
                         if (existing_idx) |idx| //
-                            self.meta_mal.set(idx, new_meta) //
+                            core_ctx.network_ctx.meta_mal.set(idx, new_meta) //
                         else //
-                            self.meta_mal.append(core_ctx.a_alloc, new_meta) catch @panic("OOM");
-                        //log.debug("{f}", .{ new_meta });
+                            core_ctx.network_ctx.meta_mal.append(core_ctx.a_alloc, new_meta) catch @panic("OOM");
                     }
                     switch (frame_type) {
                         .management => {
                             const addr_2 = wifi_hdr.addr_2 orelse continue :frameLoop;
-                            if (self.dev_mal.getIndex(addr_2, false)) |_|
+                            if (core_ctx.network_ctx.dev_mal.getIndex(addr_2, false)) |_|
                                 continue :frameLoop;
                             const rt_ch = rt_data.Channel orelse continue :frameLoop;
-                            //const addr_3 = wifi_hdr.addr_3 orelse continue :frameLoop;
                             const fixed_params = fixedParams: switch (wifi_hdr.frame_control.frame_subtype.management) {
                                 inline else => |subtype| {
                                     const SubT = @FieldType(wifi.Header.ManagementFixed, @tagName(subtype));
@@ -593,25 +399,19 @@ pub const Context = struct {
                 },
                 .extension => continue :frameLoop,
             }
-            if (dev) |_dev| {
-                //if (self.dev_mal.getIndex(.mac, _dev.mac, false)) |dev_idx| //
-                //    self.dev_mal.mal.set(dev_idx, _dev) //
-                //else //
-                //    self.dev_mal.mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
-                self.dev_mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
-                //log.debug("{f}", .{ fmt.alt(_dev, .formatANSI) });
-            }
+            if (dev) |_dev| //
+                core_ctx.network_ctx.dev_mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
         }
     }
 
     /// Start Parsing
     pub fn start(self: *@This()) void {
-        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("dev_ctx", self));
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("frames_ctx", self));
         core_ctx.sock_event_loop.handlers.put(
             core_ctx.alloc,
-            "devices",
+            "frames",
             .{
-                .ctx = &core_ctx.dev_ctx,
+                .ctx = &core_ctx.frames_ctx,
                 .wifi_handle_fn = parseFrames,
             },
         ) catch @panic("OOM");
@@ -621,21 +421,5 @@ pub const Context = struct {
     /// Satisfy the `Io.Reader` Interface.
     pub fn frameStream(_: *Io.Reader, _: *Io.Writer, _: Io.Limit) Io.Reader.StreamError!usize {
         return 0;
-    }
-
-};
-
-/// Received Signal Stength Index (RSSI)
-pub const RSSI = struct {
-    /// Signal Strength in dBm
-    strength: i32,
-
-    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
-        const rssi_color: []const u8 = switch (self.strength) {
-            -40...100 => ansi.fg.green,
-            -70...-41 => ansi.fg.yellow,
-            else => ansi.fg.red,
-        };
-        try writer.print("{s}{d}{s}", .{ rssi_color, self.strength, ansi.fg.reset });
     }
 };

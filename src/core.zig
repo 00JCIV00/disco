@@ -33,7 +33,7 @@ const SlicesF = utils.SliceFormatter([]const u8, "{s}");
 
 pub const captures = @import("core/captures.zig");
 pub const connections = @import("core/connections.zig");
-pub const devices = @import("core/devices.zig");
+pub const frames = @import("core/frames.zig");
 pub const interfaces = @import("core/interfaces.zig");
 pub const networks = @import("core/networks.zig");
 pub const profiles = @import("core/profiles.zig");
@@ -139,8 +139,8 @@ pub const Core = struct {
     network_ctx: networks.Context,
     /// Connection Context
     conn_ctx: connections.Context,
-    /// Device Context
-    dev_ctx: devices.Context,
+    /// Frames Context
+    frames_ctx: frames.Context,
     /// Serve Context
     serve_ctx: serve.Context,
     /// Capture Writer
@@ -188,7 +188,7 @@ pub const Core = struct {
             .if_ctx = undefined,
             .network_ctx = undefined,
             .conn_ctx = undefined,
-            .dev_ctx = undefined,
+            .frames_ctx = undefined,
             .serve_ctx = undefined,
             .cap_writer = undefined,
             .dbus_conn = try .init(alloc),
@@ -206,9 +206,9 @@ pub const Core = struct {
         self.conn_ctx = try .init(&self);
         errdefer self.conn_ctx.deinit(alloc);
         log.debug("Initialized Connections Context", .{});
-        self.dev_ctx = try .init(&self);
-        errdefer self.dev_ctx.deinit(alloc);
-        log.debug("Initialized Devices Context", .{});
+        self.frames_ctx = try .init(&self);
+        errdefer self.frames_ctx.deinit(alloc);
+        log.debug("Initialized Frames Context", .{});
         if (config.serve_config) |serve_conf| {
             self.serve_ctx = serve.Context.init(alloc, serve_conf) catch @panic("OOM");
             log.info("- Initialized File Serve Data.", .{});
@@ -294,8 +294,8 @@ pub const Core = struct {
         try self.nl_event_loop.start(self.alloc, &self.active);
         // Sockets Event Loop
         try self.sock_event_loop.start();
-        // Device Tracking
-        self.dev_ctx.start();
+        // Frame Parsing
+        self.frames_ctx.start();
         // PCAP Handling
         self.cap_writer = try .init(self);
         // Core Loop
@@ -410,8 +410,8 @@ pub const Core = struct {
         log.info("- Deinitialized Network Tracking.", .{});
         self.conn_ctx.deinit(self.alloc);
         log.info("- Deinitialized Connection Tracking.", .{});
-        self.dev_ctx.deinit(self.alloc);
-        log.info("- Deinitialized Device Tracking.", .{});
+        self.frames_ctx.deinit(self.alloc);
+        log.info("- Deinitialized Frame Parsing.", .{});
         if (self.config.serve_config) |_| {
             self.serve_ctx.deinit(self.alloc);
             log.info("- Deinitialized File Serving.", .{});

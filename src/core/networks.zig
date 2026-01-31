@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const atomic = std.atomic;
+const enums = std.enums;
 const fmt = std.fmt;
 const heap = std.heap;
 const linux = std.os.linux;
@@ -31,10 +32,207 @@ const utils = @import("../utils.zig");
 const ansi = utils.ansi;
 const c = utils.toStruct;
 const ThreadHashMap = utils.ThreadHashMap;
-const RSSI = core.devices.RSSI;
+const ThreadHashMAL = utils.ThreadHashMAL;
 const SliceF = utils.SliceFormatter;
 
+/// WiFi Device
+pub const Device = struct {
+    mac: [6]u8,
+    kind: Kind,
+    channel: chs.Channel,
+    bss: ?nl._80211.BasicServiceSet = null,
 
+    pub const Kind = enum(u8) {
+        ap,
+        sta,
+        mesh,
+    };
+
+    /// Extracts the SSID or Mesh ID of this Device.
+    /// This will always return `null` for Stations.
+    pub fn id(self: @This()) ?[]const u8 {
+        return switch (self.kind) {
+            .ap => ssid: {
+                const bss = self.bss orelse break :ssid null;
+                const dev_ies = bss.INFORMATION_ELEMENTS orelse break :ssid null;
+                const ssid = dev_ies.SSID orelse break :ssid null;
+                if (ssid.len > 0 and !mem.eql(u8, ssid, &.{ 0 })) //
+                    break :ssid ssid;
+                break :ssid null;
+            },
+            .mesh => meshID: {
+                const bss = self.bss orelse break :meshID null;
+                const dev_ies = bss.INFORMATION_ELEMENTS orelse break :meshID null;
+                break :meshID dev_ies.MESH_ID;
+            },
+            else => null,
+        };
+    }
+
+    /// Format
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        try formatGen(self, writer, false);
+    }
+    /// Format w/ ANSI
+    pub fn formatANSI(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        try formatGen(self, writer, true);
+    }
+    /// Generate a Format Method
+    fn formatGen(
+        self: @This(),
+        writer: *Io.Writer,
+        use_ansi: bool,
+    ) Io.Writer.Error!void {
+        // Setup Writer
+        var filter_writer: ansi.FilterWriter = .init(writer);
+        const w: *Io.Writer = //
+            if (use_ansi) writer //
+            else &filter_writer.io_writer;
+        // ANSI Resets
+        try w.print("{s}", .{ ansi.reset });
+        defer w.print("{s}", .{ ansi.reset }) catch {};
+        // Format
+        switch (self.kind) {
+            .ap => {
+                const security_info: ?wifi.SecurityInfo = sec: {
+                    const bss = self.bss orelse break :sec null;
+                    break :sec bss.getSecurityInfo() catch break :sec null;
+                };
+                try w.print(
+                    \\{s}{s}{s}
+                    \\- {s}BSSID{s}:    {f} ({s})
+                    \\- {s}Channel{s}:  {f}
+                    \\
+                    , .{
+                        ansi.fmt.bold, self.id() orelse "[HIDDEN NETWORK] (DisCo)", ansi.reset,
+                        ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "[UNKNOWN]",
+                        ansi.fmt.underline, ansi.reset, self.channel,
+                    },
+                );
+                if (security_info) |sec| {
+                    try w.print(
+                        \\- {s}Security{s}: {t}
+                        \\- {s}Auth{s}:     {t}
+                        \\
+                        , .{
+                            ansi.fmt.underline, ansi.reset, sec.type,
+                            ansi.fmt.underline, ansi.reset, sec.auth,
+                        },
+                    );
+                }
+            },
+            .sta => {
+                try w.print(
+                    \\{s}Station{s}
+                    \\- {s}MAC{s}:     {f} ({s})
+                    \\- {s}Channel{s}: {f}
+                    \\
+                    , .{
+                        ansi.fmt.bold, ansi.reset,
+                        ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "[UNKNOWN]",
+                        ansi.fmt.underline, ansi.reset, self.channel,
+                    },
+                );
+            },
+            .mesh => {
+                try w.print(
+                    \\{s}{s}{s} (Mesh)
+                    \\- {s}MAC{s}:     {f} ({s})
+                    \\- {s}Channel{s}: {f}
+                    \\
+                    , .{
+                        ansi.fmt.bold, self.id() orelse "[HIDDEN MESH NETWORK] (DisCo", ansi.reset,
+                        ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "[UNKNOWN]",
+                        ansi.fmt.underline, ansi.reset, self.channel,
+                    },
+                );
+            },
+        }
+    }
+
+    pub fn key(dev: @This()) [6]u8 {
+        return dev.mac;
+    }
+};
+
+/// Meta Information about how a Device was Seen
+pub const Meta = struct {
+    if_mac: [6]u8,
+    mac: [6]u8,
+    last_seen: zeit.Instant,
+    rssi: i32,
+    frame_nums: [32]u16 = @splat(0),
+    frame_nums_idx: u8 = 0,
+
+    pub const Key = struct {
+        if_mac: [6]u8,
+        mac: [6]u8,
+    };
+
+    pub fn addSeqNum(self: *@This(), seq_num: u16) void {
+        self.frame_nums[self.frame_nums_idx] = seq_num;
+        self.frame_nums_idx = (self.frame_nums_idx + 1) % 32;
+    }
+
+    pub fn calcRxQual(self: *const @This()) usize {
+        const count: u16 = @truncate(32 - mem.count(u16, self.frame_nums[0..], &.{ 0 }));
+        if (count < 2) //
+            return 0;
+        const oldest_idx: u8 = //
+            if (count < 32) 0 //
+            else self.frame_nums_idx;
+        const newest_idx: u8 = (self.frame_nums_idx + 31) % 32;
+        const oldest = self.frame_nums[oldest_idx];
+        const newest = self.frame_nums[newest_idx];
+        const span: u16 = //
+            if (newest >= oldest) newest - oldest //
+            else (4096 - oldest) + newest;
+        if (span == 0) //
+            return 100;
+        return @intFromFloat(@min(100, @as(f32, @floatFromInt(count)) / @as(f32, @floatFromInt(span)) * 100));
+    }
+
+    pub fn key(dev_meta: @This()) Key {
+        return .{ .if_mac = dev_meta.if_mac, .mac = dev_meta.mac };
+    }
+
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        var last_ts_buf: [50]u8 = undefined;
+        const last_ts = self.last_seen.time().bufPrint(last_ts_buf[0..], .rfc3339) catch "[Time Format Error]";
+        try writer.print(
+            \\- {s}Interface{s}: {f}
+            \\- {s}Device{s}:    {f}
+            \\- {s}RSSI{s}:      {f}{s} dBm
+            \\- {s}Rx Qual{s}:   {d}%
+            \\- {s}Last Seen{s}: {s}
+            \\
+            , .{
+                ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.if_mac[0..] },
+                ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] },
+                ansi.fmt.underline, ansi.reset, RSSI{ .strength = self.rssi }, ansi.reset,
+                ansi.fmt.underline, ansi.reset, self.calcRxQual(),
+                ansi.fmt.underline, ansi.reset, last_ts,
+            },
+        );
+    }
+};
+
+/// Received Signal Stength Index (RSSI)
+pub const RSSI = struct {
+    /// Signal Strength in dBm
+    strength: i32,
+
+    pub fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+        const rssi_color: []const u8 = switch (self.strength) {
+            -40...100 => ansi.fg.green,
+            -70...-41 => ansi.fg.yellow,
+            else => ansi.fg.red,
+        };
+        try writer.print("{s}{d}{s}", .{ rssi_color, self.strength, ansi.fg.reset });
+    }
+};
+
+/// DEPRECATED: Use Device with kind=.ap
 /// Network Info
 pub const Network = struct {
     // Details
@@ -44,7 +242,7 @@ pub const Network = struct {
     auth: wifi.AuthType,
     channel: u32,
     freq: u32,
-    net_meta: *ThreadHashMap([6]u8, core.devices.Meta),
+    net_meta: *ThreadHashMap([6]u8, Meta),
     bss: nl._80211.BasicServiceSet,
 
     /// ID of a Network
@@ -91,7 +289,7 @@ pub const Network = struct {
         auth: wifi.AuthType,
         channel: u32,
         freq: u32,
-        net_meta: []const core.devices.Meta,
+        net_meta: []const Meta,
 
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
             alloc.free(self.ssid);
@@ -107,7 +305,7 @@ pub const Network = struct {
                 .channel = from_net.channel,
                 .freq = from_net.freq,
                 .net_meta = netMeta: {
-                    var nm_list: ArrayList(core.devices.Meta) = .empty;
+                    var nm_list: ArrayList(Meta) = .empty;
                     var nm_iter = from_net.net_meta.iterator();
                     defer nm_iter.unlock();
                     while (nm_iter.next()) |nm_entry| //
@@ -245,6 +443,10 @@ pub const Context = struct {
     _scan_arena: *heap.ArenaAllocator,
     /// Arena Allocator f/ Scans
     _scan_alloc: mem.Allocator,
+    /// Device MultiArrayList
+    dev_mal: *ThreadHashMAL([6]u8, Device, Device.key),
+    /// Meta MultiArrayList
+    meta_mal: *ThreadHashMAL(Meta.Key, Meta, Meta.key),
     /// Global Netlink Scan Config
     global_nl_scan_config: nl._80211.TriggerScanConfig,
     /// Netlink Scan Configs for Interfaces
@@ -258,6 +460,10 @@ pub const Context = struct {
         self._scan_arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
         self._scan_arena.* = .init(core_ctx.alloc);
         self._scan_alloc = self._scan_arena.allocator();
+        self.dev_mal = core_ctx.a_alloc.create(ThreadHashMAL([6]u8, Device, Device.key)) catch @panic("OOM");
+        self.dev_mal.* = .empty;
+        self.meta_mal = core_ctx.a_alloc.create(ThreadHashMAL(Meta.Key, Meta, Meta.key)) catch @panic("OOM");
+        self.meta_mal.* = .empty;
         self.global_nl_scan_config = globalConf: {
             const freqs: ?[]const u32 = freqs: {
                 if (core_ctx.config.global_scan_config.channels.len == 0) //
@@ -552,15 +758,15 @@ pub const Context = struct {
                                                     const ssid = core_ctx.alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]") catch @panic("OOM");
                                                     defer if (!valid) //
                                                         core_ctx.alloc.free(ssid);
-                                                    const net_meta: core.devices.Meta = .{
+                                                    const net_meta: Meta = .{
                                                         .if_mac = scan_if.og_mac,
                                                         .mac = bss.BSSID,
                                                         .last_seen = try zeit.instant(.{}),
                                                         .rssi = @divFloor(bss.SIGNAL_MBM orelse continue, 100),
                                                     };
-                                                    var net_meta_map: *ThreadHashMap([6]u8, core.devices.Meta) = netMetaMap: {
+                                                    var net_meta_map: *ThreadHashMap([6]u8, Meta) = netMetaMap: {
                                                         const entry = old_network_entry orelse {
-                                                            const new_meta_map = core_ctx.alloc.create(ThreadHashMap([6]u8, core.devices.Meta)) catch @panic("OOM");
+                                                            const new_meta_map = core_ctx.alloc.create(ThreadHashMap([6]u8, Meta)) catch @panic("OOM");
                                                             new_meta_map.* = .empty;
                                                             break :netMetaMap new_meta_map;
                                                         };

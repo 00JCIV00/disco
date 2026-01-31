@@ -41,7 +41,7 @@ const HexF = utils.HexFormatter;
 const SlicesF = utils.SliceFormatter;
 const ThreadArrayList = utils.ThreadArrayList;
 const ThreadHashMap = utils.ThreadHashMap;
-const RSSI = core.devices.RSSI;
+const RSSI = core.networks.RSSI;
 
 
 /// Config for All Connections.
