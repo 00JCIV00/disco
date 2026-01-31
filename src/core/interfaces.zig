@@ -62,8 +62,8 @@ pub const Interface = struct {
     mode: u32,
     channel: ?chs.Channel = null,
     ssid: ?[]const u8 = null,
-    supported_freqs: []const u32 = &.{},
-    supported_chans: []const chs.Channel = &.{},
+    supported_freqs: []u32 = &.{},
+    supported_chans: []chs.Channel = &.{},
     // Netlink
     wiphy: nl._80211.Wiphy,
     mod_queue: []ModifyContext = &.{},
