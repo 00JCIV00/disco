@@ -72,9 +72,9 @@ pub const Core = struct {
             mode: meta.Tag(networks.ScanContext) = .monitor,
             /// SSIDs to Scan for
             /// Note, this is only used for `netlink` Scanning
-            ssids: ?[]const []const u8 = null,
+            ssids: ?[][]const u8 = null,
             /// Channels to Scan through
-            channels: []const chs.Channel = &.{},
+            channels: []chs.Channel = &.{},
             /// Dwell Time for each Channel in Milliseconds (ms)
             /// Note, this is only used for `monitor` Scanning
             dwell: u64 = 1_000, 
@@ -84,9 +84,9 @@ pub const Core = struct {
             if_name: []const u8,
             /// SSIDs to Scan for
             /// Note, this is only used for `netlink` Scanning
-            ssids: ?[]const []const u8 = null,
+            ssids: ?[][]const u8 = null,
             /// Channels to Scan through
-            channels: ?[]const chs.Channel = null,
+            channels: ?[]chs.Channel = null,
             /// Dwell Time for each Channel in Milliseconds (ms)
             /// Note, this is only used for `monitor` Scanning
             dwell: ?u64 = null,
@@ -103,6 +103,8 @@ pub const Core = struct {
     _wait_group: Thread.WaitGroup = .{},
     /// Allocator
     alloc: mem.Allocator,
+    /// Arena Allocator
+    a_alloc: mem.Allocator,
     ///// Arena Wrapper f/ Allocator
     //arena: heap.ArenaAllocator,
     /// Config
@@ -148,7 +150,12 @@ pub const Core = struct {
 
 
     /// Initialize the Core Context.
-    pub fn init(alloc: mem.Allocator, timezone: zeit.TimeZone, config: Config) !@This() {
+    pub fn init(
+        alloc: mem.Allocator,
+        a_alloc: mem.Allocator,
+        timezone: zeit.TimeZone,
+        config: Config,
+    ) !@This() {
         log.info("{s}{s}Initializing DisCo Core...{s}", .{ ansi.fmt.bold, ansi.fmt.italic, ansi.reset });
         //var arena = heap.ArenaAllocator.init(alloc);
         //errdefer arena.deinit();
@@ -168,6 +175,7 @@ pub const Core = struct {
             ._timer = try std.time.Timer.start(),
             ._thread_pool = .{ .ids = .{}, .threads = &[_]Thread{}, .allocator = alloc },
             .alloc = alloc,
+            .a_alloc = a_alloc,
             //.arena = arena,
             .config = config,
             .timezone = timezone,

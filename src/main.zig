@@ -99,7 +99,7 @@ pub fn main() !void {
         ansi.reset,
     });
     try stdout.flush();
-    // Allocator
+    // Allocators
     var gpa: heap.DebugAllocator(.{ .thread_safe = true, .stack_trace_frames = 50 }) = .init;
     defer if (builtin.mode == .Debug and gpa.detectLeaks()) //
         log.err("Memory leak detected!", .{});
@@ -117,6 +117,9 @@ pub fn main() !void {
         .ReleaseFast => heap.smp_allocator,
         else => gpa.allocator(),
     };
+    var arena: heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a_alloc = arena.allocator();
     // Get NL80211 Control Info
     try nl._80211.initCtrlInfo(alloc);
     defer nl._80211.deinitCtrlInfo(alloc);
@@ -292,9 +295,6 @@ pub fn main() !void {
         return;
     }
 
-    var config_arena: heap.ArenaAllocator = .init(alloc);
-    defer config_arena.deinit();
-    const config_alloc = config_arena.allocator();
     const main_opts = try main_cmd.getOpts(.{});
     // Set up Core Data
     const core_global_scan_conf: core.Core.Config.GlobalScanConfig = .{
@@ -304,7 +304,7 @@ pub fn main() !void {
         },
         .channels = channels: {
             var ch_list: ArrayList(chs.Channel) = .empty;
-            errdefer ch_list.deinit(config_alloc);
+            errdefer ch_list.deinit(a_alloc);
             if (main_opts.get("channels")) |ch_opt| {
                 const ch_nums = try ch_opt.val.getAllAs(usize);
                 for (ch_nums) |ch_num| {
@@ -312,20 +312,20 @@ pub fn main() !void {
                         log.warn("Invalid Channel: '{d}'", .{ ch_num });
                         continue;
                     };
-                    try ch_list.append(config_alloc, ch);
+                    try ch_list.append(a_alloc, ch);
                     log.debug("Added Channel: {f}", .{ ch });
                 }
-                break :channels try ch_list.toOwnedSlice(config_alloc);
+                break :channels try ch_list.toOwnedSlice(a_alloc);
             }
             else if (main_opts.get("bands")) |band_opt| {
                 const bands = try band_opt.val.getAllAs(u8);
                 for (bands) |band| switch (band) {
-                    2 => try ch_list.appendSlice(config_alloc, wifi.channels.Channels.band_2G_20),
-                    5 => try ch_list.appendSlice(config_alloc, wifi.channels.Channels.band_5G_20),
-                    6 => try ch_list.appendSlice(config_alloc, wifi.channels.Channels.band_6G_20),
+                    2 => try ch_list.appendSlice(a_alloc, wifi.channels.Channels.band_2G_20),
+                    5 => try ch_list.appendSlice(a_alloc, wifi.channels.Channels.band_5G_20),
+                    6 => try ch_list.appendSlice(a_alloc, wifi.channels.Channels.band_6G_20),
                     else => {},
                 };
-                break :channels try ch_list.toOwnedSlice(config_alloc);
+                break :channels try ch_list.toOwnedSlice(a_alloc);
             }
             break :channels &.{};
         },
@@ -345,10 +345,10 @@ pub fn main() !void {
             if (main_opts.get("config")) |config_opt| userConf: {
                 const config_file = config_opt.val.getAs(fs.File) catch break :userConf;
                 defer config_file.close();
-                const config_bytes = config_file.readToEndAlloc(config_alloc, 1_000_000) catch break :userConf;
+                const config_bytes = config_file.readToEndAlloc(a_alloc, 1_000_000) catch break :userConf;
                 config = json.parseFromSliceLeaky(
                     core.Core.Config,
-                    config_alloc,
+                    a_alloc,
                     config_bytes,
                     .{
                         .duplicate_field_behavior = .use_first,
@@ -382,10 +382,10 @@ pub fn main() !void {
                         log.info("No Default Config found at: '{s}'", .{ default_conf_path });
                         continue;
                     };
-                    const config_bytes = default_conf.readToEndAlloc(config_alloc, 1_000_000) catch break :defaultConf;
+                    const config_bytes = default_conf.readToEndAlloc(a_alloc, 1_000_000) catch break :defaultConf;
                     config = json.parseFromSliceLeaky(
                         core.Core.Config,
-                        config_alloc,
+                        a_alloc,
                         config_bytes,
                         .{
                             .duplicate_field_behavior = .use_first,
@@ -488,7 +488,7 @@ pub fn main() !void {
             if (main_opts.get("interfaces")) |if_opt| {
                 const if_names = if_opt.val.getAllAs([]const u8) catch break :ifOpt &.{};
                 for (if_names) |if_name| {
-                    try core_scan_confs.append(config_alloc, .{
+                    try core_scan_confs.append(a_alloc, .{
                         .if_name = if_name,
                         .ssids = core_global_scan_conf.ssids,
                         .channels = core_global_scan_conf.channels,
@@ -503,7 +503,7 @@ pub fn main() !void {
             config.avail_if_names = if_names;
         if (config.scan_configs.len == 0 and core_scan_confs.items.len == 0) {
             for (config.avail_if_names) |if_name| {
-                try core_scan_confs.append(config_alloc, .{
+                try core_scan_confs.append(a_alloc, .{
                     .if_name = if_name,
                     .ssids = &.{},
                     .channels = &.{},
@@ -601,7 +601,7 @@ pub fn main() !void {
                     else => return err,
                 };
             };
-            var fn_w: Io.Writer.Allocating = .init(config_alloc);
+            var fn_w: Io.Writer.Allocating = .init(a_alloc);
             var fn_writer = &fn_w.writer;
             errdefer fn_w.deinit();
             const basename = baseName: {
@@ -615,7 +615,7 @@ pub fn main() !void {
                 log_config.suffix,
             });
             const filename = try fn_w.toOwnedSlice();
-            errdefer config_alloc.free(filename);
+            errdefer a_alloc.free(filename);
             break :logConfig .{ log_dir, try log_dir.createFile(filename, .{ .read = true }), log_config };
         }
         break :logConfig .{ null, null, null };
@@ -656,7 +656,12 @@ pub fn main() !void {
             ui.log.contexts[i] = null;
     };
     // Initialize & Start Core Context
-    var core_ctx: core.Core = try .init(alloc, timezone, core_config);
+    var core_ctx: core.Core = try .init(
+        alloc,
+        a_alloc,
+        timezone,
+        core_config,
+    );
     const run_core: bool = runCore: {
         break :runCore //
             main_cmd.sub_cmd == null or //

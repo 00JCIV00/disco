@@ -223,10 +223,6 @@ pub const Meta = struct {
 
 /// WiFi Devices Context
 pub const Context = struct {
-    /// Arena
-    _arena: *heap.ArenaAllocator,
-    /// Arena Allocator
-    _a_alloc: mem.Allocator,
     /// Frame Arena
     _frame_arena: *heap.ArenaAllocator,
     /// Frame Arena Allocator
@@ -243,19 +239,16 @@ pub const Context = struct {
     /// Initialize the Devices Context.
     pub fn init(core_ctx: *core.Core) !@This() {
         var self: @This() = undefined;
-        self._arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
-        self._arena.* = .init(core_ctx.alloc);
-        self._a_alloc = self._arena.allocator();
         self._frame_arena = core_ctx.alloc.create(heap.ArenaAllocator) catch @panic("OOM");
         self._frame_arena.* = .init(core_ctx.alloc);
         self._frame_alloc = self._frame_arena.allocator();
-        self.dev_mal = self._a_alloc.create(ThreadHashMAL([6]u8, Device, Device.key)) catch @panic("OOM");
+        self.dev_mal = core_ctx.a_alloc.create(ThreadHashMAL([6]u8, Device, Device.key)) catch @panic("OOM");
         self.dev_mal.* = .empty;
-        self.meta_mal = self._a_alloc.create(ThreadHashMAL(Meta.Key, Meta, Meta.key)) catch @panic("OOM");
+        self.meta_mal = core_ctx.a_alloc.create(ThreadHashMAL(Meta.Key, Meta, Meta.key)) catch @panic("OOM");
         self.meta_mal.* = .empty;
-        self.frame_trace_times = self._a_alloc.create(ArrayList(u64)) catch @panic("OOM");
+        self.frame_trace_times = core_ctx.a_alloc.create(ArrayList(u64)) catch @panic("OOM");
         self.frame_trace_times.* = .empty;
-        self.ie_trace_times = self._a_alloc.create(ArrayList(u64)) catch @panic("OOM");
+        self.ie_trace_times = core_ctx.a_alloc.create(ArrayList(u64)) catch @panic("OOM");
         self.ie_trace_times.* = .empty;
         return self;
     }
@@ -264,10 +257,6 @@ pub const Context = struct {
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         self._frame_arena.deinit();
         alloc.destroy(self._frame_arena);
-        defer {
-            self._arena.deinit();
-            alloc.destroy(self._arena);
-        }
         if (builtin.mode != .Debug or self.dev_mal.mal.len == 0) //
             return;
         self.dev_mal.mutex.lock();
@@ -342,11 +331,11 @@ pub const Context = struct {
         if (frames.len == 0) //
             return;
         var self: *@This() = @ptrCast(@alignCast(self_ptr));
-        //const core_ctx: *core.Core = @alignCast(@fieldParentPtr("dev_ctx", self));
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("dev_ctx", self));
         var trace_timer: time.Timer = time.Timer.start() catch @panic("Time Issue");
         _ = self._frame_arena.reset(.retain_capacity);
         frameLoop: for (frames) |frame| {
-            defer self.frame_trace_times.append(self._a_alloc, trace_timer.lap()) catch @panic("OOM");
+            defer self.frame_trace_times.append(core_ctx.a_alloc, trace_timer.lap()) catch @panic("OOM");
             if (frame.len < 18) //
                 continue :frameLoop;
             // Reset Frame Reader
@@ -404,7 +393,7 @@ pub const Context = struct {
                 }
             }
             //if (rt_data.Channel) |ch| //
-            //    self.freqs_seen.append(self._a_alloc, ch.freq) catch @panic("OOM");
+            //    self.freqs_seen.append(core_ctx.a_alloc, ch.freq) catch @panic("OOM");
             if (frame_r.seek < rt_hdr.it_len) //
                 frame_r.toss(rt_hdr.it_len - frame_r.seek);
             // Parse 802.11 Header Prefix
@@ -416,7 +405,7 @@ pub const Context = struct {
                 .frame_control = @bitCast(wifi_prefix.frame_control),
                 .duration = wifi_prefix.duration,
             };
-            //self.frames_seen.append(self._a_alloc, wifi_hdr.frame_control.frame_type) catch @panic("OOM");
+            //self.frames_seen.append(core_ctx.a_alloc, wifi_hdr.frame_control.frame_type) catch @panic("OOM");
             var dev: ?Device = null;
             switch (wifi_hdr.frame_control.frame_type) {
                 .management,
@@ -459,7 +448,7 @@ pub const Context = struct {
                         if (existing_idx) |idx| //
                             self.meta_mal.set(idx, new_meta) //
                         else //
-                            self.meta_mal.append(self._a_alloc, new_meta) catch @panic("OOM");
+                            self.meta_mal.append(core_ctx.a_alloc, new_meta) catch @panic("OOM");
                         //log.debug("{f}", .{ new_meta });
                     }
                     switch (frame_type) {
@@ -501,9 +490,9 @@ pub const Context = struct {
                                     const ie_start = trace_timer.read();
                                     defer {
                                         const ie_stop = trace_timer.read();
-                                        defer self.ie_trace_times.append(self._a_alloc, ie_stop -| ie_start) catch @panic("OOM");
+                                        defer self.ie_trace_times.append(core_ctx.a_alloc, ie_stop -| ie_start) catch @panic("OOM");
                                     }
-                                    break :taggedParams nl.parse.fromBytes(self._a_alloc, ies.InformationElements, frame_r.buffered()) catch |err| {
+                                    break :taggedParams nl.parse.fromBytes(core_ctx.a_alloc, ies.InformationElements, frame_r.buffered()) catch |err| {
                                         log.warn("Management Frame Tagged Parameter Parsing Issue: {t}", .{ err });
                                         continue :frameLoop;
                                     };
@@ -608,8 +597,8 @@ pub const Context = struct {
                 //if (self.dev_mal.getIndex(.mac, _dev.mac, false)) |dev_idx| //
                 //    self.dev_mal.mal.set(dev_idx, _dev) //
                 //else //
-                //    self.dev_mal.mal.append(self._a_alloc, _dev) catch @panic("OOM");
-                self.dev_mal.append(self._a_alloc, _dev) catch @panic("OOM");
+                //    self.dev_mal.mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
+                self.dev_mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
                 //log.debug("{f}", .{ fmt.alt(_dev, .formatANSI) });
             }
         }
