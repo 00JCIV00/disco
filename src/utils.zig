@@ -401,7 +401,9 @@ pub fn ThreadHashMAL(K: type, V: type, key_fn: fn (V) K) type {
         pub fn get(self: *@This(), key: K) ?V {
             self.mutex.lock();
             defer self.mutex.unlock();
-            const idx = self.getIndex(key);
+            const idx = self.getIndex(key, false) orelse return null;
+            if (!self.isLive(idx, false)) //
+                return null;
             return self.mal.slice().get(idx);
         }
 
@@ -409,8 +411,10 @@ pub fn ThreadHashMAL(K: type, V: type, key_fn: fn (V) K) type {
         pub fn getField(self: *@This(), key: K, comptime field: ListT.Field) ?@FieldType(V, field) {
             self.mutex.lock();
             defer self.mutex.unlock();
-            const idx = self.getIndex(key);
-            return self.mal.items(field).get(idx);
+            const idx = self.getIndex(key, false) orelse return null;
+            if (!self.isLive(idx, false)) //
+                return null;
+            return self.mal.items(field)[idx];
         }
 
         /// Set

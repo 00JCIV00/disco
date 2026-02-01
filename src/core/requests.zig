@@ -152,20 +152,13 @@ pub const Response = union(enum) {
         }
     },
     networks: union(enum) {
-        single: ?core.networks.Network.Simple,
-        list: []const core.networks.Network.Simple,
+        single: ?core.networks.Device,
+        list: []const core.networks.Device,
 
         pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
             switch (self.*) {
-                .single => |s_net| single: {
-                    const resp_net = s_net orelse break :single;
-                    resp_net.deinit(alloc);
-                },
-                .list => |net_list| {
-                    for (net_list) |resp_net| //
-                        resp_net.deinit(alloc);
-                    alloc.free(net_list);
-                }
+                .single => |_| {},
+                .list => |net_list| alloc.free(net_list),
             }
         }
     },
@@ -376,20 +369,45 @@ pub const Aggregator = struct {
                     log.debug("Handled Interfaces Request: {d}", .{ key });
                 },
                 .networks => |net_req| {
-                    core_ctx.network_ctx.networks.mutex.lock();
-                    defer core_ctx.network_ctx.networks.mutex.unlock();
                     switch (net_req) {
-                        .get_all => {
-                            var net_list: ArrayList(core.networks.Network.Simple) = .empty;
-                            var net_iter = core_ctx.network_ctx.networks.map.valueIterator();
-                            while (net_iter.next()) |next_net| {
-                                const resp_net: core.networks.Network.Simple = .from(core_ctx.alloc, next_net.*);
-                                net_list.append(core_ctx.alloc, resp_net) catch @panic("OOM");
-                            }
-                            const resp_nets = net_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
-                            self.resp_map.put(core_ctx.alloc, key, .{ .networks = .{ .list = resp_nets } }) catch @panic("OOM");
+                        .get => |id| {
+                            const dev = dev: {
+                                switch (id) {
+                                    .bssid => |bssid| {
+                                        const next_dev = core_ctx.network_ctx.dev_mal.get(bssid);
+                                        break :dev next_dev;
+                                    },
+                                    .ssid => |ssid| {
+                                        core_ctx.network_ctx.dev_mal.mutex.lock();
+                                        defer core_ctx.network_ctx.dev_mal.mutex.unlock();
+                                        const dev_slice = core_ctx.network_ctx.dev_mal.mal.slice();
+                                        for (0..dev_slice.len) |idx| {
+                                            if (!core_ctx.network_ctx.dev_mal.isLive(idx, false)) //
+                                                continue;
+                                            const next_dev = dev_slice.get(idx);
+                                            const dev_id = next_dev.id() orelse continue;
+                                            if (mem.eql(u8, ssid, dev_id)) //
+                                                break :dev next_dev;
+                                        }
+                                        break :dev null;
+                                    },
+                                }
+                            };
+                            self.resp_map.put(core_ctx.alloc, key, .{ .networks = .{ .single = dev } }) catch @panic("OOM");
                         },
-                        else => {},
+                        .get_all => {
+                            core_ctx.network_ctx.dev_mal.mutex.lock();
+                            defer core_ctx.network_ctx.dev_mal.mutex.unlock();
+                            var dev_list: ArrayList(core.networks.Device) = .empty;
+                            const dev_slice = core_ctx.network_ctx.dev_mal.mal.slice();
+                            for (0..dev_slice.len) |idx| {
+                                if (!core_ctx.network_ctx.dev_mal.isLive(idx, false)) //
+                                    continue;
+                                dev_list.append(core_ctx.alloc, dev_slice.get(idx)) catch @panic("OOM");
+                            }
+                            const resp_devs = dev_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+                            self.resp_map.put(core_ctx.alloc, key, .{ .networks = .{ .list = resp_devs } }) catch @panic("OOM");
+                        },
                     }
                     log.debug("Handled Networks Request: {d}", .{ key });
                 },

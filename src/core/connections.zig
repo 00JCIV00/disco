@@ -260,12 +260,17 @@ pub const Context = struct {
         //defer log.debug("Scored {d} Connections.", .{ self._candidates.items.len });
         self._candidates.deinit(core_ctx.alloc);
         self._candidates.* = .empty;
-        //log.debug("- Total Networks: {d} | Total Configs: {d}", .{ core_ctx.network_ctx.networks.count(), core_ctx.config.connect_configs.len });
         const max_age = core_ctx.config.global_connect_config.max_network_age;
-        var nw_iter = core_ctx.network_ctx.networks.iterator();
-        defer core_ctx.network_ctx.networks.mutex.unlock();
-        while (nw_iter.next()) |network_entry| {
-            const network = network_entry.value_ptr;
+        core_ctx.network_ctx.meta_mal.mutex.lock();
+        defer core_ctx.network_ctx.meta_mal.mutex.unlock();
+        const meta_slice = core_ctx.network_ctx.meta_mal.mal.slice();
+        for (0..meta_slice.len) |meta_idx| {
+            const net_meta = meta_slice.get(meta_idx);
+            const dev = core_ctx.network_ctx.dev_mal.get(net_meta.mac) orelse continue;
+            switch (dev.kind) {
+                .ap, .mesh => {},
+                else => continue,
+            }
             const config = connConfig: {
                 self.configs.mutex.lock();
                 defer self.configs.mutex.unlock();
@@ -274,11 +279,12 @@ pub const Context = struct {
                         continue;
                     switch (conf.id) {
                         .ssid => |ssid| {
-                            if (!mem.eql(u8, ssid, network.ssid)) //
+                            const dev_id = dev.id() orelse continue;
+                            if (!mem.eql(u8, ssid, dev_id)) //
                                 continue;
                         },
                         .bssid => |bssid| {
-                            if (!mem.eql(u8, bssid[0..], network.bssid[0..])) //
+                            if (!mem.eql(u8, bssid[0..], dev.mac[0..])) //
                                 continue;
                         },
                     }
@@ -286,65 +292,48 @@ pub const Context = struct {
                 }
                 continue;
             };
-            var net_meta_iter = network.net_meta.iterator();
-            defer network.net_meta.mutex.unlock();
+            const ssid = dev.id() orelse continue;
             core_ctx.if_ctx.interfaces.mutex.lock();
             defer core_ctx.if_ctx.interfaces.mutex.unlock();
-            while (net_meta_iter.next()) |net_meta_entry| {
-                const net_meta = net_meta_entry.value_ptr;
-                checkIF: {
-                    if (config.if_names.len == 0) //
-                        break :checkIF;
-                    for (config.if_names) |if_name| {
-                        var if_iter = core_ctx.if_ctx.interfaces.map.valueIterator();
-                        while (if_iter.next()) |check_if| {
-                            if (!mem.eql(u8, check_if.name, if_name)) //
-                                continue;
-                            if (mem.eql(u8, net_meta.if_mac[0..], check_if.og_mac[0..])) //
-                                break :checkIF;
-                        }
+            checkIF: {
+                if (config.if_names.len == 0) //
+                    break :checkIF;
+                for (config.if_names) |if_name| {
+                    var if_iter = core_ctx.if_ctx.interfaces.map.valueIterator();
+                    while (if_iter.next()) |check_if| {
+                        if (!mem.eql(u8, check_if.name, if_name)) //
+                            continue;
+                        if (mem.eql(u8, net_meta.if_mac[0..], check_if.og_mac[0..])) //
+                            break :checkIF;
                     }
-                    continue;
                 }
-                //log.debug("Network '{s}':", .{ network.ssid });
-                const time_score: u8 = timeScore: {
-                    const now = (try zeit.instant(.{})).milliTimestamp();
-                    const last_seen = net_meta.last_seen.milliTimestamp();
-                    const age = @min(now - last_seen, max_age);
-                    //log.debug("- Age: {d}ms", .{ age });
-                    //const percentage: u8 = @intFromFloat(@as(f128, @floatFromInt(@divFloor(age, max_age) * 100)));
-                    const percent: f16 = @as(f16, @floatFromInt(age)) / @as(f16, @floatFromInt(max_age)) * 100;
-                    //log.debug("- Percent: {d}", .{ percent });
-                    const diff = 100.0 - percent;
-                    break :timeScore @intFromFloat(@min(diff * 0.5, 50));
-                };
-                //log.debug("- Time Score: {d}", .{ time_score });
-                if (time_score == 0) //
-                    continue;
-                const sig_score: u8 = sigScore: {
-                    const rxq = net_meta.calcRxQual();
-                    if (rxq > 0) //
-                        break :sigScore @intFromFloat(@as(f16, @floatFromInt(rxq)) * 0.5);
-                    //log.debug("- RSSI: {d} dBm", .{ net_meta.rssi });
-                    break :sigScore @intFromFloat(@as(f16, @floatFromInt(100 +| net_meta.rssi)) * 0.25);
-                };
-                //log.debug("- Signal Score: {d}", .{ sig_score });
-                const candidate: Candidate = .{
-                    .score = @min(100, time_score +| sig_score),
-                    .bssid = network.bssid,
-                    .ssid = network.ssid,
-                    .conn_if = net_meta_entry.key_ptr.*,
-                    //.channel = network.channel,
-                    .channel = try .fromCh(network.channel),
-                    .config = config,
-                    .network = network.bssid,
-                };
-                self._candidates.append(
-                    core_ctx.alloc,
-                    candidate,
-                ) catch @panic("OOM");
-                //log.debug("Network '{s}' Score:\n{s}", .{ network.ssid, candidate });
+                continue;
             }
+            const time_score: u8 = timeScore: {
+                const now = (try zeit.instant(.{})).milliTimestamp();
+                const last_seen = net_meta.last_seen.milliTimestamp();
+                const age = @min(now - last_seen, max_age);
+                const percent: f16 = @as(f16, @floatFromInt(age)) / @as(f16, @floatFromInt(max_age)) * 100;
+                const diff = 100.0 - percent;
+                break :timeScore @intFromFloat(@min(diff * 0.5, 50));
+            };
+            if (time_score == 0) //
+                continue;
+            const sig_score: u8 = sigScore: {
+                const rxq = net_meta.calcRxQual();
+                if (rxq > 0) //
+                    break :sigScore @intFromFloat(@as(f16, @floatFromInt(rxq)) * 0.5);
+                break :sigScore @intFromFloat(@as(f16, @floatFromInt(100 +| net_meta.rssi)) * 0.25);
+            };
+            const candidate: Candidate = .{
+                .score = @min(100, time_score +| sig_score),
+                .bssid = dev.mac,
+                .ssid = ssid,
+                .conn_if = net_meta.if_mac,
+                .channel = dev.channel,
+                .config = config,
+            };
+            self._candidates.append(core_ctx.alloc, candidate) catch @panic("OOM");
         }
         sort.block(
             Candidate,
@@ -363,7 +352,6 @@ const Candidate = struct {
     conn_if: [6]u8,
     channel: chs.Channel,
     config: Config,
-    network: [6]u8,
 
     pub fn lessThan(_: void, a: @This(), b: @This()) bool {
         return a.score < b.score;
@@ -416,7 +404,7 @@ pub const Connection = struct {
     _dhcp_info: ?dhcp.Info = null,
     _station: ?nl._80211.Station = null,
     // State
-    _state: State = .setup,
+    _state: State = .{ .setup = .{ .mode = .{} } },
     _retries: u8 = 0,
     _nl_state: core.AsyncState = .ready,
     _nl80211_req_ctx: nl.io.RequestContext,
@@ -519,7 +507,13 @@ pub const Connection = struct {
     /// The Current State of a Connection.
     pub const State = union(enum) {
         /// Setup the Connection
-        setup,
+        setup: union(enum) {
+            mode: struct {
+                state: enum { down, sta, up } = .down,
+                working: bool = false,
+            },
+            frames,
+        },
         ///// Searching f/ the Network
         //search,
         /// Authenticating to the Network
@@ -590,11 +584,16 @@ pub const Connection = struct {
 
     /// Start a new Connection
     pub fn start(core_ctx: *core.Core, candidate: Candidate) !@This() {
-        defer core_ctx.network_ctx.networks.mutex.unlock();
-        const network_entry = core_ctx.network_ctx.networks.getEntry(candidate.network) orelse return error.NetworkNotFound;
-        const network = network_entry.value_ptr;
-        const security = candidate.config.security orelse network.security;
-        const auth = candidate.config.auth orelse network.auth;
+        const dev = core_ctx.network_ctx.dev_mal.get(candidate.bssid) orelse return error.NetworkNotFound;
+        const bss: nl._80211.BasicServiceSet = switch (dev.kind) {
+            .ap,
+            .mesh,
+            => |dev_bss| dev_bss,
+            else => return error.NetworkNotFound,
+        };
+        const sec_info = bss.getSecurityInfo() catch return error.MissingIEs;
+        const security = candidate.config.security orelse sec_info.type;
+        const auth = candidate.config.auth orelse sec_info.auth;
         const psk = switch (security) {
             .wpa2 => wpa.genKey(security, candidate.ssid, candidate.config.passphrase) catch |err| {
                 log.err("Key Generation Error: {t}", .{ err });
@@ -602,14 +601,14 @@ pub const Connection = struct {
             },
             .open, .wpa3t, .wpa3 => @as([32]u8, @splat(0)),
             else => {
-                log.err("Could not connect to '{s}' due to unimplemented Security Type '{t}'", .{ network.ssid, network.security });
+                log.err("Could not connect to '{s}' due to unimplemented Security Type '{t}'", .{ candidate.ssid, security });
                 return error.UnimplementedSecurityType;
             },
         };
         //const scan_result = try nl.parse.clone(core_ctx.alloc, nl._80211.ScanResults, network.scan_result);
         //errdefer nl.parse.freeBytes(core_ctx.alloc, nl._80211.ScanResults, scan_result);
         const rsn_bytes = rsnBytes: {
-            const bss_ies = network.bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
+            const bss_ies = bss.INFORMATION_ELEMENTS orelse return error.MissingIEs;
             var rsn = bss_ies.RSN orelse return error.MissingRSN;
             if (security == .wpa3t) {
                 rsn.AKM_SUITES = &.{ .{ .OUI = [_]u8{ 0x00, 0x0F, 0xAC }, .TYPE = 0x08 } };
@@ -630,7 +629,7 @@ pub const Connection = struct {
             .if_mac = candidate.conn_if,
             .bssid = candidate.bssid,
             .ssid = ssid,
-            .freq = network.freq,
+            .freq = bss.FREQUENCY,
             .passphrase = passphrase,
             .security = security,
             .auth = auth,
@@ -642,7 +641,7 @@ pub const Connection = struct {
             .max_retries = core_ctx.config.global_connect_config.max_retries,
             .max_inactive_age = core_ctx.config.global_connect_config.max_inactive_age,
             ._psk = psk,
-            ._bss = network.bss,
+            ._bss = bss,
             ._rsn_bytes = rsn_bytes,
             ._nl80211_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.nl80211_handler } }),
             ._rtnetlink_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.rtnetlink_handler } }),
@@ -737,8 +736,60 @@ pub const Connection = struct {
             log.info("Connecting to '{s}' w/ '{s}'...", .{ self.ssid, conn_if.name });
         }
         state: switch (self._state) {
-            .setup => {
-                nl_state: switch (self._nl_state) {
+            .setup => |*setup_ctx| setup: switch (setup_ctx.*) {
+                .mode => |*mode_ctx| {
+                    if ( //
+                        conn_if.mode == c(nl._80211.IFTYPE).STATION and //
+                        conn_if.state & c(nl.route.IFF).UP != 0 //
+                    ) {
+                        setup_ctx.* = .frames;
+                        continue :setup setup_ctx.*;
+                    }
+                    mode: switch (mode_ctx.state) {
+                        .down => {
+                            //log.debug("{f}", .{ conn_if });
+                            if (mode_ctx.working and conn_if.state & c(nl.route.IFF).UP == 0) {
+                                mode_ctx.working = false;
+                                mode_ctx.state = .sta;
+                                continue :mode mode_ctx.state;
+                            }
+                            if (!mode_ctx.working) {
+                                conn_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN }) catch |err| {
+                                    log.warn("Couldn't set Interface '{s}' into Managed (Station) Mode: {t}", .{ conn_if.name, err });
+                                    mode_ctx.working = false;
+                                    return err;
+                                };
+                                mode_ctx.working = true;
+                            }
+                        },
+                        .sta => {
+                            if (conn_if.mode == c(nl._80211.IFTYPE).STATION) {
+                                mode_ctx.working = false;
+                                mode_ctx.state = .up;
+                                continue :mode mode_ctx.state;
+                            }
+                            if (!mode_ctx.working) {
+                                conn_if.modify(core_ctx, .{ .mode = c(nl._80211.IFTYPE).STATION }) catch |err| {
+                                    log.warn("Couldn't set Interface '{s}' into Managed (Station) Mode: {t}", .{ conn_if.name, err });
+                                    mode_ctx.working = false;
+                                    return err;
+                                };
+                                mode_ctx.working = true;
+                            }
+                        },
+                        .up => {
+                            if (!mode_ctx.working) {
+                                conn_if.modify(core_ctx, .{ .state = c(nl.route.IFF).UP }) catch |err| {
+                                    log.warn("Couldn't set Interface '{s}' into Managed (Station) Mode: {t}", .{ conn_if.name, err });
+                                    mode_ctx.working = false;
+                                    return err;
+                                };
+                                mode_ctx.working = true;
+                            }
+                        },
+                    }
+                },
+                .frames => nl_state: switch (self._nl_state) {
                     .ready, .request => {
                         self._nl_state = .ready;
                         conn_if.resetPenalty();
@@ -768,7 +819,8 @@ pub const Connection = struct {
                         continue :nl_state self._nl_state;
                     },
                     .await_response => {
-                        if (!self._nl80211_req_ctx.checkResponse()) return;
+                        if (!self._nl80211_req_ctx.checkResponse()) //
+                            return;
                         self._nl_state = .parse;
                         continue :nl_state self._nl_state;
                     },
@@ -777,7 +829,8 @@ pub const Connection = struct {
                         if (setup_resp) |resp_data| //
                             core_ctx.alloc.free(resp_data)
                         else |err| regFrameErr: {
-                            if (err == error.ALREADY) break :regFrameErr;
+                            if (err == error.ALREADY) //
+                                break :regFrameErr;
                             log.warn("Could not set up Interface '{s}' for a Connection: {t}", .{ conn_if.name, err });
                             return err;
                         }
@@ -786,7 +839,7 @@ pub const Connection = struct {
                         self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
                         continue :state self._state;
                     },
-                }
+                },
             },
             .auth => |*auth_ctx| {
                 errdefer {

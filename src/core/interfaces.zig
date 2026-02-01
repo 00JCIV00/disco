@@ -305,7 +305,7 @@ pub const Interface = struct {
 
     /// Modify this Interface
     /// Note, while these Modifications are handled asynchronously, they're intended to be "fire and forget".
-    /// If the status of the Modification needs to be tracked, prefer to use equivalent Netlink Request.
+    /// If the status of the Modification needs to be tracked, prefer to use the equivalent Netlink Request.
     pub fn modify(self: *@This(), core_ctx: *core.Core, mod_field: ModifyField) !void {
         //if (self.usage != .modify) self.usage = .{ .modify = .empty };
         const mod_ctx: ModifyContext = modReq: {
@@ -381,6 +381,7 @@ pub const Interface = struct {
                 );
             },
         }
+        log.debug("Modify '{s}': {t}", .{ self.name, mod_field });
         //self.usage.modify.append(core_ctx.alloc, mod_ctx) catch @panic("OOM");
         Thread.sleep(1 * time.ns_per_ms);
     }
@@ -1140,7 +1141,7 @@ pub const Context = struct {
                         }
                         if (net_if.state & c(nl.route.IFF).UP != c(nl.route.IFF).DOWN) //
                             try net_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN });
-                        if (net_if.mode & c(nl._80211.IFTYPE).STATION != c(nl._80211.IFTYPE).STATION) //
+                        if (net_if.mode != c(nl._80211.IFTYPE).STATION) //
                             try net_if.modify(core_ctx, .{ .mode = c(nl._80211.IFTYPE).STATION });
                         if (core_ctx.config.profile.mask) |pro_mask| {
                             var mask_mac: [6]u8 = netdata.address.getRandomMAC(.ll);
@@ -1158,7 +1159,7 @@ pub const Context = struct {
                 .connect,
                 .scan,
                 .err,
-                => {
+                => oldCheck: {
                     if (net_if.usage == .err) if (net_if.raw_sock) |sock| {
                         posix.close(sock);
                         net_if.raw_sock = null;
@@ -1166,7 +1167,7 @@ pub const Context = struct {
                     const now = try zeit.instant(.{});
                     const since_upd = @divFloor(now.timestamp -| net_if.last_upd.timestamp, @as(i128, time.ns_per_ms));
                     if (since_upd < 15_000) //
-                        continue;
+                        break :oldCheck;
                     log.warn("Interface '{s}' is no longer available. Last seen {d}s ago", .{ net_if.name, @divFloor(since_upd, 1_000) });
                     net_if.deinit(core_ctx.alloc);
                     rm_macs[rm_count] = net_if_entry.key_ptr.*;
@@ -1178,6 +1179,7 @@ pub const Context = struct {
             var seq_list: ArrayList(u32) = .empty;
             defer seq_list.deinit(core_ctx.alloc);
             for (net_if.mod_queue) |mod| {
+                log.debug("Checking Interface '{s}' Mod", .{ net_if.name });
                 const mod_resp = mod.req_ctx.getResponse() orelse continue;
                 defer if (mod_resp) |resp_data| //
                     core_ctx.alloc.free(resp_data) //

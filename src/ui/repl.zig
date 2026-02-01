@@ -930,18 +930,22 @@ pub const CommandBar = struct {
                             },
                         },
                         .networks => |net_resp| switch (net_resp) {
-                            .list => |resp_nets| respNets: {
-                                if (resp_nets.len == 0)
-                                    break :respNets;
-                                try shell.display.out_writer.print("Networks ({d}):\n{s}", .{ resp_nets.len, sep });
-                                for (resp_nets, 0..) |resp_net, idx| {
-                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_net, .formatANSI), sep });
+                            .single => |resp_dev| singleDev: {
+                                const out_dev = resp_dev orelse break :singleDev;
+                                try shell.display.out_writer.print("{f}", .{ fmt.alt(out_dev, .formatANSI) });
+                                try shell.display.out_writer.flush();
+                            },
+                            .list => |resp_devs| respDevs: {
+                                if (resp_devs.len == 0)
+                                    break :respDevs;
+                                try shell.display.out_writer.print("Networks ({d}):\n{s}", .{ resp_devs.len, sep });
+                                for (resp_devs, 0..) |resp_dev, idx| {
+                                    try shell.display.out_writer.print("{f}{s}", .{ fmt.alt(resp_dev, .formatANSI), sep });
                                     if (idx % 5 == 0)
                                         try shell.display.out_writer.flush();
                                 }
                                 try shell.display.out_writer.flush();
                             },
-                            else => {},
                         },
                         .connections => |conn_resp| switch (conn_resp) {
                             .list => |resp_conns| respconns: {

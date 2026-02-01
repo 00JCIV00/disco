@@ -103,7 +103,7 @@ pub const Context = struct {
                 log.debug("- None Seen", .{});
                 break :devs;
             }
-            for (enums.values(Device.Kind)) |kind| {
+            for (enums.values(@typeInfo(Device.Kind).@"union".tag_type.?)) |kind| {
                 var count: usize = 0;
                 for (kinds_seen) |ch_s| {
                     if (meta.eql(kind, ch_s)) //
@@ -115,7 +115,7 @@ pub const Context = struct {
         }
         frame_time: {
             if (self.frame_trace_times.items.len == 0) {
-                log.debug("- None Seen", .{});
+                log.debug("No Frame Trace Average", .{});
                 break :frame_time;
             }
             var trace_total: u2096 = 0;
@@ -126,7 +126,7 @@ pub const Context = struct {
         }
         ie_time: {
             if (self.ie_trace_times.items.len == 0) {
-                log.debug("- None Seen", .{});
+                log.debug("No IE Trace Average", .{});
                 break :ie_time;
             }
             var trace_total: u2096 = 0;
@@ -137,8 +137,8 @@ pub const Context = struct {
         }
     }
 
-    /// Parse Frames for Device Info
-    pub fn parseFrames(self_ptr: *anyopaque, frames: []const []const u8, parse_ctx: core.sockets.Parser.Context) !void {
+    /// Parse Frames 
+    pub fn parse(self_ptr: *anyopaque, frames: []const []const u8, parse_ctx: core.sockets.Parser.Context) !void {
         if (frames.len == 0) //
             return;
         var self: *@This() = @ptrCast(@alignCast(self_ptr));
@@ -324,46 +324,36 @@ pub const Context = struct {
                                 },
                                 .kind = kind: {
                                     if (tagged_params) |tps| {
+                                        const bss: nl._80211.BasicServiceSet = .{
+                                            .BSSID = addr_2,
+                                            .FREQUENCY = rt_ch.freq,
+                                            .INFORMATION_ELEMENTS = tps,
+                                            .TSF = switch (fixed_params) {
+                                                .beacon, .probe_response => |b| b.timestamp,
+                                                else => null,
+                                            },
+                                            .BEACON_INTERVAL = switch (fixed_params) {
+                                                .beacon, .probe_response => |b| b.beacon_interval,
+                                                else => null,
+                                            },
+                                            .CAPABILITY = switch (fixed_params) {
+                                                .beacon, .probe_response => |b| b.capability_info,
+                                                else => null,
+                                            },
+                                            .SIGNAL_MBM = if (rt_data.AntSignal) |s| @as(i32, s) * 100 else null,
+                                        };
                                         if (tps.MESH_ID) |_| //
-                                            break :kind .mesh;
+                                            break :kind .{ .mesh = bss };
+                                        break :kind switch (wifi_hdr.frame_control.frame_subtype.management) {
+                                            .beacon,
+                                            .probe_response,
+                                            .association_response,
+                                            .reassociation_response,
+                                            => .{ .ap = bss },
+                                            else => .sta,
+                                        };
                                     }
-                                    break :kind switch (wifi_hdr.frame_control.frame_subtype.management) {
-                                        .beacon,
-                                        .probe_response,
-                                        .association_response,
-                                        .reassociation_response,
-                                        => .ap,
-                                        else => .sta,
-                                    };
-                                },
-                                .bss = bss: {
-                                    switch (wifi_hdr.frame_control.frame_subtype.management) {
-                                        .beacon,
-                                        .probe_response,
-                                        .association_response,
-                                        .reassociation_response,
-                                        => {},
-                                        else => break :bss null,
-                                    }
-                                    const tps = tagged_params orelse break :bss null;
-                                    break :bss .{
-                                        .BSSID = addr_2,
-                                        .FREQUENCY = rt_ch.freq,
-                                        .INFORMATION_ELEMENTS = tps,
-                                        .TSF = switch (fixed_params) {
-                                            .beacon, .probe_response => |b| b.timestamp,
-                                            else => null,
-                                        },
-                                        .BEACON_INTERVAL = switch (fixed_params) {
-                                            .beacon, .probe_response => |b| b.beacon_interval,
-                                            else => null,
-                                        },
-                                        .CAPABILITY = switch (fixed_params) {
-                                            .beacon, .probe_response => |b| b.capability_info,
-                                            else => null,
-                                        },
-                                        .SIGNAL_MBM = if (rt_data.AntSignal) |s| @as(i32, s) * 100 else null,
-                                    };
+                                    break :kind .sta;
                                 },
                             };
                         },
@@ -412,7 +402,7 @@ pub const Context = struct {
             "frames",
             .{
                 .ctx = &core_ctx.frames_ctx,
-                .wifi_handle_fn = parseFrames,
+                .wifi_handle_fn = parse,
             },
         ) catch @panic("OOM");
         log.debug("Started Parsing Frames for Device Info.", .{});

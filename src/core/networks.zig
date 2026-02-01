@@ -38,30 +38,27 @@ const SliceF = utils.SliceFormatter;
 /// WiFi Device
 pub const Device = struct {
     mac: [6]u8,
-    kind: Kind,
     channel: chs.Channel,
-    bss: ?nl._80211.BasicServiceSet = null,
+    kind: Kind,
 
-    pub const Kind = enum(u8) {
-        ap,
+    pub const Kind = union(enum(u8)) {
+        ap: nl._80211.BasicServiceSet,
         sta,
-        mesh,
+        mesh: nl._80211.BasicServiceSet,
     };
 
     /// Extracts the SSID or Mesh ID of this Device.
     /// This will always return `null` for Stations.
     pub fn id(self: @This()) ?[]const u8 {
         return switch (self.kind) {
-            .ap => ssid: {
-                const bss = self.bss orelse break :ssid null;
+            .ap => |bss| ssid: {
                 const dev_ies = bss.INFORMATION_ELEMENTS orelse break :ssid null;
                 const ssid = dev_ies.SSID orelse break :ssid null;
                 if (ssid.len > 0 and !mem.eql(u8, ssid, &.{ 0 })) //
                     break :ssid ssid;
                 break :ssid null;
             },
-            .mesh => meshID: {
-                const bss = self.bss orelse break :meshID null;
+            .mesh => |bss| meshID: {
                 const dev_ies = bss.INFORMATION_ELEMENTS orelse break :meshID null;
                 break :meshID dev_ies.MESH_ID;
             },
@@ -93,11 +90,7 @@ pub const Device = struct {
         defer w.print("{s}", .{ ansi.reset }) catch {};
         // Format
         switch (self.kind) {
-            .ap => {
-                const security_info: ?wifi.SecurityInfo = sec: {
-                    const bss = self.bss orelse break :sec null;
-                    break :sec bss.getSecurityInfo() catch break :sec null;
-                };
+            .ap => |ap_bss| {
                 try w.print(
                     \\{s}{s}{s}
                     \\- {s}BSSID{s}:    {f} ({s})
@@ -109,7 +102,7 @@ pub const Device = struct {
                         ansi.fmt.underline, ansi.reset, self.channel,
                     },
                 );
-                if (security_info) |sec| {
+                if (ap_bss.getSecurityInfo()) |sec| {
                     try w.print(
                         \\- {s}Security{s}: {t}
                         \\- {s}Auth{s}:     {t}
@@ -119,7 +112,8 @@ pub const Device = struct {
                             ansi.fmt.underline, ansi.reset, sec.auth,
                         },
                     );
-                }
+                } //
+                else |_| {}
             },
             .sta => {
                 try w.print(
@@ -749,81 +743,106 @@ pub const Context = struct {
                                             log.debug("Parsing {d} Scan Results for '{s}'.", .{ scan_results.len, scan_if.name });
                                             for (scan_results) |result| {
                                                 const bss = result.BSS orelse continue;
-                                                const new_network: Network = newNetwork: {
-                                                    const old_network_entry = self.networks.getEntry(bss.BSSID);
-                                                    defer self.networks.mutex.unlock();
-                                                    var valid: bool = false;
-                                                    const sec_info = try bss.getSecurityInfo();
-                                                    const ies = bss.INFORMATION_ELEMENTS orelse continue;
-                                                    const ssid = core_ctx.alloc.dupe(u8, ies.SSID orelse "[HIDDEN NETWORK]") catch @panic("OOM");
-                                                    defer if (!valid) //
-                                                        core_ctx.alloc.free(ssid);
-                                                    const net_meta: Meta = .{
-                                                        .if_mac = scan_if.og_mac,
-                                                        .mac = bss.BSSID,
-                                                        .last_seen = try zeit.instant(.{}),
-                                                        .rssi = @divFloor(bss.SIGNAL_MBM orelse continue, 100),
+                                                const dev_channel: chs.Channel = channel: {
+                                                    const ch_width: u8 = chWidth: {
+                                                        const width = bss.CHAN_WIDTH orelse break :chWidth 20;
+                                                        if (width == 0) //
+                                                            break :chWidth 20;
+                                                        break :chWidth width;
                                                     };
-                                                    var net_meta_map: *ThreadHashMap([6]u8, Meta) = netMetaMap: {
-                                                        const entry = old_network_entry orelse {
-                                                            const new_meta_map = core_ctx.alloc.create(ThreadHashMap([6]u8, Meta)) catch @panic("OOM");
-                                                            new_meta_map.* = .empty;
-                                                            break :netMetaMap new_meta_map;
-                                                        };
-                                                        break :netMetaMap entry.value_ptr.net_meta;
-                                                    };
-                                                    net_meta_map.put(core_ctx.alloc, scan_if.og_mac, net_meta) catch @panic("OOM");
-                                                    const new_network: Network = .{
-                                                        .bssid = bss.BSSID,
-                                                        .ssid = ssid,
-                                                        .security = sec_info.type,
-                                                        .auth = sec_info.auth,
-                                                        .freq = bss.FREQUENCY,
-                                                        .channel = channel: {
-                                                            // TODO: Properly pull the Channel Width
-                                                            const ch_width: u8 = chWidth: {
-                                                                const width = bss.CHAN_WIDTH orelse break :chWidth 20;
-                                                                if (width == 0) //
-                                                                    break :chWidth 20;
-                                                                break :chWidth width;
-                                                            };
-                                                            //log.debug("Channel Width: {d}", .{ ch_width });
-                                                            const bw: chs.Bandwidth = @enumFromInt(ch_width);
-                                                            const ch: chs.Channel = try .fromFreqBW(bss.FREQUENCY, bw);
-                                                            break :channel ch.pri;
-                                                        },
-                                                        .net_meta = net_meta_map,
-                                                        .bss = bss: {
-                                                            if (old_network_entry) |entry| //
-                                                                break :bss entry.value_ptr.bss;
-                                                            break :bss try nl.parse.clone(core_ctx.alloc, nl._80211.BasicServiceSet, bss);
-                                                        },
-                                                    };
-                                                    //log.debug("{f}===================\n", .{ new_network });
-                                                    core_ctx.conn_ctx.configs.mutex.lock();
-                                                    defer core_ctx.conn_ctx.configs.mutex.unlock();
-                                                    confs: for (core_ctx.conn_ctx.configs.list.items) |conf| {
-                                                        switch (conf.id) {
-                                                            .bssid => |bssid| {
-                                                                if (!mem.eql(u8, bssid[0..], new_network.bssid[0..])) //
-                                                                    continue;
-                                                            },
-                                                            .ssid => |conf_ssid| {
-                                                                if (!mem.eql(u8, conf_ssid, new_network.ssid)) //
-                                                                    continue;
-                                                            },
-                                                        }
-                                                        log.info("{f}===================\n", .{ new_network });
-                                                        break :confs;
-                                                    }
-                                                    valid = true;
-                                                    if (old_network_entry) |entry| {
-                                                        const old_network = entry.value_ptr;
-                                                        core_ctx.alloc.free(old_network.ssid);
-                                                    }
-                                                    break :newNetwork new_network;
+                                                    const bw: chs.Bandwidth = @enumFromInt(ch_width);
+                                                    const ch: chs.Channel = try .fromFreqBW(bss.FREQUENCY, bw);
+                                                    break :channel ch;
                                                 };
-                                                self.networks.put(core_ctx.alloc, bss.BSSID, new_network) catch @panic("OOM");
+                                                const new_ies = bss.INFORMATION_ELEMENTS;
+                                                const new_kind_tag: meta.Tag(Device.Kind) = kindTag: {
+                                                    if (new_ies) |ies| {
+                                                        if (ies.MESH_ID) |_| //
+                                                            break :kindTag .mesh;
+                                                    }
+                                                    break :kindTag .ap;
+                                                };
+                                                const new_id: ?[]const u8 = id: {
+                                                    if (new_ies) |ies| {
+                                                        if (new_kind_tag == .mesh) //
+                                                            break :id ies.MESH_ID;
+                                                        if (ies.SSID) |ssid| {
+                                                            if (ssid.len > 0 and !mem.eql(u8, ssid, &.{ 0 })) //
+                                                                break :id ssid;
+                                                        }
+                                                    }
+                                                    break :id null;
+                                                };
+                                                if (self.dev_mal.getIndex(bss.BSSID, false)) |idx| {
+                                                    const existing = self.dev_mal.mal.slice().get(idx);
+                                                    const should_update: bool = shouldUpd: {
+                                                        if (!meta.eql(existing.channel, dev_channel)) //
+                                                            break :shouldUpd true;
+                                                        if (meta.activeTag(existing.kind) != new_kind_tag) //
+                                                            break :shouldUpd true;
+                                                        if (new_kind_tag == .ap or new_kind_tag == .mesh) {
+                                                            const existing_id = existing.id();
+                                                            if (existing_id == null and new_id != null) //
+                                                                break :shouldUpd true;
+                                                            if (existing_id != null and new_id != null) {
+                                                                if (!mem.eql(u8, existing_id.?, new_id.?)) //
+                                                                    break :shouldUpd true;
+                                                            }
+                                                            if (new_ies != null) {
+                                                                const existing_has_ies: bool = switch (existing.kind) {
+                                                                    .ap => |dev_bss| dev_bss.INFORMATION_ELEMENTS != null,
+                                                                    .mesh => |dev_bss| dev_bss.INFORMATION_ELEMENTS != null,
+                                                                    else => false,
+                                                                };
+                                                                if (!existing_has_ies) //
+                                                                    break :shouldUpd true;
+                                                            }
+                                                        }
+                                                        break :shouldUpd false;
+                                                    };
+                                                    if (should_update) {
+                                                        const dev_bss = try nl.parse.clone(core_ctx.a_alloc, nl._80211.BasicServiceSet, bss);
+                                                        const dev_kind: Device.Kind = //
+                                                            if (new_kind_tag == .mesh) //
+                                                                .{ .mesh = dev_bss } //
+                                                            else //
+                                                                .{ .ap = dev_bss };
+                                                        const dev: Device = .{
+                                                            .mac = bss.BSSID,
+                                                            .channel = dev_channel,
+                                                            .kind = dev_kind,
+                                                        };
+                                                        self.dev_mal.set(idx, dev);
+                                                    }
+                                                } //
+                                                else {
+                                                    const dev_bss = try nl.parse.clone(core_ctx.a_alloc, nl._80211.BasicServiceSet, bss);
+                                                    const dev_kind: Device.Kind = //
+                                                        if (new_kind_tag == .mesh) //
+                                                            .{ .mesh = dev_bss } //
+                                                        else //
+                                                            .{ .ap = dev_bss };
+                                                    const dev: Device = .{
+                                                        .mac = bss.BSSID,
+                                                        .channel = dev_channel,
+                                                        .kind = dev_kind,
+                                                    };
+                                                    self.dev_mal.append(core_ctx.a_alloc, dev) catch @panic("OOM");
+                                                }
+                                                const new_meta: Meta = .{
+                                                    .if_mac = scan_if.og_mac,
+                                                    .mac = bss.BSSID,
+                                                    .last_seen = try zeit.instant(.{}),
+                                                    .rssi = @divFloor(bss.SIGNAL_MBM orelse continue, 100),
+                                                };
+                                                const meta_key: Meta.Key = .{
+                                                    .if_mac = new_meta.if_mac,
+                                                    .mac = new_meta.mac,
+                                                };
+                                                if (self.meta_mal.getIndex(meta_key, false)) |idx| //
+                                                    self.meta_mal.set(idx, new_meta) //
+                                                else //
+                                                    self.meta_mal.append(core_ctx.a_alloc, new_meta) catch @panic("OOM");
                                             }
                                         },
                                     }
@@ -1069,7 +1088,10 @@ pub const Context = struct {
                                     //log.debug("Allowed Chans: {d}", .{ mon_ctx.allowed_chans.len });
                                     const single_ch: bool = singleCh: {
                                         const if_ch = scan_if.channel orelse break :singleCh false;
-                                        break :singleCh mon_ctx.allowed_chans.len == 1 and meta.eql(mon_ctx.allowed_chans[mon_ctx.ch_idx], if_ch);
+                                        break :singleCh //
+                                            mon_ctx.allowed_chans.len == 1 and //
+                                            mon_ctx.ch_idx < mon_ctx.allowed_chans.len and //
+                                            meta.eql(mon_ctx.allowed_chans[mon_ctx.ch_idx], if_ch);
                                     };
                                     if ( //
                                         single_ch or //
@@ -1078,9 +1100,15 @@ pub const Context = struct {
                                     ) //
                                         continue;
                                     const ch: chs.Channel = ch: {
+                                        const cur_idx = mon_ctx.ch_idx;
                                         mon_ctx.ch_idx +|= 1;
-                                        if (mon_ctx.ch_idx >= mon_ctx.allowed_chans.len) //
+                                        if (mon_ctx.ch_idx >= mon_ctx.allowed_chans.len) {
+                                            if (cur_idx != 1_000) {
+                                                scan_if.usage = .active;
+                                                continue;
+                                            }
                                             mon_ctx.ch_idx = 0;
+                                        }
                                         break :ch mon_ctx.allowed_chans[mon_ctx.ch_idx];
                                     };
                                     //log.debug("Updating Channel of Interface '{s}' to {f}...", .{ scan_if.name, ch });

@@ -1030,17 +1030,20 @@ pub fn main() !void {
         const passes = try passes_opt.val.getAs(u8);
         log.info("Scanning for WiFi Networks...", .{});
         try core_ctx.runTo(.{ .network_scan = .{ .max_passes = passes } });
-        var networks_iter = core_ctx.network_ctx.networks.iterator();
-        defer core_ctx.network_ctx.networks.mutex.unlock();
+        core_ctx.network_ctx.dev_mal.mutex.lock();
+        defer core_ctx.network_ctx.dev_mal.mutex.unlock();
+        const dev_slice = core_ctx.network_ctx.dev_mal.mal.slice();
         try stdout_log_ctx.print("WiFi Networks:\n\n", .{});
-        while (networks_iter.next()) |network_entry| {
-            const network = network_entry.value_ptr;
+        for (0..dev_slice.len) |idx| {
+            if (!core_ctx.network_ctx.dev_mal.isLive(idx, false)) //
+                continue;
+            const dev = dev_slice.get(idx);
             try stdout_log_ctx.print(
                 \\{f}
                 \\-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
                 \\
                 \\
-                , .{ network.* },
+                , .{ dev },
             );
         }
         try stdout.flush();
