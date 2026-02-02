@@ -325,79 +325,83 @@ pub const Loop = struct {
         while (if_iter.next()) |sock_if_entry| {
             const sock_if = sock_if_entry.value_ptr;
             //log.debug("'{s}': Socket Monitor Update", .{ sock_if.name });
-            const raw_sock = sock_if.raw_sock orelse continue;
-            const sock_parser = sockParser: {
-                if (self.parsers.map.getEntry(raw_sock)) |sock_parser_entry| {
-                    const sock_parser = sock_parser_entry.value_ptr;
-                    if (sock_parser.sock == raw_sock) {
-                        sock_parser.ctx.state = //
-                            if (sock_if.state != c(nl.route.IFF).DOWN) .up //
-                            else .down;
-                        sock_parser.ctx.mode = //
-                            if (sock_if.mode == c(nl._80211.IFTYPE).MONITOR) .monitor //
-                            else .managed;
-                        break :sockParser sock_parser;
+            inline for (&.{ sock_if.raw_sock, sock_if.vif_sock }, 0..) |next_sock, idx| sockCont: {
+                const raw_sock = next_sock orelse break :sockCont;
+                const sock_parser = sockParser: {
+                    if (self.parsers.map.getEntry(raw_sock)) |sock_parser_entry| {
+                        const sock_parser = sock_parser_entry.value_ptr;
+                        if (sock_parser.sock == raw_sock) {
+                            sock_parser.ctx.state = //
+                                if (sock_if.state != c(nl.route.IFF).DOWN) .up //
+                                else if (idx == 1) .up //
+                                else .down;
+                            sock_parser.ctx.mode = //
+                                if (sock_if.mode == c(nl._80211.IFTYPE).MONITOR) .monitor //
+                                else if (idx == 1) .monitor //
+                                else .managed;
+                            break :sockParser sock_parser;
+                        }
+                        var event_data: linux.epoll_event = .{
+                            .events = epoll_events,
+                            .data = .{ .fd = raw_sock },
+                        };
+                        try posix.epoll_ctl(
+                            self._epoll_fd,
+                            linux.EPOLL.CTL_DEL,
+                            raw_sock,
+                            &event_data,
+                        );
+                        _ = self.parsers.map.remove(raw_sock);
+                        //log.debug("Stopped monitoring Raw Socket for '{s}'.", .{ sock_if.name });
                     }
+                    try self.parsers.map.put(
+                        core_ctx.alloc,
+                        raw_sock,
+                        .init(core_ctx.alloc, raw_sock, sock_if_entry.key_ptr.*),
+                    );
                     var event_data: linux.epoll_event = .{
                         .events = epoll_events,
                         .data = .{ .fd = raw_sock },
                     };
                     try posix.epoll_ctl(
                         self._epoll_fd,
-                        linux.EPOLL.CTL_DEL,
+                        linux.EPOLL.CTL_ADD,
                         raw_sock,
                         &event_data,
                     );
-                    _ = self.parsers.map.remove(raw_sock);
-                    //log.debug("Stopped monitoring Raw Socket for '{s}'.", .{ sock_if.name });
+                    //log.debug("Started monitoring Raw Socket for '{s}'.", .{ sock_if.name });
+                    break :sockParser self.parsers.map.getEntry(raw_sock).?.value_ptr;
+                };
+                if ( //
+                    sock_parser.eth_list.items.len == 0 and //
+                    sock_parser.wifi_list.items.len == 0 //
+                ) break :sockCont;
+                const eth_frames = try sock_parser.getEthFrames();
+                defer {
+                    for (eth_frames) |frame| //
+                        core_ctx.alloc.free(frame);
+                    core_ctx.alloc.free(eth_frames);
                 }
-                try self.parsers.map.put(
-                    core_ctx.alloc,
-                    raw_sock,
-                    .init(core_ctx.alloc, raw_sock, sock_if_entry.key_ptr.*),
-                );
-                var event_data: linux.epoll_event = .{
-                    .events = epoll_events,
-                    .data = .{ .fd = raw_sock },
-                };
-                try posix.epoll_ctl(
-                    self._epoll_fd,
-                    linux.EPOLL.CTL_ADD,
-                    raw_sock,
-                    &event_data,
-                );
-                //log.debug("Started monitoring Raw Socket for '{s}'.", .{ sock_if.name });
-                break :sockParser self.parsers.map.getEntry(raw_sock).?.value_ptr;
-            };
-            if ( //
-                sock_parser.eth_list.items.len == 0 and //
-                sock_parser.wifi_list.items.len == 0 //
-            ) continue;
-            const eth_frames = try sock_parser.getEthFrames();
-            defer {
-                for (eth_frames) |frame| //
-                    core_ctx.alloc.free(frame);
-                core_ctx.alloc.free(eth_frames);
-            }
-            const wifi_frames = try sock_parser.getWifiFrames();
-            defer {
-                for (wifi_frames) |frame| //
-                    core_ctx.alloc.free(frame);
-                core_ctx.alloc.free(wifi_frames);
-            }
-            //log.debug("Handling {d} Eth and {d} WiFi Frames for '{s}'", .{ eth_frames.len, wifi_frames.len, sock_if.name });
-            defer self.handlers.mutex.unlock();
-            var handler_iter = self.handlers.iterator();
-            while (handler_iter.next()) |handler_entry| {
-                const handler = handler_entry.value_ptr;
-                handler.handleEth(eth_frames, sock_parser.ctx) catch |err| {
-                    log.warn("There was an issue handling an Ethernet Frame w/ the '{s}' Handler: {t}", .{ handler_entry.key_ptr.*, err });
-                    //@panic("TODO");
-                };
-                handler.handleWifi(wifi_frames, sock_parser.ctx) catch |err| {
-                    log.warn("There was an issue handling a Wifi Frame w/ the '{s}' Handler: {t}", .{ handler_entry.key_ptr.*, err });
-                };
-                //log.debug("- {s} handled {d} Eth and {d} WiFi Frames", .{ handler_entry.key_ptr.*, eth_frames.len, wifi_frames.len });
+                const wifi_frames = try sock_parser.getWifiFrames();
+                defer {
+                    for (wifi_frames) |frame| //
+                        core_ctx.alloc.free(frame);
+                    core_ctx.alloc.free(wifi_frames);
+                }
+                //log.debug("Handling {d} Eth and {d} WiFi Frames for '{s}'", .{ eth_frames.len, wifi_frames.len, sock_if.name });
+                defer self.handlers.mutex.unlock();
+                var handler_iter = self.handlers.iterator();
+                while (handler_iter.next()) |handler_entry| {
+                    const handler = handler_entry.value_ptr;
+                    handler.handleEth(eth_frames, sock_parser.ctx) catch |err| {
+                        log.warn("There was an issue handling an Ethernet Frame w/ the '{s}' Handler: {t}", .{ handler_entry.key_ptr.*, err });
+                        //@panic("TODO");
+                    };
+                    handler.handleWifi(wifi_frames, sock_parser.ctx) catch |err| {
+                        log.warn("There was an issue handling a Wifi Frame w/ the '{s}' Handler: {t}", .{ handler_entry.key_ptr.*, err });
+                    };
+                    //log.debug("- {s} handled {d} Eth and {d} WiFi Frames", .{ handler_entry.key_ptr.*, eth_frames.len, wifi_frames.len });
+                }
             }
         }
         //log.debug("End: Socket Monitor Update", .{});

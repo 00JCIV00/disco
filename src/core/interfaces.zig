@@ -67,6 +67,10 @@ pub const Interface = struct {
     // Netlink
     wiphy: nl._80211.Wiphy,
     mod_queue: []ModifyContext = &.{},
+    // Virtual Interface
+    vif_index: ?i32 = null,
+    vif_name: ?[]const u8 = null,
+    vif_sock: ?posix.socket_t = null,
 
     /// DisCo Usage State of an Interface
     pub const UsageState = union(enum) {
@@ -195,7 +199,7 @@ pub const Interface = struct {
         }
     };
 
-    /// Free the allocated portions of this Interface.
+    /// Free any resources held by this Interface.
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         if (!self._init) //
             return;
@@ -203,6 +207,7 @@ pub const Interface = struct {
             .connect => |*conn| conn.deinit(alloc),
             else => {},
         }
+        self.cleanupVIF(alloc);
         alloc.free(self.mod_queue);
         alloc.free(self.name);
         alloc.free(self.phy_name);
@@ -213,15 +218,21 @@ pub const Interface = struct {
         self._init = false;
     }
 
-    /// Initialize the Raw Socket for this Interface
-    pub fn initSock(self: *@This()) !void {
-        if (self.raw_sock) |sock| {
+    /// Initialize a Raw Socket for this Interface
+    pub fn initSock(self: *@This(), kind: enum { raw, vif }) !void {
+        const if_index: i32,
+        const sock_ptr: *?posix.socket_t = //
+        switch (kind) {
+            .raw => .{ self.index, &self.raw_sock },
+            .vif => .{ self.vif_index orelse return error.NoVifIndex, &self.vif_sock },
+        };
+        if (sock_ptr.*) |sock| {
             posix.close(sock);
-            self.raw_sock = null;
+            sock_ptr.* = null;
         }
         const if_sock = try posix.socket(nl.AF.PACKET, nl.SOCK.RAW, mem.nativeToBig(u16, c(l2.Eth.ETH_P).ALL));
         const sock_addr: posix.sockaddr.ll = .{
-            .ifindex = self.index,
+            .ifindex = if_index,
             .protocol = mem.nativeToBig(u16, c(l2.Eth.ETH_P).ALL),
             .hatype = 0,
             .pkttype = 0,
@@ -235,10 +246,29 @@ pub const Interface = struct {
             posix.SO.RCVTIMEO,
             mem.toBytes(posix.timeval{ .sec = 0, .usec = 10_000 })[0..],
         );
-        self.raw_sock = if_sock;
-        log.debug("Initialized Raw Socket for '{s}'", .{ self.name });
+        sock_ptr.* = if_sock;
+        log.debug("Initialized '{t}' Socket for '{s}'", .{ kind, self.name });
         //TODO: Figure out Promiscuous mode?
         //try posix.setsockopt(if_sock, linux.SOL.PACKET, linux.PACKET.ADD_MEMBERSHIP, linux);
+    }
+
+    /// Cleanup the Virtual Interface (VIF) if one exists
+    pub fn cleanupVIF(self: *@This(), alloc: mem.Allocator) void {
+        if (self.vif_sock) |sock| {
+            posix.close(sock);
+            self.vif_sock = null;
+        }
+        if (self.vif_index) |vif_idx| {
+            nl._80211.delInterface(alloc, vif_idx) catch |err| {
+                log.warn("Unable to delete VIF '{?s}' (idx: {d}): {t}", .{ self.vif_name, vif_idx, err });
+            };
+            self.vif_index = null;
+        }
+        if (self.vif_name) |vif_name| {
+            log.debug("Cleaned up VIF '{s}' for '{s}'", .{ vif_name, self.name });
+            alloc.free(vif_name);
+            self.vif_name = null;
+        }
     }
 
     /// Check if this Interface supports a specific `command`
@@ -405,7 +435,7 @@ pub const Interface = struct {
                     nl._80211.abortScan(alloc, self.index) catch {};
                     Thread.sleep(time.ns_per_ms);
                     nl.route.setState(self.index, c(nl.route.IFF).DOWN) catch |err| {
-                        log.warn("Could not the Interface Down: {t}", .{ err });
+                        log.warn("Could not set the Interface Down: {t}", .{ err });
                     };
                     Thread.sleep(time.ns_per_ms);
                     if (nl._80211.setMode(core_ctx.alloc, self.index, c(nl._80211.IFTYPE).STATION, &.{})) //
@@ -940,6 +970,8 @@ pub const Context = struct {
                 updateIfs: for (nl_wifi_ifs) |wifi_if| {
                     const wifi_if_idx = wifi_if.IFINDEX orelse continue;
                     const wifi_if_name = wifi_if.IFNAME orelse continue;
+                    if (mem.endsWith(u8, wifi_if_name, "_mon\x00") or mem.endsWith(u8, wifi_if_name, "_mon"))
+                        continue :updateIfs;
                     var valid: bool = false;
                     const wiphy: nl._80211.Wiphy = nlWiphy: {
                         for (nl_wiphys) |nl_wiphy| {
@@ -1012,7 +1044,7 @@ pub const Context = struct {
                         const upd_if = upd_if_entry.value_ptr;
                         if (add_if.index != upd_if.index) {
                             log.debug("Interface '{s}' has a new Index: {d}", .{ add_if.name, add_if.index });
-                            try add_if.initSock();
+                            try add_if.initSock(.raw);
                             if (upd_if.usage == .err) {
                                 log.debug("Reset interface '{s}' from errored state.", .{ add_if.name });
                                 break :updIf;
@@ -1030,6 +1062,9 @@ pub const Context = struct {
                         add_if.wiphy = upd_if.wiphy;
                         if (add_if.usage == .inactive and add_if._init) //
                             add_if.stop(core_ctx.alloc);
+                        add_if.vif_index = upd_if.vif_index;
+                        add_if.vif_name = upd_if.vif_name;
+                        add_if.vif_sock = upd_if.vif_sock;
                         core_ctx.alloc.free(upd_if.name);
                         core_ctx.alloc.free(upd_if.phy_name);
                         //nl.parse.freeBytes(core_ctx.alloc, nl._80211.Wiphy, upd_if.wiphy);
@@ -1117,7 +1152,7 @@ pub const Context = struct {
                             }
                         }
                         log.info("Available Interface Found:\n{f}", .{ net_if });
-                        try net_if.initSock();
+                        try net_if.initSock(.raw);
                         core_ctx.network_ctx.nl_scan_configs.mutex.lock();
                         defer core_ctx.network_ctx.nl_scan_configs.mutex.unlock();
                         if (core_ctx.network_ctx.nl_scan_configs.map.getEntry(net_if.name)) |scan_cfg_entry| scanCfg: {
@@ -1179,7 +1214,6 @@ pub const Context = struct {
             var seq_list: ArrayList(u32) = .empty;
             defer seq_list.deinit(core_ctx.alloc);
             for (net_if.mod_queue) |mod| {
-                log.debug("Checking Interface '{s}' Mod", .{ net_if.name });
                 const mod_resp = mod.req_ctx.getResponse() orelse continue;
                 defer if (mod_resp) |resp_data| //
                     core_ctx.alloc.free(resp_data) //
@@ -1187,20 +1221,26 @@ pub const Context = struct {
                 seq_list.append(core_ctx.alloc, mod.req_ctx.seq_id) catch @panic("OOM");
                 switch (mod.mod_field) {
                     .mac => |mac| {
-                        if (mod_resp) |_| //
-                            log.info("Changed MAC of '{s}' to '{f}'.", .{ net_if.name, MACF{ .bytes = mac[0..] } }) //
+                        if (mod_resp) |_| {
+                            net_if.mac = mac;
+                            log.info("Changed MAC of '{s}' to '{f}'.", .{ net_if.name, MACF{ .bytes = mac[0..] } });
+                        } //
                         else |err| //
                             log.warn("Unable to change MAC of '{s}': {t}", .{ net_if.name, err });
                     },
                     .state => |state| {
-                        if (mod_resp) |_| //
-                            log.info("Changed State of '{s}' to '{f}'.", .{ net_if.name, Interface.IFStateF{ .flags = state } }) //
+                        if (mod_resp) |_| {
+                            net_if.state = state;
+                            log.info("Changed State of '{s}' to '{f}'.", .{ net_if.name, Interface.IFStateF{ .flags = state } });
+                        } //
                         else |err| //
                             log.warn("Unable to change State of '{s}': {t}", .{ net_if.name, err });
                     },
                     .mode => |mode| {
-                        if (mod_resp) |_| //
-                            log.info("Changed Mode of '{s}' to '{t}'.", .{ net_if.name, @as(nl._80211.IFTYPE, @enumFromInt(mode)) }) //
+                        if (mod_resp) |_| {
+                            net_if.mode = mode;
+                            log.info("Changed Mode of '{s}' to '{t}'.", .{ net_if.name, @as(nl._80211.IFTYPE, @enumFromInt(mode)) });
+                        } //
                         else |err| //
                             log.warn("Unable to change Mode of '{s}': {t}", .{ net_if.name, err });
                     },
@@ -1217,8 +1257,10 @@ pub const Context = struct {
                             log.warn("Unable to delete IP from '{s}': {t}", .{ net_if.name, err });
                     },
                     .channel => |ch| {
-                        if (mod_resp) |_| //
-                            log.info("Changed Channel of '{s}' to '{f}'", .{ net_if.name, ch }) //
+                        if (mod_resp) |_| {
+                            net_if.channel = ch;
+                            log.info("Changed Channel of '{s}' to '{f}'", .{ net_if.name, ch });
+                        } //
                         else |err| //
                             log.warn("Unable to change channel of '{s}': {t}", .{ net_if.name, err });
                     },

@@ -70,6 +70,8 @@ pub const Core = struct {
         pub const GlobalScanConfig = struct {
             /// Scan Mode: `netlink` or `monitor`
             mode: meta.Tag(networks.ScanContext) = .monitor,
+            /// Use Virtual Inferface for Monitor Mode
+            use_vif: bool = true,
             /// SSIDs to Scan for
             /// Note, this is only used for `netlink` Scanning
             ssids: ?[][]const u8 = null,
@@ -77,7 +79,7 @@ pub const Core = struct {
             channels: []chs.Channel = &.{},
             /// Dwell Time for each Channel in Milliseconds (ms)
             /// Note, this is only used for `monitor` Scanning
-            dwell: u64 = 1_000, 
+            dwell: u64 = 1_000,
         };
 
         pub const ScanConfig = struct {

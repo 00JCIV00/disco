@@ -4,6 +4,7 @@ const std = @import("std");
 const ascii = std.ascii;
 const builtin = std.builtin;
 const enums = std.enums;
+const fmt = std.fmt;
 const heap = std.heap;
 const json = std.json;
 const log = std.log.scoped(.nl80211);
@@ -1898,6 +1899,131 @@ pub fn handleStationSock(alloc: mem.Allocator, nl_sock: posix.socket_t) ![]const
             .fam_cmd = c(CMD).NEW_STATION,
         },
     );
+}
+
+/// Request to create a new Virtual Interface (VIF)
+pub fn requestNewInterface(
+    alloc: mem.Allocator,
+    req_ctx: *nl.io.RequestContext,
+    phy_index: u32,
+    if_name: []const u8,
+    mode: u32,
+    flags: []const u16,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    const if_name_z = try fmt.allocPrint(alloc, "{s}\x00", .{ if_name });
+    defer alloc.free(if_name_z);
+
+    var attrs_list: ArrayList(nl.Attribute) = try .initCapacity(alloc, 4);
+    defer attrs_list.deinit(alloc);
+    attrs_list.appendSliceAssumeCapacity(
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).WIPHY }, .data = mem.toBytes(phy_index)[0..] },
+            .{ .hdr = .{ .type = c(ATTR).IFNAME }, .data = if_name_z },
+            .{ .hdr = .{ .type = c(ATTR).IFTYPE }, .data = mem.toBytes(mode)[0..] },
+        },
+    );
+    var flag_attrs_writer: Io.Writer.Allocating = .init(alloc);
+    defer flag_attrs_writer.deinit();
+    if (flags.len > 0) {
+        const fa_w = &flag_attrs_writer.writer;
+        for (flags) |flag| {
+            const flag_attr_hdr: nl.AttributeHeader = .{ .type = flag, .len = 4 };
+            try fa_w.writeStruct(flag_attr_hdr, .little);
+        }
+        const flag_attrs_bytes = flag_attrs_writer.written();
+        try attrs_list.append(alloc, .{
+            .hdr = .{
+                .type = c(ATTR).MNTR_FLAGS,
+                .len = @intCast(nl.attr_hdr_len + flag_attrs_bytes.len),
+            },
+            .data = flag_attrs_bytes,
+        });
+    }
+    try nl.io.request(
+        alloc,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .pid = 0,
+                .seq = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).NEW_INTERFACE,
+                .version = 1,
+            },
+        },
+        attrs_list.items,
+        req_ctx,
+    );
+}
+/// Create a new Virtual Interface (VIF)
+pub fn newInterface(
+    alloc: mem.Allocator,
+    phy_index: u32,
+    if_name: []const u8,
+    mode: u32,
+    flags: []const u16,
+) !Interface {
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestNewInterface(
+        alloc,
+        &req_ctx,
+        phy_index,
+        if_name,
+        mode,
+        flags,
+    );
+    defer posix.close(req_ctx.sock);
+    const interfaces = try handleInterfaceSock(alloc, req_ctx.sock);
+    defer alloc.free(interfaces);
+    if (interfaces.len == 0) //
+        return error.NoInterfaceReturned;
+    return interfaces[0];
+}
+
+/// Request to delete a Virtual Interface (VIF)
+pub fn requestDelInterface(
+    alloc: mem.Allocator,
+    req_ctx: *nl.io.RequestContext,
+    if_index: i32,
+) !void {
+    const info = ctrl_info orelse return error.NL80211ControlInfoNotInitialized;
+    try nl.io.request(
+        alloc,
+        nl.generic.Request,
+        .{
+            .nlh = .{
+                .len = 0,
+                .type = info.FAMILY_ID,
+                .flags = c(nl.NLM_F).REQUEST | c(nl.NLM_F).ACK,
+                .pid = 0,
+                .seq = 0,
+            },
+            .msg = .{
+                .cmd = c(CMD).DEL_INTERFACE,
+                .version = 1,
+            },
+        },
+        &.{
+            .{ .hdr = .{ .type = c(ATTR).IFINDEX }, .data = mem.toBytes(if_index)[0..] },
+        },
+        req_ctx,
+    );
+}
+/// Delete a Virtual Interface (VIF)
+pub fn delInterface(alloc: mem.Allocator, if_index: i32) !void {
+    var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.GENERIC } });
+    try requestDelInterface(
+        alloc,
+        &req_ctx,
+        if_index,
+    );
+    defer posix.close(req_ctx.sock);
+    try nl.parse.handleAckSock(req_ctx.sock);
 }
 
 /// Request the details for the Wireless Interface (`if_index`).

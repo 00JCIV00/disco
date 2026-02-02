@@ -404,7 +404,7 @@ pub const ScanContext = union(enum) {
         /// Netlink Request State
         nl_state: core.AsyncState,
         /// Allowed Channels
-        allowed_chans: []chs.Channel,
+        allowed_chs: []chs.Channel,
         /// Current Channel Index
         ch_idx: usize = 1_000,
         /// Dwell Time for each Channel in Nanoseconds (ns)
@@ -412,7 +412,9 @@ pub const ScanContext = union(enum) {
         /// Timer
         timer: time.Timer,
         /// Monitor Mode Setup
-        setup: enum { down, mon, ch, up, roc, ps, done } = .down,
+        setup: enum { vif, down, mon, ch, up, roc, ps, done } = .vif,
+        /// Use Virtual Interface
+        use_vif: bool = true,
     },
     /// Netlink Scan
     netlink: struct {
@@ -445,7 +447,10 @@ pub const Context = struct {
     global_nl_scan_config: nl._80211.TriggerScanConfig,
     /// Netlink Scan Configs for Interfaces
     nl_scan_configs: *ThreadHashMap([]const u8, nl._80211.TriggerScanConfig),
+    /// Monitor Scan Channels for Interfaces
+    mon_scan_chs: *ThreadHashMap([6]u8, []chs.Channel),
     /// List of all Networks seen
+    /// (Deprecated! User `dev_mal` and `meta_mal` instead)
     networks: *ThreadHashMap([6]u8, Network),
 
     /// Initialize the Network Context.
@@ -497,6 +502,8 @@ pub const Context = struct {
         }
         log.debug("Total Scan Configs: {d}", .{ self.nl_scan_configs.count() });
         //log.debug("Global Scan Channels:\n{f}", .{ SliceF(chs.Channel, "- {f}"){ .slice = core_ctx.config.global_scan_config.channels, .separator = "\n" } });
+        self.mon_scan_chs = core_ctx.alloc.create(ThreadHashMap([6]u8, []chs.Channel)) catch @panic("OOM");
+        self.mon_scan_chs.* = .empty;
         self.networks = core_ctx.alloc.create(ThreadHashMap([6]u8, Network)) catch @panic("OOM");
         self.networks.* = .empty;
         const nl80211_info = nl._80211.ctrl_info orelse @panic("Netlink 802.11 (nl80211) not Initialized!");
@@ -519,6 +526,12 @@ pub const Context = struct {
         scan_conf_iter.unlock();
         self.nl_scan_configs.deinit(alloc);
         alloc.destroy(self.nl_scan_configs);
+        var mon_chs_iter = self.mon_scan_chs.iterator();
+        while (mon_chs_iter.next()) |if_chs| //
+            alloc.free(if_chs.value_ptr.*);
+        mon_chs_iter.unlock();
+        self.mon_scan_chs.deinit(alloc);
+        alloc.destroy(self.mon_scan_chs);
         if (self.global_nl_scan_config.freqs) |freqs| //
             alloc.free(freqs);
         if (self.global_nl_scan_config.ssids) |ssids| //
@@ -573,14 +586,18 @@ pub const Context = struct {
         if (self._scan_arena.state.end_index > 1_000) //
             _ = self._scan_arena.reset(.retain_capacity);
         //log.debug("Network Arena Capacity: {d}B", .{ self._arena.queryCapacity() });
-        const scan_result_resps = core_ctx.nl80211_handler.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM");
-        defer {
+        const scan_result_resps = //
+            if (core_ctx.config.global_scan_config.mode == .netlink) //
+                core_ctx.nl80211_handler.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM") //
+            else //
+                &.{};
+        defer if (core_ctx.config.global_scan_config.mode == .netlink) {
             for (scan_result_resps) |resp| {
                 const data = resp catch continue;
                 core_ctx.alloc.free(data);
             }
             core_ctx.alloc.free(scan_result_resps);
-        }
+        };
         var if_iter = core_ctx.if_ctx.interfaces.iterator();
         defer core_ctx.if_ctx.interfaces.mutex.unlock();
         var scan_list: ArrayList(i32) = .empty;
@@ -607,7 +624,9 @@ pub const Context = struct {
                                     .req_ctx_80211 = try .init(.{ .handler = .{ .handler = core_ctx.nl80211_handler } }),
                                     .nl_state = .ready,
                                     .timer = time.Timer.start() catch @panic("Time Issue"),
-                                    .allowed_chans = allowedChans: {
+                                    .allowed_chs = allowedChs: {
+                                        if (self.mon_scan_chs.get(scan_if.og_mac)) |allowed_chs| //
+                                            break :allowedChs allowed_chs;
                                         const conf_chans: []const chs.Channel = confChans: {
                                             for (core_ctx.config.scan_configs) |scan_conf| {
                                                 if (!mem.eql(u8, scan_conf.if_name, scan_if.name)) //
@@ -621,18 +640,21 @@ pub const Context = struct {
                                                 break :confChans core_ctx.config.global_scan_config.channels;
                                             break :confChans scan_if.supported_chans;
                                         };
-                                        var allowed_chans: ArrayList(chs.Channel) = .empty;
+                                        var allowed_chs_list: ArrayList(chs.Channel) = .empty;
                                         addChs: for (conf_chans) |allow_ch| {
                                             for (scan_if.supported_chans) |sup_ch| {
                                                 if (!meta.eql(allow_ch, sup_ch)) //
                                                     continue;
-                                                allowed_chans.append(self._scan_alloc, allow_ch) catch @panic("OOM");
+                                                allowed_chs_list.append(core_ctx.alloc, allow_ch) catch @panic("OOM");
                                                 continue :addChs;
                                             }
                                         }
-                                        break :allowedChans allowed_chans.toOwnedSlice(self._scan_alloc) catch @panic("OOM");
+                                        const allowed_chs = allowed_chs_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+                                        self.mon_scan_chs.put(core_ctx.alloc, scan_if.og_mac, allowed_chs) catch @panic("OOM");
+                                        break :allowedChs allowed_chs; 
                                     },
                                     .dwell = core_ctx.config.global_scan_config.dwell * time.ns_per_ms,
+                                    .use_vif = core_ctx.config.global_scan_config.use_vif,
                                 },
                             },
                         },
@@ -850,7 +872,111 @@ pub const Context = struct {
                             }
                         },
                         .monitor => |*mon_ctx| {
+                            var mon_if_index: i32 = scan_if.vif_index orelse scan_if.index;
                             monSetup: switch (mon_ctx.setup) {
+                                .vif => vif: switch (mon_ctx.nl_state) {
+                                    .ready, .request => {
+                                        if (!mon_ctx.use_vif) {
+                                            mon_ctx.setup = .down;
+                                            continue :monSetup mon_ctx.setup;
+                                        }
+                                        if (scan_if.state & c(nl.route.IFF).UP != 0) {
+                                            // TODO: Handle this better w/ regards to async.
+                                            log.debug("Setting '{s} ({d})' Down for Monitor VIF.", .{ scan_if.name, scan_if.index });
+                                            scan_if.modify(core_ctx, .{ .state = c(nl.route.IFF).DOWN }) catch |err| {
+                                                log.warn("Unable to set '{s}' to Down: {t}", .{ scan_if.name, err });
+                                            };
+                                        }
+                                        if (scan_if.vif_index != null) {
+                                            mon_ctx.setup = .done;
+                                            continue :monSetup mon_ctx.setup;
+                                        }
+                                        const vif_name = fmt.allocPrint(core_ctx.alloc, "disco-{d}_mon", .{ scan_if.index }) catch @panic("OOM");
+                                        defer core_ctx.alloc.free(vif_name);
+                                        log.debug("Creating Monitor VIF '{s}' for '{s} ({d})'...", .{ vif_name, scan_if.name, scan_if.index });
+                                        // One time blocking operation to kill remnant VIFs
+                                        if (nl.route.getIfIdx(vif_name)) |old_idx| {
+                                            try nl._80211.delInterface(core_ctx.alloc, old_idx);
+                                            log.warn("Deleted Remnant VIF '{s} ({d})'", .{ vif_name, old_idx });
+                                        }
+                                        else |_| {}
+                                        mon_ctx.req_ctx_80211.nextSeqID();
+                                        nl._80211.requestNewInterface(
+                                            core_ctx.alloc,
+                                            &mon_ctx.req_ctx_80211,
+                                            scan_if.phy_index,
+                                            vif_name,
+                                            c(nl._80211.IFTYPE).MONITOR,
+                                            &.{
+                                                c(nl._80211.MntrFlags).OTHER_BSS,
+                                                c(nl._80211.MntrFlags).CONTROL,
+                                            },
+                                        ) catch |err| {
+                                            log.warn("Unable to create VIF for '{s}': {t}. Falling back to main interface.", .{ scan_if.name, err });
+                                            mon_ctx.use_vif = false;
+                                            mon_ctx.setup = .down;
+                                            continue :monSetup mon_ctx.setup;
+                                        };
+                                        mon_ctx.nl_state = .await_response;
+                                        continue :vif mon_ctx.nl_state;
+                                    },
+                                    .await_response => {
+                                        if (!mon_ctx.req_ctx_80211.checkResponse()) //
+                                            continue;
+                                        mon_ctx.nl_state = .parse;
+                                        continue :vif mon_ctx.nl_state;
+                                    },
+                                    .parse => {
+                                        const vif_resp = mon_ctx.req_ctx_80211.getResponse() orelse continue;
+                                        if (vif_resp) |resp_data| {
+                                            defer core_ctx.alloc.free(resp_data);
+                                            const interfaces = nl._80211.handleInterfaceBuf(core_ctx.alloc, resp_data) catch |err| {
+                                                log.warn("Unable to parse VIF response for '{s}': {t}. Falling back to main interface.", .{ scan_if.name, err });
+                                                mon_ctx.use_vif = false;
+                                                mon_ctx.nl_state = .ready;
+                                                mon_ctx.setup = .down;
+                                                continue :monSetup mon_ctx.setup;
+                                            };
+                                            defer {
+                                                for (interfaces) |resp_if| //
+                                                    nl.parse.freeBytes(core_ctx.alloc, nl._80211.Interface, resp_if);
+                                                core_ctx.alloc.free(interfaces);
+                                            }
+                                            if (interfaces.len > 0) {
+                                                const new_vif = interfaces[0];
+                                                scan_if.vif_index = @intCast(new_vif.IFINDEX.?);
+                                                scan_if.vif_name = core_ctx.alloc.dupe(u8, new_vif.IFNAME.?) catch @panic("OOM");
+                                                scan_if.initSock(.vif) catch |err| {
+                                                    log.warn("Unable to initialize VIF socket for '{s}': {t}. Falling back to main interface.", .{ scan_if.name, err });
+                                                    mon_ctx.use_vif = false;
+                                                    mon_ctx.nl_state = .ready;
+                                                    mon_ctx.setup = .down;
+                                                    continue :monSetup mon_ctx.setup;
+                                                };
+                                                log.info(
+                                                    "Created Monitor VIF '{s}' (idx: {d}) for '{s} ({d})'",
+                                                    .{
+                                                        scan_if.vif_name.?,
+                                                        scan_if.vif_index.?,
+                                                        scan_if.name,
+                                                        scan_if.index,
+                                                    }
+                                                );
+                                                mon_ctx.nl_state = .ready;
+                                                mon_ctx.timer.reset();
+                                                mon_ctx.setup = .ch;
+                                                continue :monSetup mon_ctx.setup;
+                                            }
+                                        } else |err| {
+                                            log.warn("Unable to create VIF for '{s}': {t}. Falling back to main interface.", .{ scan_if.name, err });
+                                            mon_ctx.use_vif = false;
+                                        }
+                                        mon_if_index = scan_if.vif_index orelse scan_if.index;
+                                        mon_ctx.nl_state = .ready;
+                                        mon_ctx.setup = .down;
+                                        continue :monSetup mon_ctx.setup;
+                                    },
+                                },
                                 .down,
                                 .up,
                                 => setIFF: switch (mon_ctx.nl_state) {
@@ -866,7 +992,7 @@ pub const Context = struct {
                                         try nl.route.requestSetState(
                                             core_ctx.alloc,
                                             &mon_ctx.req_ctx_rt,
-                                            scan_if.index,
+                                            mon_if_index,
                                             set_state,
                                         );
                                         mon_ctx.nl_state = .await_response;
@@ -887,7 +1013,7 @@ pub const Context = struct {
                                         const mod_resp = mon_ctx.req_ctx_rt.getResponse() orelse continue;
                                         if (mod_resp) |resp_data| {
                                             core_ctx.alloc.free(resp_data);
-                                            log.info("Set '{s} ({d})' to {t}", .{ scan_if.name, scan_if.index, set_tag });
+                                            log.info("Set '{s} ({d})' to {t}", .{ scan_if.name, mon_if_index, set_tag });
                                         } //
                                         else |err| {
                                             log.warn("Unable to set '{s}' to {t}: {t}", .{ scan_if.name, set_tag, err });
@@ -910,7 +1036,7 @@ pub const Context = struct {
                                         try nl._80211.requestSetMode(
                                             core_ctx.alloc,
                                             &mon_ctx.req_ctx_80211,
-                                            scan_if.index,
+                                            mon_if_index,
                                             c(nl._80211.IFTYPE).MONITOR,
                                             &.{
                                                 //c(nl._80211.MntrFlags).ACTIVE,
@@ -933,7 +1059,7 @@ pub const Context = struct {
                                         const mod_resp = mon_ctx.req_ctx_80211.getResponse() orelse continue;
                                         if (mod_resp) |resp_data| {
                                             core_ctx.alloc.free(resp_data);
-                                            log.info("Switched '{s} ({d})' to Monitor Mode", .{ scan_if.name, scan_if.index });
+                                            log.info("Switched '{s} ({d})' to Monitor Mode", .{ scan_if.name, mon_if_index });
                                             mon_ctx.timer.reset();
                                         } //
                                         else |err| {
@@ -952,7 +1078,7 @@ pub const Context = struct {
                                         nl._80211.requestSetFreq(
                                             core_ctx.alloc,
                                             &mon_ctx.req_ctx_80211,
-                                            scan_if.index,
+                                            mon_if_index,
                                             chs.Frequencies.band_2G_20[0],
                                             nl._80211.CHANNEL_WIDTH.@"20",
                                         ) catch |err| {
@@ -1010,7 +1136,7 @@ pub const Context = struct {
                                                 },
                                             },
                                             &.{
-                                                .{ .hdr = .{ .type = c(nl._80211.ATTR).IFINDEX }, .data = mem.toBytes(scan_if.index)[0..] },
+                                                .{ .hdr = .{ .type = c(nl._80211.ATTR).IFINDEX }, .data = mem.toBytes(mon_if_index)[0..] },
                                                 .{ .hdr = .{ .type = c(nl._80211.ATTR).COOKIE }, .data = mem.toBytes(@as(u64, 1234321))[0..] },
                                             },
                                             &mon_ctx.req_ctx_80211,
@@ -1050,7 +1176,7 @@ pub const Context = struct {
                                         try nl._80211.requestSetPowerSave(
                                             core_ctx.alloc,
                                             &mon_ctx.req_ctx_80211,
-                                            scan_if.index,
+                                            mon_if_index,
                                             false,
                                         );
                                         mon_ctx.nl_state = .await_response;
@@ -1089,34 +1215,36 @@ pub const Context = struct {
                                     const single_ch: bool = singleCh: {
                                         const if_ch = scan_if.channel orelse break :singleCh false;
                                         break :singleCh //
-                                            mon_ctx.allowed_chans.len == 1 and //
-                                            mon_ctx.ch_idx < mon_ctx.allowed_chans.len and //
-                                            meta.eql(mon_ctx.allowed_chans[mon_ctx.ch_idx], if_ch);
+                                            mon_ctx.allowed_chs.len == 1 and //
+                                            mon_ctx.ch_idx < mon_ctx.allowed_chs.len and //
+                                            meta.eql(mon_ctx.allowed_chs[mon_ctx.ch_idx], if_ch);
                                     };
                                     if ( //
                                         single_ch or //
                                         mon_ctx.timer.read() < mon_ctx.dwell or //
-                                        mon_ctx.allowed_chans.len == 0 //
+                                        mon_ctx.allowed_chs.len == 0 //
                                     ) //
                                         continue;
                                     const ch: chs.Channel = ch: {
                                         const cur_idx = mon_ctx.ch_idx;
                                         mon_ctx.ch_idx +|= 1;
-                                        if (mon_ctx.ch_idx >= mon_ctx.allowed_chans.len) {
+                                        if (mon_ctx.ch_idx >= mon_ctx.allowed_chs.len) {
                                             if (cur_idx != 1_000) {
                                                 scan_if.usage = .active;
                                                 continue;
                                             }
                                             mon_ctx.ch_idx = 0;
                                         }
-                                        break :ch mon_ctx.allowed_chans[mon_ctx.ch_idx];
+                                        if (mon_ctx.allowed_chs.len == 0) //
+                                            continue;
+                                        break :ch mon_ctx.allowed_chs[mon_ctx.ch_idx];
                                     };
                                     //log.debug("Updating Channel of Interface '{s}' to {f}...", .{ scan_if.name, ch });
                                     mon_ctx.req_ctx_80211.nextSeqID();
                                     nl._80211.requestSetFreq(
                                         core_ctx.alloc,
                                         &mon_ctx.req_ctx_80211,
-                                        scan_if.index,
+                                        mon_if_index,
                                         try ch.toFreq(),
                                         nl._80211.CHANNEL_WIDTH.fromBW(ch.bw),
                                     ) catch |err| {
@@ -1136,15 +1264,17 @@ pub const Context = struct {
                                     const mod_resp = mon_ctx.req_ctx_80211.getResponse().?;
                                     if (mod_resp) |resp_data| {
                                         core_ctx.alloc.free(resp_data);
-                                        log.debug("Changed Channel of '{s}' to '{f}'", .{ scan_if.name, mon_ctx.allowed_chans[mon_ctx.ch_idx] });
+                                        log.debug("Changed Channel of '{s}' to '{f}'", .{ scan_if.name, mon_ctx.allowed_chs[mon_ctx.ch_idx] });
                                         mon_ctx.timer.reset();
                                     } //
                                     else |err| {
-                                        const rm_ch: chs.Channel = mon_ctx.allowed_chans[mon_ctx.ch_idx];
+                                        const rm_ch: chs.Channel = mon_ctx.allowed_chs[mon_ctx.ch_idx];
                                         log.warn("Unable to change Channel of '{s}' to {f}: {t}", .{ scan_if.name, rm_ch, err });
-                                        var allow_ch_list: ArrayList(chs.Channel) = .fromOwnedSlice(mon_ctx.allowed_chans);
+                                        var allow_ch_list: ArrayList(chs.Channel) = .fromOwnedSlice(mon_ctx.allowed_chs);
                                         _ = allow_ch_list.orderedRemove(mon_ctx.ch_idx);
-                                        mon_ctx.allowed_chans = allow_ch_list.toOwnedSlice(self._scan_alloc) catch @panic("OOM");
+                                        mon_ctx.allowed_chs = allow_ch_list.toOwnedSlice(core_ctx.alloc) catch @panic("OOM");
+                                        self.mon_scan_chs.put(core_ctx.alloc, scan_if.og_mac, mon_ctx.allowed_chs) catch @panic("OOM");
+                                        mon_ctx.ch_idx -|= 1;
                                         var sup_ch_list: ArrayList(chs.Channel) = .fromOwnedSlice(scan_if.supported_chans);
                                         var sup_freq_list: ArrayList(u32) = .fromOwnedSlice(scan_if.supported_freqs);
                                         for (sup_ch_list.items, 0..) |ch, idx| {

@@ -818,6 +818,12 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
     var req_ctx: nl.io.RequestContext = try .init(.{ .conf = .{ .kind = nl.NETLINK.ROUTE } });
     try requestIFIdx(fba.allocator(), &req_ctx, if_name);
     defer posix.close(req_ctx.sock);
+    try posix.setsockopt(
+        req_ctx.sock,
+        posix.SOL.SOCKET,
+        posix.SO.RCVTIMEO,
+        mem.toBytes(posix.timeval{ .sec = 1, .usec = 0 })[0..],
+    );
     var resp_idx: usize = 0;
     while (resp_idx <= 10) : (resp_idx += 1) {
         var resp_buf: [4096]u8 = undefined;
@@ -833,8 +839,8 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
         while (offset < resp_len) {
             var start: usize = offset;
             var end: usize = (offset + @sizeOf(nl.MessageHeader));
-            const nl_resp_hdr: *nl.MessageHeader = mem.bytesAsValue(nl.MessageHeader, resp_buf[start..end]);
-            if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader))
+            const nl_resp_hdr = mem.bytesAsValue(nl.MessageHeader, resp_buf[start..end]);
+            if (nl_resp_hdr.len < @sizeOf(nl.MessageHeader)) //
                 return error.InvalidMessage;
             if (nl_resp_hdr.type == c(nl.NLMSG).ERROR) {
                 start = end;
@@ -855,12 +861,14 @@ pub fn getIfIdx(if_name: []const u8) !i32 {
                 const ifi: InterfaceInfoMessage = mem.bytesToValue(InterfaceInfoMessage, resp_buf[start..end]);
                 start = end;
                 end += @sizeOf(nl.AttributeHeader);
-                const _attr: nl.AttributeHeader = mem.bytesAsValue(nl.AttributeHeader, resp_buf[start..end]);
-                if (@as(nl.IFLA, @enumFromInt(_attr.type)) != .IFNAME) break :ifi;
+                const _attr = mem.bytesAsValue(nl.AttributeHeader, resp_buf[start..end]);
+                if (@as(nl.IFLA, @enumFromInt(_attr.type)) != .IFNAME) //
+                    break :ifi;
                 start = end;
                 end += _attr.len;
                 const name = resp_buf[start..end];
-                if (!mem.eql(u8, if_name, name[0..@min(_attr.len, if_name.len)])) break :ifi;
+                if (!mem.eql(u8, if_name, name[0..@min(_attr.len, if_name.len)])) //
+                    break :ifi;
                 return ifi.index;
             }
             offset += mem.alignForward(usize, nl_resp_hdr.len, 4);
