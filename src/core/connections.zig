@@ -96,7 +96,7 @@ pub const Config = struct {
     allow_llmnr: ?dns.ProtoSetting = null,
 
     pub fn deinit(self: *const @This(), alloc: mem.Allocator) void {
-        for (self.if_names) |name|
+        for (self.if_names) |name| //
             alloc.free(name);
         alloc.free(self.if_names);
         alloc.free(self.passphrase);
@@ -253,6 +253,12 @@ pub const Context = struct {
     }
 
     /// Score Candidate Networks
+    /// Scoring Rubric:
+    /// - Time Score: 50% Measure of Recency (100 - ((now - last_seen) / max_age))
+    /// - Receive Quality (RXQ): 50% # Measure of Frame Loss
+    /// - Receive Signal Strength Indicator (RSSI): 25% Measure of Signal Strength
+    /// - Sig Score: RXQ or RSSI (if no RXQ present)
+    /// - Total Score: Time Score + Sig Score
     fn scoreCandidates(self: *@This()) !void {
         const core_ctx: *core.Core = @alignCast(@fieldParentPtr("conn_ctx", self));
         //const core_ctx: *core.Core = @fieldParentPtr("conn_ctx", self);
@@ -268,7 +274,7 @@ pub const Context = struct {
             const net_meta = meta_slice.get(meta_idx);
             const dev = core_ctx.network_ctx.dev_mal.get(net_meta.mac) orelse continue;
             switch (dev.kind) {
-                .ap, .mesh => {},
+                .ap, .mesh => |bss| _ = bss.getSecurityInfo() catch continue,
                 else => continue,
             }
             const config = connConfig: {
@@ -513,6 +519,9 @@ pub const Connection = struct {
                 working: bool = false,
             },
             frames,
+            scan: struct {
+                scan_timer: time.Timer,
+            },
         },
         ///// Searching f/ the Network
         //search,
@@ -647,6 +656,8 @@ pub const Connection = struct {
             ._rtnetlink_req_ctx = try .init(.{ .handler = .{ .handler = core_ctx.rtnetlink_handler } }),
         };
         try self._nl80211_req_ctx.handler.?.trackCommand(c(nl._80211.CMD).AUTHENTICATE);
+        if (core_ctx.config.global_scan_config.mode == .monitor) //
+            try self._nl80211_req_ctx.handler.?.trackCommand(c(nl._80211.CMD).NEW_SCAN_RESULTS);
         log.debug("Starting connection to '{s}' w/ '{f}'...", .{ candidate.ssid, MACF{ .bytes = candidate.conn_if[0..] } });
         return self;
     }
@@ -673,8 +684,9 @@ pub const Connection = struct {
                     Thread.sleep(1 * time.ns_per_ms);
                 }
             },
-            else => {},//self.deinit(core_ctx.alloc),
+            else => {},
         }
+        //self.deinit(core_ctx.alloc);
     }
     
     /// Deinitialize this Connection
@@ -836,6 +848,80 @@ pub const Connection = struct {
                         }
                         log.debug("Finished setup for Connection: {s} | {s}", .{ self.ssid, conn_if.name });
                         self._nl_state = .request;
+                        setup_ctx.* = .{ .scan = .{ .scan_timer = time.Timer.start() catch @panic("Time Issue") } };
+                        continue :setup setup_ctx.*;
+                    },
+                },
+                .scan => |*scan_ctx| scan: switch (self._nl_state) {
+                    .ready, .request => {
+                        if (core_ctx.config.global_scan_config.mode == .netlink) {
+                            self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
+                            continue :state self._state;
+                        }
+                        log.debug("Connection {s} | {s}: Scanning for BSS...", .{ self.ssid, conn_if.name });
+                        self._nl80211_req_ctx.nextSeqID();
+                        try nl._80211.requestTriggerScan(
+                            core_ctx.alloc,
+                            &self._nl80211_req_ctx,
+                            conn_if.index,
+                            .{
+                                .freqs = &.{ self.freq },
+                                .ssids = &.{ self.ssid },
+                            },
+                        );
+                        self._nl_state = .await_response;
+                        continue :scan self._nl_state;
+                    },
+                    .await_response => {
+                        if (@divFloor(scan_ctx.scan_timer.read(), time.ns_per_ms) > 3_000) {
+                            log.warn("Connection {s} | {s}: BSS Scan Timed Out", .{ self.ssid, conn_if.name });
+                            return error.ScanTimeout;
+                        }
+                        if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS)) //
+                            return;
+                        self._nl_state = .parse;
+                        continue :scan self._nl_state;
+                    },
+                    .parse => {
+                        const scan_resps = try self._nl80211_req_ctx.handler.?.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS);
+                        defer {
+                            for (scan_resps) |resp| {
+                                const data = resp catch continue;
+                                core_ctx.alloc.free(data);
+                            }
+                            core_ctx.alloc.free(scan_resps);
+                        }
+                        if (scan_resps.len == 0) {
+                            log.warn("Connection {s} | {s}: BSS Scan Failed (No Results)", .{ self.ssid, conn_if.name });
+                            return error.NoScanResults;
+                        }
+                        //const tgt_band: ?chs.Band = band: {
+                        //    const ch = chs.Channel.fromFreqBW(@intCast(self.freq), .bw20) catch break :band null;
+                        //    break :band ch.band;
+                        //};
+                        //const bss_match: ?nl._80211.BasicServiceSet = bssMatch: {
+                        //    for (scan_resps) |resp| {
+                        //        const data = resp catch continue;
+                        //        defer core_ctx.alloc.free(data);
+                        //        const scan_results = nl._80211.handleScanResultsBuf(core_ctx.a_alloc, data) catch continue;
+                        //        for (scan_results) |result| {
+                        //            const bss = result.BSS orelse continue;
+                        //            if (tgt_band) |band| {
+                        //                const bss_ch = chs.Channel.fromFreqBW(@intCast(bss.FREQUENCY), .bw20) catch continue;
+                        //                if (bss_ch.band != band) //
+                        //                    continue;
+                        //            }
+                        //            break :bssMatch bss;
+                        //        }
+                        //    }
+                        //    break :bssMatch null;
+                        //};
+                        //if (bss_match) |new_bss| {
+                        //    self._bss = new_bss;
+                        //    self.freq = new_bss.FREQUENCY;
+                        //}
+                        log.debug("Connection {s} | {s}: BSS Scan Complete ({d}ms)", .{ self.ssid, conn_if.name, @divFloor(scan_ctx.scan_timer.read(), time.ns_per_ms) });
+                        self._nl_state = .request;
                         self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
                         continue :state self._state;
                     },
@@ -870,7 +956,8 @@ pub const Connection = struct {
                                     log.warn("Connection {s} | {s}: Failed Authentication (Timed Out)", .{ self.ssid, conn_if.name });
                                     return error.AuthTimeout;
                                 }
-                                if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).AUTHENTICATE)) return;
+                                if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).AUTHENTICATE)) //
+                                    return;
                                 self._nl_state = .parse;
                                 continue :nlState self._nl_state;
                             },

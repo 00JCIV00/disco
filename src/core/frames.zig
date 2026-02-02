@@ -261,7 +261,18 @@ pub const Context = struct {
                     switch (frame_type) {
                         .management => {
                             const addr_2 = wifi_hdr.addr_2 orelse continue :frameLoop;
-                            if (core_ctx.network_ctx.dev_mal.getIndex(addr_2, false)) |_|
+                            const needs_update = needsUpd: {
+                                const existing = core_ctx.network_ctx.dev_mal.get(addr_2) orelse break :needsUpd true;
+                                const existing_bss = switch (existing.kind) {
+                                    .ap, .mesh => |bss| bss,
+                                    else => break :needsUpd true,
+                                };
+                                const bss_ies = existing_bss.INFORMATION_ELEMENTS orelse break :needsUpd true;
+                                if (bss_ies.RSN == null) //
+                                    break :needsUpd true;
+                                break :needsUpd false;
+                            };
+                            if (!needs_update) //
                                 continue :frameLoop;
                             const rt_ch = rt_data.Channel orelse continue :frameLoop;
                             const fixed_params = fixedParams: switch (wifi_hdr.frame_control.frame_subtype.management) {
@@ -389,8 +400,12 @@ pub const Context = struct {
                 },
                 .extension => continue :frameLoop,
             }
-            if (dev) |_dev| //
-                core_ctx.network_ctx.dev_mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
+            if (dev) |_dev| {
+                if (core_ctx.network_ctx.dev_mal.getIndex(_dev.mac, false)) |idx| //
+                    core_ctx.network_ctx.dev_mal.set(idx, _dev)
+                else //
+                    core_ctx.network_ctx.dev_mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
+            }
         }
     }
 
