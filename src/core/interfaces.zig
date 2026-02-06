@@ -605,15 +605,15 @@ pub const Interface = struct {
         var chans_5G: u8 = 0;
         var chans_6G: u8 = 0;
         for (self.supported_freqs) |freq| {
-            if (mem.indexOfScalar(usize, chs.Frequencies.band_2G_20, @intCast(freq))) |_| {
+            if (mem.indexOfScalar(u32, chs.Frequencies.band_2G_20, @intCast(freq))) |_| {
                 chans_2G += 1;
                 continue;
             }
-            if (mem.indexOfScalar(usize, chs.Frequencies.band_5G_20, @intCast(freq))) |_| {
+            if (mem.indexOfScalar(u32, chs.Frequencies.band_5G_20, @intCast(freq))) |_| {
                 chans_5G += 1;
                 continue;
             }
-            if (mem.indexOfScalar(usize, chs.Frequencies.band_6G_20, @intCast(freq))) |_| {
+            if (mem.indexOfScalar(u32, chs.Frequencies.band_6G_20, @intCast(freq))) |_| {
                 chans_6G += 1;
                 continue;
             }

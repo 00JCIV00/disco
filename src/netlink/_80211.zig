@@ -2525,12 +2525,14 @@ pub fn requestTriggerScan(
         var ssid_attrs_buf: ArrayList(u8) = .empty;
         errdefer ssid_attrs_buf.deinit(alloc);
         for (ssids) |ssid| {
-            const attr_len = mem.alignForward(u16, @intCast(nl.attr_hdr_len + ssid.len), 4);
-            try ssid_attrs_buf.appendSlice(alloc, mem.toBytes(@as(u16, 0))[0..]);
-            try ssid_attrs_buf.appendSlice(alloc, mem.toBytes(attr_len)[0..]);
+            const ssid_attr_hdr: nl.AttributeHeader = .{
+                .len = @intCast(nl.attr_hdr_len + ssid.len),
+                .type = c(ATTR).SSID,
+            };
+            try ssid_attrs_buf.appendSlice(alloc, mem.toBytes(ssid_attr_hdr)[0..]);
             try ssid_attrs_buf.appendSlice(alloc, ssid);
-            const align_len = mem.alignForward(usize, attr_len, 4) - attr_len;
-            try ssid_attrs_buf.appendNTimes(alloc, 0, align_len);
+            const padded_len = mem.alignForward(usize, ssid_attr_hdr.len, 4);
+            try ssid_attrs_buf.appendNTimes(alloc, 0, padded_len - ssid_attr_hdr.len);
         }
         ssid_attrs_bytes = try ssid_attrs_buf.toOwnedSlice(alloc);
         try attrs_buf.append(alloc, .{

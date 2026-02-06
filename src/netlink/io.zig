@@ -400,7 +400,14 @@ pub const Handler = struct {
         defer cmd_resp_map.mutex.unlock();
         var cmd_resp_iter = cmd_resp_map.iterator();
         var resp_list: ArrayList(anyerror![]const u8) = .empty;
-        errdefer resp_list.deinit(self._alloc);
+        errdefer {
+            for (resp_list.items) |resp| {
+                if (resp) |data| //
+                    self._alloc.free(data) //
+                else |_| {}
+            }
+            resp_list.deinit(self._alloc);
+        }
         while (cmd_resp_iter.next()) |resp_entry| {
             const response = resp_entry.value_ptr;
             var timeout_state: Response = .{ .ready = error.Timeout };
@@ -554,7 +561,8 @@ pub const Handler = struct {
     /// Handle an Error with this Netlink Message Handler
     pub fn handleError(self: *@This(), err: anyerror) void {
         log.debug("An Error occured with the Handler: {s}", .{ @errorName(err) });
-        if (self.err_fn) |errFn| return errFn(err);
+        if (self.err_fn) |errFn| //
+            return errFn(err);
     }
 
     /// Detect the Command 'Type' of Netlink Message using the provided Netlink Message Header (`hdr`) and `data`.
@@ -618,13 +626,15 @@ pub const Loop = struct {
     /// Deinitialize this Event Loop and any Handlers associated to it
     pub fn deinit(self: *@This(), alloc: mem.Allocator) void {
         var handlers_iter = self._handlers.iterator();
-        while (handlers_iter.next()) |handler| handler.value_ptr.*.deinit();
+        while (handlers_iter.next()) |handler| //
+            handler.value_ptr.*.deinit();
         self._handlers.deinit(alloc);
     }
 
     /// Start the Event Loop on its own Thread
     pub fn start(self: *@This(), alloc: mem.Allocator, active: *atomic.Value(bool)) !void {
-        if (self._active.load(.acquire)) return;
+        if (self._active.load(.acquire)) //
+            return;
         self._active.store(true, .monotonic);
         self._thread = try .spawn(
             .{ .allocator = alloc },
@@ -642,7 +652,8 @@ pub const Loop = struct {
         while (active.load(.acquire) and self._active.load(.acquire)) {
             const event_count = posix.epoll_wait(self._epoll_fd, events[0..], -1);
             for (events[0..event_count]) |event| {
-                if (!active.load(.acquire) or !self._active.load(.acquire)) break;
+                if (!active.load(.acquire) or !self._active.load(.acquire)) //
+                    break;
                 //log.debug("Received event on: {d}", .{ event.data.fd });
                 const handler = self._handlers.get(event.data.fd) orelse continue;
                 handler.handleResponse();
@@ -655,12 +666,14 @@ pub const Loop = struct {
     pub fn stop(self: *@This(), de_alloc: ?mem.Allocator) void {
         self._active.store(false, .monotonic);
         self._thread.join();
-        if (de_alloc) |alloc| self.deinit(alloc);
+        if (de_alloc) |alloc| //
+            self.deinit(alloc);
     }
 
     /// Handle an Error
     fn handleError(self: *@This(), err: anyerror) void {
-        if (self.err_fn) |errFn| return errFn(self, err);
+        if (self.err_fn) |errFn| //
+            return errFn(self, err);
         log.debug("The Netlink Event Loop caught an Error: {s}", .{ @errorName(err) });
     }
 

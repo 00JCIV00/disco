@@ -372,8 +372,8 @@ pub const Core = struct {
         self.active.store(false, .seq_cst);
         self._mutex.lock();
         defer self._mutex.unlock();
-        //self.nl_event_loop.stop(null);
-        //log.info("- Stopped Netlink Event Loop.", .{});
+        self.nl_event_loop.stop(null);
+        log.info("- Stopped Netlink Event Loop.", .{});
         //self._thread_pool.waitAndWork(&self._wait_group);
         //self._thread_pool.deinit();
         //self.serve_ctx.active.store(false, .monotonic);

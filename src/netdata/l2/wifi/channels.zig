@@ -184,23 +184,23 @@ pub const Channels = struct {
 /// Center Frequencies mirroring `Channels`.
 pub const Frequencies = struct {
     // 2.4 GHz
-    pub const band_2G_20: []const usize = genFrequencies(Channels.band_2G_20);
+    pub const band_2G_20: []const u32 = genFrequencies(Channels.band_2G_20);
     // 5 GHz
-    pub const band_5G_20: []const usize = genFrequencies(Channels.band_5G_20);
-    pub const band_5G_40: []const usize = genFrequencies(Channels.band_5G_40);
-    pub const band_5G_80: []const usize = genFrequencies(Channels.band_5G_80);
-    pub const band_5G_160: []const usize = genFrequencies(Channels.band_5G_160);
+    pub const band_5G_20: []const u32 = genFrequencies(Channels.band_5G_20);
+    pub const band_5G_40: []const u32 = genFrequencies(Channels.band_5G_40);
+    pub const band_5G_80: []const u32 = genFrequencies(Channels.band_5G_80);
+    pub const band_5G_160: []const u32 = genFrequencies(Channels.band_5G_160);
     // 6 GHz (Wi-Fi 6E & 7)
-    pub const band_6G_20: []const usize = genFrequencies(Channels.band_6G_20);
-    pub const band_6G_40: []const usize = genFrequencies(Channels.band_6G_40);
-    pub const band_6G_80: []const usize = genFrequencies(Channels.band_6G_80);
-    pub const band_6G_160: []const usize = genFrequencies(Channels.band_6G_160);
-    pub const band_6G_320: []const usize = genFrequencies(Channels.band_6G_320);
+    pub const band_6G_20: []const u32 = genFrequencies(Channels.band_6G_20);
+    pub const band_6G_40: []const u32 = genFrequencies(Channels.band_6G_40);
+    pub const band_6G_80: []const u32 = genFrequencies(Channels.band_6G_80);
+    pub const band_6G_160: []const u32 = genFrequencies(Channels.band_6G_160);
+    pub const band_6G_320: []const u32 = genFrequencies(Channels.band_6G_320);
     // All
-    pub const all_20: []const usize = band_2G_20 ++ band_5G_20 ++ band_6G_20;
-    pub const all_5G: []const usize = band_5G_20 ++ band_5G_40 ++ band_5G_80 ++ band_5G_160;
-    pub const all_6G: []const usize = band_6G_20 ++ band_6G_40 ++ band_6G_80 ++ band_6G_160 ++ band_6G_320;
-    pub const all: []const usize = all_20 ++ all_5G ++ all_6G;
+    pub const all_20: []const u32 = band_2G_20 ++ band_5G_20 ++ band_6G_20;
+    pub const all_5G: []const u32 = band_5G_20 ++ band_5G_40 ++ band_5G_80 ++ band_5G_160;
+    pub const all_6G: []const u32 = band_6G_20 ++ band_6G_40 ++ band_6G_80 ++ band_6G_160 ++ band_6G_320;
+    pub const all: []const u32 = all_20 ++ all_5G ++ all_6G;
 };
 
 /// Generate Channels for the provided `band` and `bandwidth`.
@@ -293,8 +293,8 @@ fn genWideBand(comptime band: Band, comptime bw: Bandwidth) []const Channel {
 }
 
 /// Build an array of Center Frequencies in MHz for all Channels (`chans`).
-fn genFrequencies(comptime chans: []const Channel) []const usize {
-    var freqs: [chans.len]usize = undefined;
+fn genFrequencies(comptime chans: []const Channel) []const u32 {
+    var freqs: [chans.len]u32 = undefined;
     for (chans, freqs[0..]) |ch, *freq| //
         freq.* = ch.toFreq() catch @compileError("Unknown WiFi channel");
     const freqs_out = freqs;

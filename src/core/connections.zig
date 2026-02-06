@@ -521,6 +521,7 @@ pub const Connection = struct {
             frames,
             scan: struct {
                 scan_timer: time.Timer,
+                scan_state: enum { trigger, results } = .trigger,
             },
         },
         ///// Searching f/ the Network
@@ -745,7 +746,7 @@ pub const Connection = struct {
         } //
         else {
             self._if_index = conn_if.index;
-            log.info("Connecting to '{s}' w/ '{s}'...", .{ self.ssid, conn_if.name });
+            log.info("Connecting to '{s}' ({d}MHz) w/ '{s}'...", .{ self.ssid, self.freq, conn_if.name });
         }
         state: switch (self._state) {
             .setup => |*setup_ctx| setup: switch (setup_ctx.*) {
@@ -853,77 +854,111 @@ pub const Connection = struct {
                     },
                 },
                 .scan => |*scan_ctx| scan: switch (self._nl_state) {
-                    .ready, .request => {
-                        if (core_ctx.config.global_scan_config.mode == .netlink) {
-                            self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
-                            continue :state self._state;
-                        }
-                        log.debug("Connection {s} | {s}: Scanning for BSS...", .{ self.ssid, conn_if.name });
-                        self._nl80211_req_ctx.nextSeqID();
-                        try nl._80211.requestTriggerScan(
-                            core_ctx.alloc,
-                            &self._nl80211_req_ctx,
-                            conn_if.index,
-                            .{
-                                .freqs = &.{ self.freq },
-                                .ssids = &.{ self.ssid },
-                            },
-                        );
-                        self._nl_state = .await_response;
-                        continue :scan self._nl_state;
+                    .ready, .request => switch (scan_ctx.scan_state) {
+                        .trigger => {
+                            if (core_ctx.config.global_scan_config.mode == .netlink) {
+                                self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
+                                continue :state self._state;
+                            }
+                            log.debug("Connection {s} | {s}: Triggering BSS Scan...", .{ self.ssid, conn_if.name });
+                            const ch_list: []const u32 = chList: {
+                                const ch = chs.Channel.fromFreqBW(@intCast(self.freq), .bw20) catch break :chList chs.Frequencies.all_20;
+                                break :chList switch (ch.band) {
+                                    .b2 => chs.Frequencies.band_2G_20,
+                                    .b5 => chs.Frequencies.band_5G_20,
+                                    .b6 => chs.Frequencies.band_6G_20,
+                                };
+                            };
+                            self._nl80211_req_ctx.nextSeqID();
+                            try nl._80211.requestTriggerScan(
+                                core_ctx.alloc,
+                                &self._nl80211_req_ctx,
+                                conn_if.index,
+                                .{
+                                    .freqs = ch_list,
+                                    .ssids = &.{ self.ssid },
+                                },
+                            );
+                            self._nl_state = .await_response;
+                            continue :scan self._nl_state;
+                        },
+                        .results => {
+                            if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS)) //
+                                return;
+                            // Drain the NEW_SCAN_RESULTS notifications
+                            const scan_notifs = try self._nl80211_req_ctx.handler.?.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS);
+                            for (scan_notifs) |notif| {
+                                if (notif) |data| //
+                                    core_ctx.alloc.free(data) //
+                                else |_| {}
+                            }
+                            core_ctx.alloc.free(scan_notifs);
+                            // Request actual scan results
+                            log.debug("Connection {s} | {s}: Fetching BSS Scan Results...", .{ self.ssid, conn_if.name });
+                            self._nl80211_req_ctx.nextSeqID();
+                            try nl._80211.requestScanResults(
+                                core_ctx.alloc,
+                                &self._nl80211_req_ctx,
+                                conn_if.index,
+                            );
+                            self._nl_state = .await_response;
+                            continue :scan self._nl_state;
+                        },
                     },
                     .await_response => {
-                        if (@divFloor(scan_ctx.scan_timer.read(), time.ns_per_ms) > 3_000) {
+                        if (@divFloor(scan_ctx.scan_timer.read(), time.ns_per_ms) > 6_000) {
                             log.warn("Connection {s} | {s}: BSS Scan Timed Out", .{ self.ssid, conn_if.name });
                             return error.ScanTimeout;
                         }
-                        if (!self._nl80211_req_ctx.handler.?.checkCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS)) //
+                        if (!self._nl80211_req_ctx.checkResponse()) //
                             return;
                         self._nl_state = .parse;
                         continue :scan self._nl_state;
                     },
-                    .parse => {
-                        const scan_resps = try self._nl80211_req_ctx.handler.?.getCmdResponses(c(nl._80211.CMD).NEW_SCAN_RESULTS);
-                        defer {
-                            for (scan_resps) |resp| {
-                                const data = resp catch continue;
-                                core_ctx.alloc.free(data);
+                    .parse => switch (scan_ctx.scan_state) {
+                        .trigger => {
+                            const trigger_resp = self._nl80211_req_ctx.getResponse().?;
+                            if (trigger_resp) |resp_data| {
+                                core_ctx.alloc.free(resp_data);
+                                log.debug("Connection {s} | {s}: Scan Triggered", .{ self.ssid, conn_if.name });
+                                scan_ctx.scan_state = .results;
+                                self._nl_state = .request;
+                                continue :scan self._nl_state;
+                            } //
+                            else |err| {
+                                log.warn("Connection {s} | {s}: Could not trigger scan: {t}", .{ self.ssid, conn_if.name, err });
+                                return error.ScanTriggerFailed;
                             }
-                            core_ctx.alloc.free(scan_resps);
-                        }
-                        if (scan_resps.len == 0) {
-                            log.warn("Connection {s} | {s}: BSS Scan Failed (No Results)", .{ self.ssid, conn_if.name });
-                            return error.NoScanResults;
-                        }
-                        //const tgt_band: ?chs.Band = band: {
-                        //    const ch = chs.Channel.fromFreqBW(@intCast(self.freq), .bw20) catch break :band null;
-                        //    break :band ch.band;
-                        //};
-                        //const bss_match: ?nl._80211.BasicServiceSet = bssMatch: {
-                        //    for (scan_resps) |resp| {
-                        //        const data = resp catch continue;
-                        //        defer core_ctx.alloc.free(data);
-                        //        const scan_results = nl._80211.handleScanResultsBuf(core_ctx.a_alloc, data) catch continue;
-                        //        for (scan_results) |result| {
-                        //            const bss = result.BSS orelse continue;
-                        //            if (tgt_band) |band| {
-                        //                const bss_ch = chs.Channel.fromFreqBW(@intCast(bss.FREQUENCY), .bw20) catch continue;
-                        //                if (bss_ch.band != band) //
-                        //                    continue;
-                        //            }
-                        //            break :bssMatch bss;
-                        //        }
-                        //    }
-                        //    break :bssMatch null;
-                        //};
-                        //if (bss_match) |new_bss| {
-                        //    self._bss = new_bss;
-                        //    self.freq = new_bss.FREQUENCY;
-                        //}
-                        log.debug("Connection {s} | {s}: BSS Scan Complete ({d}ms)", .{ self.ssid, conn_if.name, @divFloor(scan_ctx.scan_timer.read(), time.ns_per_ms) });
-                        self._nl_state = .request;
-                        self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
-                        continue :state self._state;
+                        },
+                        .results => {
+                            const scan_resp = self._nl80211_req_ctx.getResponse().?;
+                            const scan_data = scan_resp catch |err| {
+                                log.warn("Connection {s} | {s}: Could not get scan results: {t}", .{ self.ssid, conn_if.name, err });
+                                return error.NoScanResults;
+                            };
+                            defer core_ctx.alloc.free(scan_data);
+                            const scan_results = nl._80211.handleScanResultsBuf(core_ctx.a_alloc, scan_data) catch |err| {
+                                log.warn("Connection {s} | {s}: Could not parse scan results: {t}", .{ self.ssid, conn_if.name, err });
+                                return error.NoScanResults;
+                            };
+                            const bss_match: nl._80211.BasicServiceSet = bssMatch: {
+                                for (scan_results) |result| {
+                                    const conn_bss = result.BSS orelse continue;
+                                    if (!mem.eql(u8, conn_bss.BSSID[0..], self.bssid[0..])) //
+                                        continue;
+                                    break :bssMatch conn_bss;
+                                }
+                                log.warn("Connection {s} | {s}: BSS Scan Failed (No BSS in {d} Results)", .{ self.ssid, conn_if.name, scan_results.len });
+                                return error.NoScanResults;
+                            };
+                            self._bss = bss_match;
+                            self.freq = bss_match.FREQUENCY;
+                            log.debug("Connection {s} | {s}: BSS Freq: {d} MHz", .{ self.ssid, conn_if.name, bss_match.FREQUENCY });
+                            log.debug("Connection {s} | {s}: BSS Scan Complete ({d}ms)", .{ self.ssid, conn_if.name, @divFloor(scan_ctx.scan_timer.read(), time.ns_per_ms) });
+                            self._nl_state = .request;
+                            self._state = .{ .auth = .{ .auth_timer = time.Timer.start() catch @panic("Time Issue") } };
+                            continue :state self._state;
+                        },
                     },
                 },
             },
