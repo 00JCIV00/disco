@@ -42,6 +42,15 @@ const ThreadHashMAL = utils.ThreadHashMAL;
 const Device = networks.Device;
 const Meta = networks.Meta;
 
+/// Extracts the associated BSSID for a station from the given address.
+/// Returns `null` if the address is broadcast (unassociated station).
+fn staBSSID(addr: ?[6]u8) ?[6]u8 {
+    const a = addr orelse return null;
+    if (mem.eql(u8, a[0..], &.{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }))
+        return null;
+    return a;
+}
+
 /// Frame Parsing Context
 pub const Context = struct {
     /// Frame Arena
@@ -215,6 +224,7 @@ pub const Context = struct {
                 .duration = wifi_prefix.duration,
             };
             var dev: ?Device = null;
+            var dev_needs_upd: bool = false;
             switch (wifi_hdr.frame_control.frame_type) {
                 .management,
                 .data,
@@ -261,7 +271,7 @@ pub const Context = struct {
                     switch (frame_type) {
                         .management => {
                             const addr_2 = wifi_hdr.addr_2 orelse continue :frameLoop;
-                            const needs_update = needsUpd: {
+                            dev_needs_upd = needsUpd: {
                                 const existing = core_ctx.network_ctx.dev_mal.get(addr_2) orelse break :needsUpd true;
                                 const existing_bss = switch (existing.kind) {
                                     .ap, .mesh => |bss| bss,
@@ -272,7 +282,7 @@ pub const Context = struct {
                                     break :needsUpd true;
                                 break :needsUpd false;
                             };
-                            if (!needs_update) //
+                            if (!dev_needs_upd) //
                                 continue :frameLoop;
                             const rt_ch = rt_data.Channel orelse continue :frameLoop;
                             const fixed_params = fixedParams: switch (wifi_hdr.frame_control.frame_subtype.management) {
@@ -361,10 +371,10 @@ pub const Context = struct {
                                             .association_response,
                                             .reassociation_response,
                                             => .{ .ap = bss },
-                                            else => .sta,
+                                            else => .{ .sta = staBSSID(wifi_hdr.addr_1) },
                                         };
                                     }
-                                    break :kind .sta;
+                                    break :kind .{ .sta = staBSSID(wifi_hdr.addr_1) };
                                 },
                             };
                         },
@@ -391,18 +401,87 @@ pub const Context = struct {
                                 },
                                 else => {},
                             }
+                            // Create station device from data frame
+                            const sta_mac, const sta_bssid = staInfo: {
+                                if (wifi_hdr.frame_control.to_DS and !wifi_hdr.frame_control.from_DS)
+                                    // Station sending to AP: addr_2 = station, addr_1 = BSSID
+                                    break :staInfo .{
+                                        wifi_hdr.addr_2 orelse continue :frameLoop,
+                                        wifi_hdr.addr_1 orelse continue :frameLoop,
+                                    };
+                                if (!wifi_hdr.frame_control.to_DS and wifi_hdr.frame_control.from_DS)
+                                    // AP sending to station: addr_1 = station, addr_2 = BSSID
+                                    break :staInfo .{
+                                        wifi_hdr.addr_1 orelse continue :frameLoop,
+                                        wifi_hdr.addr_2 orelse continue :frameLoop,
+                                    };
+                                // IBSS or WDS - skip for now
+                                continue :frameLoop;
+                            };
+                            // Check if station needs update
+                            dev_needs_upd = staUpd: {
+                                const existing = core_ctx.network_ctx.dev_mal.get(sta_mac) orelse break :staUpd true;
+                                const existing_bssid = switch (existing.kind) {
+                                    .sta => |bssid| bssid,
+                                    else => break :staUpd true,
+                                };
+                                if (existing_bssid) |eb| {
+                                    if (mem.eql(u8, eb[0..], sta_bssid[0..])) //
+                                        break :staUpd false;
+                                }
+                                break :staUpd true;
+                            };
+                            if (!dev_needs_upd) //
+                                continue :frameLoop;
+                            const rt_ch = rt_data.Channel orelse continue :frameLoop;
+                            dev = .{
+                                .mac = sta_mac,
+                                .channel = chs.Channel.fromFreqBW(rt_ch.freq, .bw20) catch continue :frameLoop,
+                                .kind = .{ .sta = sta_bssid },
+                            };
                         },
                         else => unreachable,
                     }
                 },
                 .control => switch (wifi_hdr.frame_control.frame_subtype.control) {
+                    .ps_poll => {
+                        // PS-Poll: addr_1 = BSSID, addr_2 = station
+                        inline for (&.{ &wifi_hdr.addr_1, &wifi_hdr.addr_2 }) |addr| {
+                            addr.* = (frame_r.takeArray(6) catch |err| {
+                                log.warn("Control Frame Address Parsing Issue: {t}", .{ err });
+                                continue :frameLoop;
+                            }).*;
+                        }
+                        const sta_mac = wifi_hdr.addr_2.?;
+                        const sta_bssid = wifi_hdr.addr_1.?;
+                        dev_needs_upd = staUpd: {
+                            const existing = core_ctx.network_ctx.dev_mal.get(sta_mac) orelse break :staUpd true;
+                            const existing_bssid = switch (existing.kind) {
+                                .sta => |bssid| bssid,
+                                else => break :staUpd true,
+                            };
+                            if (existing_bssid) |eb| {
+                                if (mem.eql(u8, eb[0..], sta_bssid[0..])) //
+                                    break :staUpd false;
+                            }
+                            break :staUpd true;
+                        };
+                        if (!dev_needs_upd) //
+                            continue :frameLoop;
+                        const rt_ch = rt_data.Channel orelse continue :frameLoop;
+                        dev = .{
+                            .mac = sta_mac,
+                            .channel = chs.Channel.fromFreqBW(rt_ch.freq, .bw20) catch continue :frameLoop,
+                            .kind = .{ .sta = sta_bssid },
+                        };
+                    },
                     else => {},
                 },
                 .extension => continue :frameLoop,
             }
             if (dev) |_dev| {
                 if (core_ctx.network_ctx.dev_mal.getIndex(_dev.mac, false)) |idx| //
-                    core_ctx.network_ctx.dev_mal.set(idx, _dev)
+                    core_ctx.network_ctx.dev_mal.set(idx, _dev) //
                 else //
                     core_ctx.network_ctx.dev_mal.append(core_ctx.a_alloc, _dev) catch @panic("OOM");
             }

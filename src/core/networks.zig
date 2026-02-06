@@ -43,7 +43,7 @@ pub const Device = struct {
 
     pub const Kind = union(enum(u8)) {
         ap: nl._80211.BasicServiceSet,
-        sta,
+        sta: ?[6]u8,
         mesh: nl._80211.BasicServiceSet,
     };
 
@@ -115,18 +115,25 @@ pub const Device = struct {
                 } //
                 else |_| {}
             },
-            .sta => {
+            .sta => |sta_bssid| {
                 try w.print(
                     \\{s}Station{s}
                     \\- {s}MAC{s}:     {f} ({s})
-                    \\- {s}Channel{s}: {f}
                     \\
                     , .{
                         ansi.fmt.bold, ansi.reset,
                         ansi.fmt.underline, ansi.reset, MACF{ .bytes = self.mac[0..] }, netdata.oui.findOUI(.short, self.mac) catch "[UNKNOWN]",
-                        ansi.fmt.underline, ansi.reset, self.channel,
                     },
                 );
+                if (sta_bssid) |bssid| {
+                    try w.print("- {s}BSSID{s}:   {f} ({s})\n", .{
+                        ansi.fmt.underline,
+                        ansi.reset,
+                        MACF{ .bytes = bssid[0..] },
+                        netdata.oui.findOUI(.short, bssid) catch "[UNKNOWN]", 
+                    });
+                }
+                try w.print("- {s}Channel{s}: {f}\n", .{ ansi.fmt.underline, ansi.reset, self.channel });
             },
             .mesh => {
                 try w.print(
@@ -514,7 +521,8 @@ pub const Context = struct {
             nl.NETLINK_OPT.ADD_MEMBERSHIP,
             mem.toBytes(nl80211_scan)[0..],
         );
-        core_ctx.nl80211_handler.trackCommand(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM");
+        if (core_ctx.config.global_scan_config.mode == .netlink) //
+            core_ctx.nl80211_handler.trackCommand(c(nl._80211.CMD).NEW_SCAN_RESULTS) catch @panic("OOM");
         return self;
     }
 
