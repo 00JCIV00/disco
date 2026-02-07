@@ -182,14 +182,6 @@ pub const Writer = struct {
                 log.err("Could not create TCP Socket: {t}", .{ err });
                 break :tcpCtx null;
             };
-            posix.bind(tcp_sock, &tcp_addr.any, tcp_addr.getOsSockLen()) catch |err| {
-                log.err("Could not bind to TCP Socket: {t}", .{ err });
-                break :tcpCtx null;
-            };
-            posix.listen(tcp_sock, 0) catch |err| {
-                log.err("Could not listen on TCP Socket: {t}", .{ err });
-                break :tcpCtx null;
-            };
             posix.setsockopt(
                 tcp_sock,
                 posix.SOL.SOCKET,
@@ -198,6 +190,14 @@ pub const Writer = struct {
             ) catch |err| {
                 log.warn("Could note enable 'Re-Use' on TCP Socket: {t}", .{ err });
                 //break :tcpCtx null;
+            };
+            posix.bind(tcp_sock, &tcp_addr.any, tcp_addr.getOsSockLen()) catch |err| {
+                log.err("Could not bind to TCP Socket: {t}", .{ err });
+                break :tcpCtx null;
+            };
+            posix.listen(tcp_sock, 0) catch |err| {
+                log.err("Could not listen on TCP Socket: {t}", .{ err });
+                break :tcpCtx null;
             };
             log.info("{s}Serving PCAP TCP Stream on '{f}'{s}", .{ ansi.fg.yellow, tcp_addr, ansi.reset });
             break :tcpCtx .{
@@ -583,6 +583,7 @@ pub const Writer = struct {
     fn frameDrain(self: *Io.Writer, data: []const []const u8, _: usize) Io.Writer.Error!usize {
         defer self.end = 0;
         const pcap_writer: *@This() = @alignCast(@fieldParentPtr("frame_writer", self));
+        const core_ctx: *core.Core = @alignCast(@fieldParentPtr("cap_writer", pcap_writer));
         const parser_ctx = pcap_writer.parser_ctx orelse return error.WriteFailed;
         const if_id = ifID: {
             const if_id_pair = pcap_writer.cur_if_ids.get(parser_ctx.if_mac) orelse {
@@ -633,18 +634,29 @@ pub const Writer = struct {
                 add_bytes = true;
             }
             if (pcap_writer.tcp_ctx) |*tcp_ctx| {
+                tcp_ctx.conn_list.mutex.lock();
                 defer tcp_ctx.conn_list.mutex.unlock();
-                for (tcp_ctx.conn_list.items(), 0..) |*conn, idx| {
+                var idx: usize = 0;
+                while (idx < tcp_ctx.conn_list.list.items.len) {
+                    const conn = &tcp_ctx.conn_list.list.items[idx];
                     const conn_writer = &conn.writer.io_writer;
-                    try conn_writer.writeStruct(epb_hdr, .little);
-                    _ = try conn_writer.write(bytes);
-                    for (0..pad_bytes) |_| {
-                        try conn_writer.writeByte(0);
-                        if (idx == 0 and file_w == null) //
-                            n += 1;
+                    const write_err: ?anyerror = writeConn: {
+                        conn_writer.writeStruct(epb_hdr, .little) catch |err| break :writeConn err;
+                        _ = conn_writer.write(bytes) catch |err| break :writeConn err;
+                        for (0..pad_bytes) |_| {
+                            conn_writer.writeByte(0) catch |err| break :writeConn err;
+                            if (idx == 0 and file_w == null) //
+                                n += 1;
+                        }
+                        conn_writer.writeInt(u32, epb_hdr.block_total_len, .little) catch |err| break :writeConn err;
+                        conn_writer.flush() catch |err| break :writeConn err;
+                        break :writeConn null;
+                    };
+                    if (write_err) |err| {
+                        dropConnTCP(core_ctx, tcp_ctx, idx, err);
+                        continue;
                     }
-                    try conn_writer.writeInt(u32, epb_hdr.block_total_len, .little);
-                    try conn_writer.flush();
+                    idx += 1;
                 }
                 add_bytes = true;
             }
@@ -679,27 +691,29 @@ pub const Writer = struct {
                 add_bytes = true;
             }
             if (pcap_writer.tcp_ctx) |*tcp_ctx| {
+                tcp_ctx.conn_list.mutex.lock();
                 defer tcp_ctx.conn_list.mutex.unlock();
-                for (tcp_ctx.conn_list.items(), 0..) |*conn, idx| {
+                var idx: usize = 0;
+                while (idx < tcp_ctx.conn_list.list.items.len) {
+                    const conn = &tcp_ctx.conn_list.list.items[idx];
                     const conn_writer = &conn.writer.io_writer;
-                    try conn_writer.writeStruct(epb_hdr, .little);
-                    _ = try conn_writer.write(bytes);
-                    for (0..pad_bytes) |_| {
-                        try conn_writer.writeByte(0);
-                        if (idx == 0 and file_w == null) //
-                            n += 1;
-                    }
-                    try conn_writer.writeInt(u32, epb_hdr.block_total_len, .little);
-                    conn_writer.flush() catch |err| {
-                        log.debug("TCP -> EPB Error: {t}\n{d}B\n{f}\n{f}\nPad: {d}B", .{ 
-                            err,
-                            epb_hdr.block_total_len,
-                            HexF{ .bytes = mem.asBytes(&epb_hdr) },
-                            HexF{ .bytes = bytes },
-                            pad_bytes,
-                        });
-                        return err;
+                    const write_err: ?anyerror = writeConn: {
+                        conn_writer.writeStruct(epb_hdr, .little) catch |err| break :writeConn err;
+                        _ = conn_writer.write(bytes) catch |err| break :writeConn err;
+                        for (0..pad_bytes) |_| {
+                            conn_writer.writeByte(0) catch |err| break :writeConn err;
+                            if (idx == 0 and file_w == null) //
+                                n += 1;
+                        }
+                        conn_writer.writeInt(u32, epb_hdr.block_total_len, .little) catch |err| break :writeConn err;
+                        conn_writer.flush() catch |err| break :writeConn err;
+                        break :writeConn null;
                     };
+                    if (write_err) |err| {
+                        dropConnTCP(core_ctx, tcp_ctx, idx, err);
+                        continue;
+                    }
+                    idx += 1;
                 }
                 add_bytes = true;
             }
@@ -711,15 +725,29 @@ pub const Writer = struct {
             try file_writer.flush();
         }
         if (pcap_writer.tcp_ctx) |*tcp_ctx| {
+            tcp_ctx.conn_list.mutex.lock();
             defer tcp_ctx.conn_list.mutex.unlock();
-            for (tcp_ctx.conn_list.items()) |*conn| {
+            var idx: usize = 0;
+            while (idx < tcp_ctx.conn_list.list.items.len) {
+                const conn = &tcp_ctx.conn_list.list.items[idx];
                 const conn_writer = &conn.writer.io_writer;
-                try conn_writer.flush();
+                if (conn_writer.flush()) |_| //
+                    idx += 1
+                else |err| //
+                    dropConnTCP(core_ctx, tcp_ctx, idx, err);
             }
         }
         //log.debug("Wrote {d} Frames | {d}B", .{ data.len, n });
         return n;
         //return 0;
+    }
+
+    fn dropConnTCP(core_ctx: *core.Core, tcp_ctx: *TCPContext, idx: usize, err: anyerror) void {
+        const conn = tcp_ctx.conn_list.list.items[idx];
+        posix.close(conn.sock);
+        core_ctx.alloc.free(conn.writer.io_writer.buffer);
+        _ = tcp_ctx.conn_list.list.swapRemove(idx);
+        log.warn("Closed TCP Connection after write error: {t}", .{ err });
     }
 };
 
