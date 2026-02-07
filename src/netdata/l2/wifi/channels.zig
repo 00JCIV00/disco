@@ -6,6 +6,7 @@ const Io = std.Io;
 /// Invaild Channel Error
 pub const Error = error {
     InvalidChannel,
+    InvalidFreq,
 };
 
 /// Supported WiFi bands.
@@ -13,6 +14,15 @@ pub const Band = enum(u8) {
     b2 = 2,
     b5 = 5,
     b6 = 6,
+
+    pub fn fromFreq(freq: u32) Error!@This() {
+        return switch (freq) {
+            2412...2472, 2484 => .b2,
+            5000...5895 => .b5,
+            5950...7125 => .b6,
+            else => error.InvalidFreq,
+        };
+    }
 };
 
 /// Supported WiFi Cchannel Bandwidths in MHz.
@@ -88,7 +98,7 @@ pub const Channel = extern struct {
         const pri: u16 = @intCast(ch);
         inline for ([_]Band{ .b2, .b5, .b6 }) |band| {
             inline for ([_]Bandwidth{ .bw20, .bw40, .bw80, .bw160, .bw320 }) |bw| {
-                var cand = Channel{ .pri = pri, .band = band, .bw = bw };
+                var cand: Channel = .{ .pri = pri, .band = band, .bw = bw };
                 if (cand.validate()) //
                     return cand;
             }
@@ -111,7 +121,7 @@ pub const Channel = extern struct {
                     const ch: u16 = self.pri;
                     break :band5g switch (ch) {
                         1...14 => false,
-                        32...144, 184...196 => ch % 4 == 0 or (ch >= 135 and ch <= 138),
+                        36...64, 100...144 => ch % 4 == 0, //or (ch >= 135 and ch <= 138),
                         149...177 => ch % 4 == 1,
                         else => false,
                     };

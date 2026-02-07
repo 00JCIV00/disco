@@ -372,6 +372,7 @@ pub const Core = struct {
         self.active.store(false, .seq_cst);
         self._mutex.lock();
         defer self._mutex.unlock();
+        log.debug("- Stopping Netlink Event Loop...", .{});
         self.nl_event_loop.stop(null);
         log.info("- Stopped Netlink Event Loop.", .{});
         //self._thread_pool.waitAndWork(&self._wait_group);
@@ -393,7 +394,7 @@ pub const Core = struct {
         log.info("Cleaning up DisCo Core...", .{});
         if (self.config.profile.mask != null and self.config.profile.change_sys_hostname) {
             if (sys.setHostName(self.og_hostname)) //
-                log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname })
+                log.info("- Restored the Hostname to '{s}'.", .{ self.og_hostname }) //
             else |err| //
                 log.warn("- Couldn't reset the Hostname: {t}", .{ err });
         }

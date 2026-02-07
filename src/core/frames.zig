@@ -51,6 +51,43 @@ fn staBSSID(addr: ?[6]u8) ?[6]u8 {
     return a;
 }
 
+/// Extracts the operating channel from IEs, using radiotap for band detection.
+/// Uses DS_PARAMETER_SET or HT_OPERATION for channel, HT/VHT_OPERATION for bandwidth.
+fn chFromIE(tagged_params: ?ies.InformationElements, rt_freq: u16) ?chs.Channel {
+    const tps = tagged_params orelse return null;
+    const band = chs.Band.fromFreq(rt_freq) catch return null;
+    // Get channel number from DS Parameter Set (IE 3) or HT Operation (IE 61)
+    const ie_ch: u16 = ch: {
+        if (tps.DS_PARAMETER_SET) |ds| //
+            if (ds.len >= 1) break :ch ds[0];
+        if (tps.HT_OPERATION) |ht_op| //
+            if (ht_op.len >= 1) break :ch ht_op[0];
+        return null;
+    };
+    // Get bandwidth from VHT Operation (IE 192) or HT Operation (IE 61)
+    const bw: chs.Bandwidth = bw: {
+        if (tps.VHT_OPERATION) |vht_op| {
+            if (vht_op.len >= 1) break :bw switch (vht_op[0]) {
+                1 => .bw80,
+                2, 3 => .bw160,
+                else => .bw20,
+            };
+        }
+        if (tps.HT_OPERATION) |ht_op| {
+            // Byte 1, bits 0-1: Secondary Channel Offset (1=above, 3=below means 40MHz)
+            if (ht_op.len >= 2) break :bw switch (ht_op[1] & 0x03) {
+                1, 3 => .bw40,
+                else => .bw20,
+            };
+        }
+        break :bw .bw20;
+    };
+    var ch: chs.Channel = .{ .pri = ie_ch, .band = band, .bw = bw };
+    if (ch.validate())
+        return ch;
+    return null;
+}
+
 /// Frame Parsing Context
 pub const Context = struct {
     /// Frame Arena
@@ -326,28 +363,29 @@ pub const Context = struct {
                                 },
                                 else => break :taggedParams null,
                             };
+                            const dev_ch: chs.Channel = chFromIE(tagged_params, rt_ch.freq) orelse fallback: {
+                                const bw: chs.Bandwidth = bw: {
+                                    if (rt_data.VHT) |vht| switch (vht.bandwidth) {
+                                        1...3 => break :bw .bw40,
+                                        4...10 => break :bw .bw80,
+                                        11...25 => break :bw .bw160,
+                                        else => break :bw .bw20,
+                                    };
+                                    break :bw .bw20;
+                                };
+                                break :fallback chs.Channel.fromFreqBW(rt_ch.freq, bw) catch |err| {
+                                    log.warn("Management Frame Channel Parsing Issue: {t}", .{ err });
+                                    continue :frameLoop;
+                                };
+                            };
                             dev = .{
                                 .mac = addr_2,
-                                .channel = ch: {
-                                    const bw: chs.Bandwidth = bw: {
-                                        if (rt_data.VHT) |vht| switch (vht.bandwidth) {
-                                            1...3 => break :bw .bw40,
-                                            4...10 => break :bw .bw80,
-                                            11...25 => break :bw .bw160,
-                                            else => break :bw .bw20,
-                                        };
-                                        break :bw .bw20;
-                                    };
-                                    break :ch chs.Channel.fromFreqBW(rt_ch.freq, bw) catch |err| {
-                                        log.warn("Management Frame Channel Parsing Issue: {t}", .{ err });
-                                        continue :frameLoop;
-                                    };
-                                },
+                                .channel = dev_ch,
                                 .kind = kind: {
                                     if (tagged_params) |tps| {
                                         const bss: nl._80211.BasicServiceSet = .{
                                             .BSSID = addr_2,
-                                            .FREQUENCY = rt_ch.freq,
+                                            .FREQUENCY = @intCast(dev_ch.toFreq() catch rt_ch.freq),
                                             .INFORMATION_ELEMENTS = tps,
                                             .TSF = switch (fixed_params) {
                                                 .beacon, .probe_response => |b| b.timestamp,
