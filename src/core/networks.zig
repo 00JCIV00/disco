@@ -1082,6 +1082,15 @@ pub const Context = struct {
                                 },
                                 .ch => ch: switch (mon_ctx.nl_state) {
                                     .ready, .request => {
+                                        if (scan_if.channel) |if_ch| {
+                                            for (mon_ctx.allowed_chs) |allowed| {
+                                                if (!meta.eql(allowed, if_ch)) //
+                                                    continue;
+                                                mon_ctx.nl_state = .ready;
+                                                mon_ctx.setup = .up;
+                                                continue :monSetup mon_ctx.setup;
+                                            }
+                                        }
                                         mon_ctx.req_ctx_80211.nextSeqID();
                                         nl._80211.requestSetFreq(
                                             core_ctx.alloc,
@@ -1106,6 +1115,7 @@ pub const Context = struct {
                                         const mod_resp = mon_ctx.req_ctx_80211.getResponse().?;
                                         if (mod_resp) |resp_data| {
                                             core_ctx.alloc.free(resp_data);
+                                            scan_if.channel = chs.Channel.fromFreqBW(chs.Frequencies.band_2G_20[0], .bw20) catch null;
                                             log.debug("Reset Channel Context of '{s}'", .{ scan_if.name });
                                             mon_ctx.timer.reset();
                                         } //
@@ -1272,7 +1282,8 @@ pub const Context = struct {
                                     const mod_resp = mon_ctx.req_ctx_80211.getResponse().?;
                                     if (mod_resp) |resp_data| {
                                         core_ctx.alloc.free(resp_data);
-                                        log.debug("Changed Channel of '{s}' to '{f}'", .{ scan_if.name, mon_ctx.allowed_chs[mon_ctx.ch_idx] });
+                                        scan_if.channel = mon_ctx.allowed_chs[mon_ctx.ch_idx];
+                                        log.debug("Changed Channel of '{s}' to '{f}'", .{ scan_if.name, scan_if.channel.? });
                                         mon_ctx.timer.reset();
                                     } //
                                     else |err| {
