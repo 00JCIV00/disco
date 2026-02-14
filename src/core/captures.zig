@@ -79,12 +79,19 @@ pub const TCPContext = struct {
     accept_sock: posix.socket_t,
     /// Connections List
     conn_list: ThreadArrayList(Connection) = .empty,
+    /// Max Errors
+    max_errors: u8 = 3,
 
     /// Connected Client
     pub const Connection = struct {
+        /// Socket
         sock: posix.socket_t,
+        /// Socket Address
         addr: posix.sockaddr.in,
+        /// Socket Writer
         writer: SockWriter,
+        /// Writer Error Count
+        err_count: u8 = 0,
     };
 };
 
@@ -637,7 +644,7 @@ pub const Writer = struct {
                 tcp_ctx.conn_list.mutex.lock();
                 defer tcp_ctx.conn_list.mutex.unlock();
                 var idx: usize = 0;
-                while (idx < tcp_ctx.conn_list.list.items.len) {
+                while (idx < tcp_ctx.conn_list.list.items.len) : (idx += 1) {
                     const conn = &tcp_ctx.conn_list.list.items[idx];
                     const conn_writer = &conn.writer.io_writer;
                     const write_err: ?anyerror = writeConn: {
@@ -653,10 +660,15 @@ pub const Writer = struct {
                         break :writeConn null;
                     };
                     if (write_err) |err| {
-                        dropConnTCP(core_ctx, tcp_ctx, idx, err);
+                        conn.err_count +|= 1;
+                        if (conn.err_count >= tcp_ctx.max_errors) //
+                            dropConnTCP(core_ctx, tcp_ctx, idx, err) //
+                        else //
+                            log.warn("TCP Connection Issue: {t}", .{ err });
                         continue;
-                    }
-                    idx += 1;
+                    } //
+                    else //
+                        conn.err_count = 0;
                 }
                 add_bytes = true;
             }
@@ -694,7 +706,7 @@ pub const Writer = struct {
                 tcp_ctx.conn_list.mutex.lock();
                 defer tcp_ctx.conn_list.mutex.unlock();
                 var idx: usize = 0;
-                while (idx < tcp_ctx.conn_list.list.items.len) {
+                while (idx < tcp_ctx.conn_list.list.items.len) : (idx += 1) {
                     const conn = &tcp_ctx.conn_list.list.items[idx];
                     const conn_writer = &conn.writer.io_writer;
                     const write_err: ?anyerror = writeConn: {
@@ -710,10 +722,15 @@ pub const Writer = struct {
                         break :writeConn null;
                     };
                     if (write_err) |err| {
-                        dropConnTCP(core_ctx, tcp_ctx, idx, err);
+                        conn.err_count +|= 1;
+                        if (conn.err_count >= tcp_ctx.max_errors) //
+                            dropConnTCP(core_ctx, tcp_ctx, idx, err) //
+                        else //
+                            log.warn("TCP Connection Issue: {t}", .{ err });
                         continue;
-                    }
-                    idx += 1;
+                    } //
+                    else //
+                        conn.err_count = 0;
                 }
                 add_bytes = true;
             }
