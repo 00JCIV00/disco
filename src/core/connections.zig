@@ -927,10 +927,15 @@ pub const Connection = struct {
                             } //
                             else |err| {
                                 log.warn("Connection {s} | {s}: Could not trigger scan: {t}", .{ self.ssid, conn_if.name, err });
+                                self._nl_state = .request;
                                 return error.ScanTriggerFailed;
                             }
                         },
                         .results => {
+                            errdefer {
+                                scan_ctx.scan_state = .trigger;
+                                self._nl_state = .request;
+                            }
                             const scan_resp = self._nl80211_req_ctx.getResponse().?;
                             const scan_data = scan_resp catch |err| {
                                 log.warn("Connection {s} | {s}: Could not get scan results: {t}", .{ self.ssid, conn_if.name, err });
